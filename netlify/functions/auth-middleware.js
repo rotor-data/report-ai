@@ -10,7 +10,7 @@ export function requireHubAuth(event) {
   const jwt = verifyHubJwt(token, {
     publicPem: process.env.HUB_JWT_PUBLIC_KEY_PEM,
     issuer: process.env.HUB_JWT_ISSUER ?? "hub.rotor-platform.com",
-    audience: "report-ai",
+    audience: process.env.MODULE_AUDIENCE ?? "report-ai",
   });
 
   if (!jwt.ok) return { ok: false, status: 401, error: jwt.error };
