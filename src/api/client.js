@@ -25,15 +25,20 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  // Document CRUD (REST endpoints — used by frontend directly)
   listDocuments: () => request("/documents"),
   getDocument: (id) => request(`/documents/${id}`),
   createDocument: (payload) => request("/documents", { method: "POST", body: JSON.stringify(payload) }),
   patchDocument: (id, payload) => request(`/documents/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteDocument: (id) => request(`/documents/${id}`, { method: "DELETE" }),
-  generateSystem: (payload) => request("/generate-system", { method: "POST", body: JSON.stringify(payload) }),
-  generateModules: (payload) => request("/generate-modules", { method: "POST", body: JSON.stringify(payload) }),
-  generateHtml: (payload) => request("/generate-html", { method: "POST", body: JSON.stringify(payload) }),
+
+  // PDF export (REST endpoint)
   exportPdf: (payload) => request("/export-pdf", { method: "POST", body: JSON.stringify(payload) }),
+
+  // Font management (REST endpoints)
   listFonts: () => request("/fonts"),
   uploadFont: (payload) => request("/fonts", { method: "POST", body: JSON.stringify(payload) }),
+
+  // Note: AI generation (design system, module plan, HTML) is handled by
+  // Claude via MCP tools — no frontend endpoints needed.
 };

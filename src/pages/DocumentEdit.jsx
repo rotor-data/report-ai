@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useDocumentStore } from "../stores/documentStore";
 import ModuleList from "../components/ModuleList";
 import HtmlPreview from "../components/HtmlPreview";
-import PipelineStepper from "../components/PipelineStepper";
+import StatusIndicator from "../components/StatusIndicator";
 import RequiredSectionBanner from "../components/RequiredSectionBanner";
 import ExportButton from "../components/ExportButton";
+
+const POLL_INTERVAL_MS = 3000;
 
 export default function DocumentEdit() {
   const { id } = useParams();
@@ -15,7 +17,9 @@ export default function DocumentEdit() {
   const [busy, setBusy] = useState(false);
   const [brandInputText, setBrandInputText] = useState("{}");
   const [rawContent, setRawContent] = useState("");
+  const pollRef = useRef(null);
 
+  // Fetch document on mount
   useEffect(() => {
     if (!id) return;
     api
@@ -27,11 +31,36 @@ export default function DocumentEdit() {
       .catch((err) => setError(err.message));
   }, [id, setDocument, setValidationWarnings]);
 
+  // Sync local state when document changes
   useEffect(() => {
     if (!document) return;
     setBrandInputText(JSON.stringify(document.brand_input || {}, null, 2));
     setRawContent(document.raw_content || "");
   }, [document]);
+
+  // Poll for updates when status is "generating"
+  useEffect(() => {
+    if (!id || document?.status !== "generating") {
+      if (pollRef.current) clearInterval(pollRef.current);
+      return;
+    }
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await api.getDocument(id);
+        setDocument(res.item);
+        setValidationWarnings(res.warnings || []);
+        // Stop polling when no longer generating
+        if (res.item?.status !== "generating") {
+          clearInterval(pollRef.current);
+        }
+      } catch {
+        // Silent fail on poll
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => clearInterval(pollRef.current);
+  }, [id, document?.status, setDocument, setValidationWarnings]);
 
   const parsedBrandInput = useMemo(() => {
     try {
@@ -89,6 +118,8 @@ export default function DocumentEdit() {
 
       {error ? <p className="error">{error}</p> : null}
 
+      <StatusIndicator document={document} />
+
       <div className="panel stack">
         <label>
           Brand input (JSON)
@@ -102,25 +133,6 @@ export default function DocumentEdit() {
           {busy ? "Sparar..." : "Spara metadata"}
         </button>
       </div>
-
-      <PipelineStepper
-        onGenerateSystem={async () => {
-          if (!parsedBrandInput) {
-            setError("Brand input måste vara giltig JSON innan steg 1.");
-            return;
-          }
-          await api.generateSystem({ document_id: id, brand_input: parsedBrandInput });
-          await refresh();
-        }}
-        onGenerateModules={async () => {
-          await api.generateModules({ document_id: id, raw_content: rawContent || "" });
-          await refresh();
-        }}
-        onGenerateHtml={async () => {
-          await api.generateHtml({ document_id: id });
-          await refresh();
-        }}
-      />
 
       <RequiredSectionBanner
         warnings={validationWarnings}
