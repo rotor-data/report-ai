@@ -1,15 +1,81 @@
 import { getSql } from "./db.js";
 import { randomUUID } from "node:crypto";
 
+// ─── Hardcoded fallbacks when document_type_templates table is missing ───
+const FALLBACK_TEMPLATES = {
+  annual_report: {
+    document_type: "annual_report",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "VD-ord / Executive Summary", required: true, semantic_role: "executive_summary" },
+      { module_type: "kpi_grid", label: "Nyckeltal", required: true },
+      { module_type: "financial_summary", label: "Finansiell sammanfattning", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "VD-ord", semantic_role: "executive_summary", content: "", data: {}, stub: true },
+      { order: 3, module_type: "kpi_grid", title: "Nyckeltal", data: { kpis: [] }, stub: true },
+      { order: 4, module_type: "financial_summary", title: "Finansiell sammanfattning", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  quarterly: {
+    document_type: "quarterly",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "kpi_grid", label: "Nyckeltal", required: true },
+      { module_type: "financial_summary", label: "Finansiell sammanfattning", required: true },
+      { module_type: "text_spread", label: "Utsikt/Outlook", required: true, semantic_role: "outlook" },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "kpi_grid", title: "Nyckeltal", data: { kpis: [] }, stub: true },
+      { order: 3, module_type: "financial_summary", title: "Finansiell sammanfattning", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Utsikt", semantic_role: "outlook", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  pitch: {
+    document_type: "pitch",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  proposal: {
+    document_type: "proposal",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+};
+
 export async function getTemplate(documentType) {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT document_type, required_sections, default_stub_plan
-    FROM document_type_templates
-    WHERE document_type = ${documentType}
-    LIMIT 1
-  `;
-  return rows[0] ?? null;
+  try {
+    const sql = getSql();
+    const rows = await sql`
+      SELECT document_type, required_sections, default_stub_plan
+      FROM document_type_templates
+      WHERE document_type = ${documentType}
+      LIMIT 1
+    `;
+    if (rows[0]) return rows[0];
+  } catch (e) {
+    // Table might not exist — fall through to hardcoded fallback
+    console.warn("[document-type-templates] DB query failed, using fallback:", e.message);
+  }
+  return FALLBACK_TEMPLATES[documentType] ?? null;
 }
 
 export async function validateModulePlan(docType, modulePlan = []) {
