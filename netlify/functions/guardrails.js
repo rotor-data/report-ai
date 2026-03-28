@@ -9,6 +9,8 @@ Render print-ready HTML and CSS only. Follow these hard rules:
 7. Use @page with >=15mm margins; body margin:0 is forbidden.
 8. No external image URLs except explicit logo_url.
 9. No Lorem ipsum.
+10. Do not embed fonts as data URLs; use asset URLs.
+11. Elements marked as full-page backgrounds must cover the entire page.
 `;
 
 export function validateHtml(html = "") {
@@ -20,6 +22,10 @@ export function validateHtml(html = "") {
   if (/lorem ipsum/i.test(source)) issues.push("Lorem ipsum detected");
   if (!/@page\s*\{/i.test(html)) issues.push("Missing @page rule");
   if (/body\s*\{[^}]*margin\s*:\s*0\b/i.test(source)) issues.push("body margin: 0 is forbidden");
+  if (/src\s*:\s*url\(['"]data:font/i.test(source)) issues.push("Embedded base64 font is forbidden");
+  if (/data-full-page-background=["']true["']/i.test(html) && !/(width\s*:\s*210mm|inset\s*:\s*0|height\s*:\s*297mm)/i.test(html)) {
+    issues.push("Full-page background is marked but does not cover the entire page");
+  }
   if (!/class=["'][^"']*cover/i.test(html)) issues.push("cover module missing");
   if (!/class=["'][^"']*back_cover/i.test(html)) issues.push("back_cover module missing");
 

@@ -39,6 +39,26 @@ export const api = {
   listFonts: () => request("/fonts"),
   uploadFont: (payload) => request("/fonts", { method: "POST", body: JSON.stringify(payload) }),
 
+  // Chat-first support endpoints (fallback/admin UI)
+  listDesignAssets: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/design-assets${query ? `?${query}` : ""}`);
+  },
+  uploadDesignAsset: (payload) => request("/design-assets", { method: "POST", body: JSON.stringify(payload) }),
+  analyzeDesignAsset: (assetId) => request(`/design-assets/${assetId}/analyze`, { method: "POST", body: "{}" }),
+  patchDesignAsset: (assetId, payload) => request(`/design-assets/${assetId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteDesignAsset: (assetId) => request(`/design-assets/${assetId}`, { method: "DELETE" }),
+
+  listBrandProfiles: () => request("/brand-profiles"),
+  getBrandProfile: (id) => request(`/brand-profiles/${id}`),
+  createBrandProfile: (payload) => request("/brand-profiles", { method: "POST", body: JSON.stringify(payload) }),
+  patchBrandProfile: (id, payload) => request(`/brand-profiles/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  createBrandProfileVersion: (id, payload) =>
+    request(`/brand-profiles/${id}/versions`, { method: "POST", body: JSON.stringify(payload) }),
+
+  checkBrandReadiness: (payload) => request("/brand-readiness", { method: "POST", body: JSON.stringify(payload) }),
+  runLayoutPreflight: (payload) => request("/layout-preflight", { method: "POST", body: JSON.stringify(payload) }),
+
   // Note: AI generation (design system, module plan, HTML) is handled by
   // Claude via MCP tools — no frontend endpoints needed.
 };
