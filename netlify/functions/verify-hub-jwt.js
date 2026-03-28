@@ -1,5 +1,10 @@
 import { createPublicKey, verify as verifySig } from "node:crypto";
 
+export function readBearerToken(event) {
+  const auth = event.headers?.authorization ?? event.headers?.Authorization ?? "";
+  return auth.replace(/^Bearer\s+/i, "").trim() || null;
+}
+
 export function verifyHubJwt(token, { publicPem, issuer, audience }) {
   try {
     const [h, p, s] = (token ?? "").split(".");
