@@ -12,12 +12,17 @@ const createSchema = z.object({
 
 const patchSchema = z.object({
   title: z.string().min(1).optional(),
-  status: z.enum(["draft", "generating", "ready", "error"]).optional(),
+  status: z.enum(["draft", "generating", "analyzing", "suggesting", "patching", "preflight", "ready", "error"]).optional(),
   brand_input: z.any().optional(),
   design_system: z.any().optional(),
+  brand_profile_id: z.string().uuid().nullable().optional(),
   raw_content: z.string().optional(),
   module_plan: z.array(z.any()).optional(),
   html_output: z.string().optional(),
+  layout_ast: z.any().optional(),
+  layout_fingerprint: z.any().optional(),
+  layout_version: z.number().int().min(1).optional(),
+  decision_context: z.any().optional(),
   auto_add_missing_sections: z.boolean().optional(),
 });
 
@@ -48,6 +53,11 @@ function selectPublicDocFields(doc) {
     raw_content: doc.raw_content,
     module_plan: doc.module_plan,
     html_output: doc.html_output,
+    brand_profile_id: doc.brand_profile_id,
+    layout_ast: doc.layout_ast,
+    layout_fingerprint: doc.layout_fingerprint,
+    layout_version: doc.layout_version,
+    decision_context: doc.decision_context,
     created_at: doc.created_at,
     updated_at: doc.updated_at,
   };
@@ -147,9 +157,14 @@ export const handler = async (event) => {
         status = COALESCE(${has(parsed.data, "status") ? parsed.data.status : null}::doc_status, status),
         brand_input = COALESCE(${has(parsed.data, "brand_input") ? JSON.stringify(parsed.data.brand_input) : null}::jsonb, brand_input),
         design_system = COALESCE(${has(parsed.data, "design_system") ? JSON.stringify(parsed.data.design_system) : null}::jsonb, design_system),
+        brand_profile_id = COALESCE(${has(parsed.data, "brand_profile_id") ? parsed.data.brand_profile_id : null}::uuid, brand_profile_id),
         raw_content = COALESCE(${has(parsed.data, "raw_content") ? parsed.data.raw_content : null}, raw_content),
         module_plan = COALESCE(${has(parsed.data, "module_plan") ? JSON.stringify(modulePlan) : null}::jsonb, module_plan),
         html_output = COALESCE(${has(parsed.data, "html_output") ? parsed.data.html_output : null}, html_output),
+        layout_ast = COALESCE(${has(parsed.data, "layout_ast") ? JSON.stringify(parsed.data.layout_ast) : null}::jsonb, layout_ast),
+        layout_fingerprint = COALESCE(${has(parsed.data, "layout_fingerprint") ? JSON.stringify(parsed.data.layout_fingerprint) : null}::jsonb, layout_fingerprint),
+        layout_version = COALESCE(${has(parsed.data, "layout_version") ? parsed.data.layout_version : null}::integer, layout_version),
+        decision_context = COALESCE(${has(parsed.data, "decision_context") ? JSON.stringify(parsed.data.decision_context) : null}::jsonb, decision_context),
         updated_at = NOW()
       WHERE id = ${docId} AND hub_user_id = ${auth.hubUserId} AND deleted_at IS NULL
       RETURNING *

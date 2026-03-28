@@ -12,6 +12,13 @@ export default function StatusIndicator({ document }) {
   ];
 
   const isGenerating = document.status === "generating";
+  const activeStateLabel = {
+    generating: "Generering pågår",
+    analyzing: "Analys pågår",
+    suggesting: "Förslag tas fram",
+    patching: "Patchar appliceras",
+    preflight: "Preflight körs",
+  }[document.status];
 
   return (
     <div className="panel row-wrap" style={{ gap: "1.5rem", alignItems: "center" }}>
@@ -23,9 +30,9 @@ export default function StatusIndicator({ document }) {
           <span style={{ opacity: step.done ? 1 : 0.5 }}>{step.label}</span>
         </div>
       ))}
-      {isGenerating && (
+      {activeStateLabel && (
         <span style={{ fontSize: "0.85em", color: "#666" }}>
-          Generering pågår via Claude i Hubben...
+          {activeStateLabel} via Claude i Hubben...
         </span>
       )}
     </div>
