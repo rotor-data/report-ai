@@ -38,6 +38,192 @@ const MODULE_TYPES = [
   "financial_summary", "back_cover",
 ];
 
+const MODULE_TYPE_DESCRIPTIONS = {
+  cover: "Full-bleed cover page. Contains logo, document title, subtitle, and optional date/author. Always the first module. Use strong visual hierarchy — title should dominate.",
+  chapter_break: "Section divider page. Shows chapter number, chapter title, and optional intro paragraph. Use page-break-before: always. Creates rhythm between content sections.",
+  text_spread: "One or two-page text content. Ideal for CEO letter, narrative summaries, strategy descriptions. Supports drop caps, pull quotes inline, and footnotes.",
+  kpi_grid: "Key performance indicators in a grid layout, 2-4 KPIs per row. Each KPI: large number, label, optional delta/trend arrow. Use for financial highlights, operational metrics.",
+  table: "Structured data table with proper column alignment. Supports header rows, total rows, alternating row shading. Data must follow the table_data_schema. Use for financial statements, comparisons.",
+  quote_callout: "Full-page or half-page pull quote / testimonial. Large typography (24-32pt), attribution below. Use accent color for quotation marks or a vertical rule.",
+  image_text: "Split layout — image placeholder on one side, text on the other (50/50 or 60/40). Image area gets a placeholder background with dimensions noted.",
+  data_chart: "Placeholder for charts/visualizations. Include a descriptive caption and the data summary so the reader understands the chart even as a placeholder.",
+  two_col_text: "Two-column text layout for dense content like appendices, notes, or detailed descriptions. Use column-gap and balanced column heights.",
+  financial_summary: "Financial highlights page with key figures prominently displayed. Combines large hero numbers with supporting tables or mini-KPIs. Use for revenue, EBITDA, margins.",
+  back_cover: "Back cover with company contact info, disclaimers, and optional logo. Always the last module. Keep minimal and clean.",
+};
+
+const DESIGN_SYSTEM_SCHEMA = {
+  colors: {
+    primary: "#1A2B5C",
+    secondary: "#4A7C9E",
+    accent: "#E8A838",
+    text: "#1A1A1A",
+    text_light: "#666666",
+    bg: "#FFFFFF",
+    bg_alt: "#F5F5F0",
+    surface: "#E8E4DE",
+  },
+  typography: {
+    heading_family: "Georgia, serif",
+    body_family: "system-ui, sans-serif",
+    heading_weight: "700",
+    base_size_pt: 10.5,
+    line_height: 1.5,
+    scale: [42, 28, 20, 16, 13, 10.5, 9],
+  },
+  spacing: {
+    base_mm: 5,
+    section_gap_mm: 15,
+    column_gap_mm: 8,
+  },
+  page: {
+    size: "A4",
+    margin_top_mm: 20,
+    margin_bottom_mm: 25,
+    margin_inner_mm: 25,
+    margin_outer_mm: 20,
+  },
+};
+
+const HTML_TEMPLATE_EXAMPLE = `<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<style>
+  /* ── Design tokens as CSS custom properties ── */
+  :root {
+    --color-primary: #1A2B5C;
+    --color-secondary: #4A7C9E;
+    --color-accent: #E8A838;
+    --color-text: #1A1A1A;
+    --color-text-light: #666666;
+    --color-bg: #FFFFFF;
+    --color-bg-alt: #F5F5F0;
+    --color-surface: #E8E4DE;
+    --font-heading: Georgia, serif;
+    --font-body: system-ui, sans-serif;
+    --heading-weight: 700;
+    --base-size: 10.5pt;
+    --line-height: 1.5;
+    --spacing-base: 5mm;
+    --spacing-section: 15mm;
+    --spacing-col-gap: 8mm;
+  }
+
+  /* ── CSS Paged Media ── */
+  @page {
+    size: A4;
+    margin: 20mm 20mm 25mm 25mm;
+    @bottom-center { content: counter(page); font-size: 9pt; color: var(--color-text-light); }
+  }
+  @page :first { margin: 0; @bottom-center { content: none; } }
+  @page :left  { margin-left: 20mm; margin-right: 25mm; }
+  @page :right { margin-left: 25mm; margin-right: 20mm; }
+
+  /* ── Base typography ── */
+  body { font-family: var(--font-body); font-size: var(--base-size); line-height: var(--line-height); color: var(--color-text); }
+  h1 { font-family: var(--font-heading); font-size: 42pt; font-weight: var(--heading-weight); }
+  h2 { font-family: var(--font-heading); font-size: 28pt; }
+  h3 { font-family: var(--font-heading); font-size: 20pt; }
+
+  /* ── Module classes ── */
+  .module { page-break-after: always; }
+  .module:last-child { page-break-after: auto; }
+  .module-cover { padding: 0; height: 297mm; display: flex; flex-direction: column; justify-content: center; align-items: center; background: var(--color-primary); color: white; }
+  .module-chapter-break { height: 297mm; display: flex; flex-direction: column; justify-content: center; padding: var(--spacing-section); }
+  .module-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120mm, 1fr)); gap: var(--spacing-base); }
+  .kpi-card { padding: var(--spacing-base); }
+  .kpi-value { font-size: 32pt; font-weight: 700; color: var(--color-primary); }
+  .kpi-label { font-size: 9pt; color: var(--color-text-light); text-transform: uppercase; }
+  .module-table table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+  .module-table th { text-align: left; border-bottom: 2pt solid var(--color-primary); padding: 2mm 3mm; }
+  .module-table td { padding: 2mm 3mm; border-bottom: 0.5pt solid var(--color-surface); }
+  .module-table tr.total td { font-weight: 700; border-top: 1pt solid var(--color-text); }
+  .module-back-cover { height: 297mm; display: flex; flex-direction: column; justify-content: flex-end; padding: var(--spacing-section); background: var(--color-bg-alt); }
+</style>
+</head>
+<body>
+  <section class="module module-cover">
+    <h1>Document Title</h1>
+    <p>Subtitle here</p>
+  </section>
+  <section class="module module-chapter-break">
+    <span class="chapter-number">01</span>
+    <h2>Chapter Title</h2>
+  </section>
+  <section class="module module-text-spread">
+    <h3>Section heading</h3>
+    <p>Body text...</p>
+  </section>
+  <section class="module module-back-cover">
+    <p>Company Name AB | org.nr 556xxx-xxxx</p>
+  </section>
+</body>
+</html>`;
+
+const _MODULE_REF = Object.entries(MODULE_TYPE_DESCRIPTIONS)
+  .map(([k, v]) => `- **${k}**: ${v}`)
+  .join("\n");
+
+const WORKFLOW_PROMPT = [
+  "## Report AI — 4-Step Document Workflow",
+  "",
+  "You MUST follow these four steps IN ORDER when creating any document. Never skip steps or jump ahead to HTML generation.",
+  "",
+  "### Step 1: Brand Extraction",
+  "ALWAYS ask the user about their brand before creating anything. Ask for:",
+  "- Company name and logo (URL or description)",
+  "- Brand colors (primary, secondary, accent) — or ask if they have a brand guide",
+  "- Preferred fonts (or let you choose)",
+  "- Tone: formal/corporate, modern/clean, creative/bold",
+  "- Any existing materials to reference",
+  "",
+  "Then call `save_design_system` with both brand_input (raw answers) and a complete design_system object following this schema:",
+  JSON.stringify(DESIGN_SYSTEM_SCHEMA, null, 2),
+  "",
+  "Map every design token to a CSS custom property. All colors, font families, sizes, spacing, and page margins must be defined here — the HTML step will consume these tokens exclusively.",
+  "",
+  "### Step 2: Module Planning",
+  "Based on the document type and content, plan which modules to include and in what order. Call `get_template_info` to see required sections for the document type, then call `save_module_plan`.",
+  "",
+  "Rules:",
+  "- cover is always first, back_cover is always last",
+  "- Use chapter_break to separate major sections",
+  "- Match content to the right module type (financial data → table or financial_summary, key metrics → kpi_grid, narratives → text_spread)",
+  '- Include semantic_role (e.g. "ceo_letter", "revenue_table") for each module',
+  "- For table modules, structure data using the table_data_schema format",
+  "",
+  "### Step 3: HTML Generation",
+  "Generate a single, self-contained HTML document. Requirements:",
+  "- Use CSS Paged Media: @page rules with size: A4, proper margins (inner/outer for binding), page counters",
+  "- Convert ALL design system tokens to CSS custom properties in :root",
+  "- Use mm units for all physical dimensions (margins, spacing, page heights)",
+  "- Use pt units for font sizes",
+  '- Each module is a <section class="module module-{type}"> with page-break-after: always',
+  "- Cover must be full-bleed (zero @page margin on :first page)",
+  "- Tables: use border-collapse, proper alignment (text left, numbers right), total rows bold",
+  "- Numbers: format with sv-SE locale (space as thousands separator: 1 234 567)",
+  "- No <script> tags, no external resources except fonts",
+  "- Minimum font size: 7pt",
+  "- Include @font-face declarations if user has custom fonts",
+  "- Target 210mm x 297mm (A4) — design every module to fit within page boundaries",
+  "",
+  "Call `save_html` with the complete HTML. Fix any guardrail issues and re-save if needed.",
+  "",
+  "### Step 4: PDF Export",
+  "Call `export_pdf` to render via Browserless + Pagedjs. The HTML must already be saved.",
+  "",
+  "## Module Types Reference",
+  _MODULE_REF,
+  "",
+  "## Swedish Document Conventions",
+  "- Use sv-SE number formatting: 1 234 567,89 (thin space for thousands, comma for decimals)",
+  "- Currency: 48,2 MSEK or 48 200 TSEK",
+  '- Dates: 2026-03-28 or "28 mars 2026"',
+  "- Percent: 12,7 % (space before %)",
+  '- Use Swedish quotes: \u201Ctext\u201D',
+].join("\n");
+
 const TABLE_SCHEMA_EXAMPLE = {
   columns: [
     { id: "col_a", header: "Region", type: "text", align: "left" },
@@ -71,7 +257,7 @@ const TOOLS = [
   },
   {
     name: "create_document",
-    description: "Create a new report document. Pre-populates module_plan with required section stubs for the chosen document type. Returns the full document.",
+    description: "Create a new report document. IMPORTANT: Before calling this, ask the user about their brand identity (colors, fonts, tone, logo). Pre-populates module_plan with required section stubs for the chosen document type. After creating, proceed to save_design_system with the brand info.",
     inputSchema: {
       type: "object",
       properties: {
@@ -83,7 +269,7 @@ const TOOLS = [
   },
   {
     name: "save_design_system",
-    description: "Save a design system (colors, typography, spacing, page layout) to a document. Call this after analyzing brand input and generating the design system JSON. The design system will be used when generating HTML.",
+    description: "Save a design system (colors, typography, spacing, page layout) to a document. This is Step 1 of the workflow. Provide both the raw brand_input from the user AND a complete design_system object with: colors (primary, secondary, accent, text, text_light, bg, bg_alt, surface), typography (heading_family, body_family, heading_weight, base_size_pt, line_height, scale[]), spacing (base_mm, section_gap_mm, column_gap_mm), page (size, margin_top_mm, margin_bottom_mm, margin_inner_mm, margin_outer_mm). Every token here becomes a CSS custom property in the HTML.",
     inputSchema: {
       type: "object",
       properties: {
@@ -99,7 +285,7 @@ const TOOLS = [
   },
   {
     name: "save_module_plan",
-    description: "Save a module plan (ordered array of page modules) to a document. Automatically validates against required sections for the document type and merges missing stubs. Returns the final plan and any warnings about missing required sections.",
+    description: "Save a module plan (ordered array of page modules) to a document. This is Step 2 of the workflow. Map your content to the right module types: cover (always first), chapter_break (section dividers), text_spread (narratives), kpi_grid (metrics), table (data), quote_callout (testimonials), financial_summary (key figures), back_cover (always last). Each module needs: module_type, title, semantic_role, content/data. Validates against required sections and auto-adds missing stubs.",
     inputSchema: {
       type: "object",
       properties: {
@@ -116,7 +302,7 @@ const TOOLS = [
   },
   {
     name: "save_html",
-    description: "Save generated print-ready HTML to a document. Validates against guardrails (no scripts, min font sizes, cover/back_cover present, @page rules). Returns validation result with any issues found.",
+    description: "Save generated print-ready HTML to a document. This is Step 3. The HTML must be a complete, self-contained document with: CSS Paged Media (@page rules, size: A4, page-break-after), design system tokens as CSS custom properties in :root, mm units for physical dimensions, pt for font sizes, each module as <section class='module module-{type}'>, sv-SE number formatting, no <script> tags, min font 7pt. Validates against guardrails — fix issues and re-save if needed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -128,7 +314,7 @@ const TOOLS = [
   },
   {
     name: "get_template_info",
-    description: "Get all context needed to generate a report: required sections for the document type, available module types, print guardrails, table data schema, and the user's custom fonts. ALWAYS call this before generating a module plan or HTML.",
+    description: "ALWAYS call this FIRST before doing anything. Returns the complete 4-step workflow guide, module type descriptions, design system schema, HTML template example, required sections for the document type, print guardrails, table data schema, and the user's custom fonts. This is your instruction manual for creating InDesign-quality documents.",
     inputSchema: {
       type: "object",
       properties: {
@@ -298,6 +484,10 @@ async function handleGetTemplateInfo(hubUserId, args) {
   `;
 
   const result = {
+    workflow_prompt: WORKFLOW_PROMPT,
+    module_type_descriptions: MODULE_TYPE_DESCRIPTIONS,
+    design_system_schema: DESIGN_SYSTEM_SCHEMA,
+    html_template_example: HTML_TEMPLATE_EXAMPLE,
     document_type: args.document_type,
     required_sections: template?.required_sections ?? [],
     default_stub_plan: template?.default_stub_plan ?? [],
