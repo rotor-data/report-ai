@@ -101,8 +101,16 @@ Call get_template_info (without document_type) to see available types. Ask the u
 
 ### Step 1: Brand Extraction
 Ask for: company name, website URL (call extract_brand_from_url), colors, fonts, tone.
-If the user says "välj åt mig", pick a cohesive design and explain your choices.
+If custom fonts are available (shown in get_template_info → custom_fonts), present them as an option.
+If the user says "välj åt mig", pick a cohesive design using system fonts and explain your choices.
 Call create_document + save_design_system.
+
+### Step 1.5: Design Preview — MANDATORY before proceeding
+After saving the design system, call preview_design.
+This generates a visual moodboard showing how all module types look with the chosen colors and fonts.
+Tell the user: "Här är en förhandsgranskning av designen: [URL]. Kolla igenom hur omslaget, tabeller, nyckeltal och textspreadar ser ut. Vill du ändra något?"
+WAIT for approval. If they want changes: update the design system (save_design_system again) and regenerate preview (preview_design again).
+ONLY proceed to Step 2 when the user is satisfied with the design.
 
 ### Step 2: Content & Module Planning
 ASK the user to PASTE their text/data. WAIT for it.
@@ -156,9 +164,10 @@ NEVER hardcode colors or font names in fragments.
 - Percent: 12,7 %
 
 ### FONTS — CRITICAL:
-- Use Google Fonts via @import URL in the design system, e.g.: @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Playfair+Display:wght@700&display=swap');
+- Custom fonts are automatically loaded via @font-face from the user's uploaded fonts (returned in get_template_info as custom_fonts[]). Use those family names directly in the design system.
+- If no custom fonts are uploaded, use system fonts: Georgia, serif / system-ui, sans-serif / "Helvetica Neue", Helvetica, sans-serif — these work everywhere without any import.
 - NEVER embed fonts as base64 data URLs — this bloats HTML to 900K+
-- Fallback to system fonts: system-ui, -apple-system, sans-serif
+- NEVER require Google Fonts — this creates an external dependency and breaks offline use
 
 ### Page breaks:
 - .module { page-break-after: always; } .module:last-child { page-break-after: auto; }
@@ -215,16 +224,28 @@ const TABLE_SCHEMA_EXAMPLE = {
 
 // ─── HTML Assembly ──────────────────────────────────────────────────────────
 
-function buildDocumentCss(ds) {
+function buildFontFaceCss(customFonts = []) {
+  return customFonts
+    .filter((f) => f.blob_key && String(f.blob_key).startsWith("http"))
+    .map((f) => `@font-face {
+  font-family: '${f.family_name}';
+  src: url('${f.blob_key}') format('${f.format || "woff2"}');
+  font-weight: ${f.weight || "400"};
+  font-style: ${f.style || "normal"};
+  font-display: swap;
+}`)
+    .join("\n");
+}
+
+function buildDocumentCss(ds, customFonts = []) {
   const c = ds?.colors || {};
   const t = ds?.typography || {};
   const s = ds?.spacing || {};
   const p = ds?.page || {};
 
-  // Google Fonts import if heading/body contain known Google Font names
-  const googleImport = ds?.google_fonts_import || "";
+  const fontFaces = buildFontFaceCss(customFonts);
 
-  return `${googleImport}
+  return `${fontFaces ? fontFaces + "\n" : ""}
 :root {
   --color-primary: ${c.primary || "#1A2B5C"};
   --color-secondary: ${c.secondary || "#4A7C9E"};
@@ -308,8 +329,8 @@ figcaption { font-size: 9pt; color: var(--color-text-light); margin-top: 2mm; }
 `;
 }
 
-function assembleHtml(designSystem, modules) {
-  const css = buildDocumentCss(designSystem);
+function assembleHtml(designSystem, modules, customFonts = []) {
+  const css = buildDocumentCss(designSystem, customFonts);
   const fragments = modules
     .sort((a, b) => (a.order ?? 999) - (b.order ?? 999))
     .map((m) => m.html_fragment || `<section class="module module-${m.module_type}"><p>[${m.title} — inget HTML-fragment sparat ännu]</p></section>`)
@@ -389,15 +410,27 @@ const TOOLS = [
   },
   {
     name: "save_design_system",
-    description: "Step 1: Save design system. NEVER use made-up values. Include google_fonts_import (@import url) if using Google Fonts.",
+    description: "Step 1: Save design system. NEVER use made-up values — use exactly what the user told you. For fonts: use custom_fonts family names if the user has uploaded fonts, otherwise system fonts (Georgia, system-ui, etc). NO Google Fonts required.",
     inputSchema: {
       type: "object",
       properties: {
         document_id: { type: "string" },
         brand_input: { type: "object", description: "Raw brand input: { company_name, colors, fonts, tone, logo_url }" },
-        design_system: { type: "object", description: "Structured tokens + google_fonts_import string" },
+        design_system: { type: "object", description: "Structured tokens: { colors, typography, spacing, page }. Font families must be system fonts or names from custom_fonts[]." },
       },
       required: ["document_id", "design_system"],
+    },
+  },
+  {
+    name: "preview_design",
+    description: "Step 1.5 — MANDATORY: Generate a visual design moodboard showing all module types (cover, KPI grid, text spread, table, quote, chart, back cover) rendered with the actual design system. ALWAYS call this after save_design_system and BEFORE proceeding to content. Show the URL to the user and wait for their approval before continuing. This is how the user sees and approves the look & feel.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        document_id: { type: "string" },
+        company_name: { type: "string", description: "Company name to show in the moodboard" },
+      },
+      required: ["document_id"],
     },
   },
   {
@@ -568,6 +601,369 @@ async function handleSaveModuleHtml(hubUserId, args) {
   }, null, 2) }] };
 }
 
+function generateMoodboardHtml(ds, companyName, customFonts) {
+  const css = buildDocumentCss(ds, customFonts);
+  const c = ds?.colors || {};
+  const name = companyName || "Företagsnamn AB";
+  const year = new Date().getFullYear();
+
+  return `<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Designförhandsvisning — ${name}</title>
+<style>
+${css}
+
+/* ── Moodboard shell ── */
+html { background: #e8e8e8; }
+body { margin: 0; padding: 0; background: #e8e8e8; }
+
+.moodboard-header {
+  background: #1a1a1a; color: #fff;
+  font-family: system-ui, sans-serif; font-size: 13px;
+  padding: 14px 24px; display: flex; justify-content: space-between; align-items: center;
+  position: sticky; top: 0; z-index: 100;
+}
+.moodboard-header strong { font-size: 15px; }
+.moodboard-label {
+  background: #2a2a2a; color: #aaa;
+  font-family: system-ui, sans-serif; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.1em; padding: 8px 24px; margin: 32px 24px 8px;
+  border-radius: 4px;
+}
+.page-shell {
+  width: 210mm; min-height: 80mm; background: white;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.18);
+  margin: 0 auto 32px; overflow: hidden;
+  break-inside: avoid;
+}
+.page-shell.full-page { min-height: 297mm; }
+@media screen { .page-shell { max-width: 900px; } }
+
+/* ── Sample content ── */
+.sample-body-text { line-height: 1.6; }
+.sample-body-text p { margin: 0 0 4mm; }
+.color-swatch { display: inline-block; width: 32px; height: 32px; border-radius: 4px; margin-right: 8px; vertical-align: middle; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12); }
+.font-sample-row { margin: 6px 0; }
+
+@media print { .moodboard-header { display: none; } html,body { background: white; } }
+</style>
+</head>
+<body>
+
+<div class="moodboard-header">
+  <span><strong>Designförhandsvisning</strong> — ${name}</span>
+  <span style="color:#888">Granska designen nedan och godkänn eller be om ändringar</span>
+</div>
+
+<!-- ── COLOR & TYPE TOKENS ── -->
+<div class="moodboard-label">Designsystem — färger & typografi</div>
+<div class="page-shell" style="padding: 12mm;">
+  <h3 style="font-family: var(--font-heading); font-size: 16pt; margin: 0 0 6mm;">Färgpalett</h3>
+  <div style="margin-bottom: 8mm; font-family: var(--font-body); font-size: 9pt;">
+    <div style="margin-bottom: 3mm;"><span class="color-swatch" style="background: var(--color-primary)"></span><strong>Primär</strong> — ${c.primary || "#1A2B5C"} — rubriker, omslag, accenter</div>
+    <div style="margin-bottom: 3mm;"><span class="color-swatch" style="background: var(--color-secondary)"></span><strong>Sekundär</strong> — ${c.secondary || "#4A7C9E"} — stödytor, subtext</div>
+    <div style="margin-bottom: 3mm;"><span class="color-swatch" style="background: var(--color-accent)"></span><strong>Accent</strong> — ${c.accent || "#E8A838"} — KPI-värden, kapitelbrytare, citat</div>
+    <div style="margin-bottom: 3mm;"><span class="color-swatch" style="background: var(--color-bg-alt); border: 1px solid #ddd;"></span><strong>Bakgrund alt</strong> — ${c.bg_alt || "#F5F5F0"} — alternativa ytor</div>
+    <div><span class="color-swatch" style="background: var(--color-surface); border: 1px solid #ddd;"></span><strong>Yta</strong> — ${c.surface || "#E8E4DE"} — tabellrader, avdelare</div>
+  </div>
+  <h3 style="font-family: var(--font-heading); font-size: 16pt; margin: 6mm 0 4mm;">Typsnittsskala</h3>
+  <div style="font-family: var(--font-body); font-size: 9pt; color: var(--color-text-light); margin-bottom: 3mm;">Rubrik: ${ds?.typography?.heading_family || "Georgia, serif"} &nbsp;·&nbsp; Brödtext: ${ds?.typography?.body_family || "system-ui, sans-serif"}</div>
+  <div class="font-sample-row" style="font-family: var(--font-heading); font-size: 42pt; font-weight: var(--heading-weight); line-height: 1;">H1 — 42pt Omslag</div>
+  <div class="font-sample-row" style="font-family: var(--font-heading); font-size: 28pt; font-weight: var(--heading-weight);">H2 — 28pt Avsnitt</div>
+  <div class="font-sample-row" style="font-family: var(--font-heading); font-size: 20pt;">H3 — 20pt Underrubrik</div>
+  <div class="font-sample-row" style="font-family: var(--font-body); font-size: var(--base-size); line-height: var(--line-height);">Brödtext — ${ds?.typography?.base_size_pt || 10.5}pt — Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus efficitur lectus vel urna convallis, nec facilisis eros vulputate.</div>
+  <div class="font-sample-row" style="font-family: var(--font-body); font-size: 9pt; color: var(--color-text-light);">Caption / notering — 9pt — Källa: Årsredovisning ${year}</div>
+</div>
+
+<!-- ── COVER ── -->
+<div class="moodboard-label">Modul: Omslag (cover)</div>
+<div class="page-shell full-page">
+  <section class="module module-cover" style="padding: 20mm;">
+    <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 16mm;">
+      <div style="font-family: var(--font-body); font-size: 10pt; opacity: 0.6; margin-bottom: 6mm; text-transform: uppercase; letter-spacing: 0.15em;">${year}</div>
+      <h1 style="color: white; margin-bottom: 4mm; font-size: 38pt;">Årsredovisning<br>${year}</h1>
+      <p style="color: rgba(255,255,255,0.75); font-size: 14pt; margin: 0 0 8mm;">${name}</p>
+      <div style="width: 40mm; height: 2pt; background: var(--color-accent);"></div>
+    </div>
+  </section>
+</div>
+
+<!-- ── CHAPTER BREAK ── -->
+<div class="moodboard-label">Modul: Kapitelbrytare (chapter_break)</div>
+<div class="page-shell" style="min-height: 180mm;">
+  <section class="module module-chapter-break" style="min-height: 180mm; padding: 16mm;">
+    <div>
+      <div class="chapter-number" style="font-size: 80pt; font-weight: 700; color: var(--color-accent); line-height: 1; margin-bottom: 6mm;">01</div>
+      <h2 style="font-size: 28pt; color: var(--color-primary); margin: 0 0 4mm;">Verksamhetsöversikt</h2>
+      <p style="font-size: 12pt; color: var(--color-text-light); margin: 0; max-width: 120mm;">En sammanfattning av årets verksamhet, strategiska prioriteringar och framsteg mot långsiktiga mål.</p>
+    </div>
+  </section>
+</div>
+
+<!-- ── KPI GRID ── -->
+<div class="moodboard-label">Modul: Nyckeltal (kpi_grid)</div>
+<div class="page-shell" style="padding: 10mm;">
+  <section class="module-kpi-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-base); page-break-after: never;">
+    <div class="kpi-card" style="border-top: 3pt solid var(--color-primary); padding-top: 4mm;">
+      <div class="kpi-value">1 243 MSEK</div>
+      <div class="kpi-label">Nettoomsättning</div>
+      <div class="kpi-delta positive" style="font-size: 9pt; color: #2e7d32; margin-top: 2mm;">▲ 12,4 % vs föregående år</div>
+    </div>
+    <div class="kpi-card" style="border-top: 3pt solid var(--color-secondary); padding-top: 4mm;">
+      <div class="kpi-value">187 MSEK</div>
+      <div class="kpi-label">EBITDA</div>
+      <div class="kpi-delta positive" style="font-size: 9pt; color: #2e7d32; margin-top: 2mm;">▲ 8,7 % vs föregående år</div>
+    </div>
+    <div class="kpi-card" style="border-top: 3pt solid var(--color-accent); padding-top: 4mm;">
+      <div class="kpi-value">15,0 %</div>
+      <div class="kpi-label">EBITDA-marginal</div>
+      <div class="kpi-delta negative" style="font-size: 9pt; color: #c62828; margin-top: 2mm;">▼ 0,5 pp vs föregående år</div>
+    </div>
+    <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
+      <div class="kpi-value">2 847</div>
+      <div class="kpi-label">Antal anställda</div>
+    </div>
+    <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
+      <div class="kpi-value">14</div>
+      <div class="kpi-label">Länder</div>
+    </div>
+    <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
+      <div class="kpi-value">92 %</div>
+      <div class="kpi-label">Kundnöjdhet (NPS)</div>
+    </div>
+  </section>
+</div>
+
+<!-- ── TEXT SPREAD ── -->
+<div class="moodboard-label">Modul: Textsida (text_spread) — VD-ord</div>
+<div class="page-shell" style="padding: 14mm 16mm;">
+  <section>
+    <h3 style="color: var(--color-secondary); font-size: 10pt; text-transform: uppercase; letter-spacing: 0.1em; margin: 0 0 3mm;">VD-ord</h3>
+    <h2 style="font-size: 24pt; margin: 0 0 6mm; color: var(--color-primary);">${year} — ett år av stark tillväxt och strategisk förnyelse</h2>
+    <div class="sample-body-text" style="column-count: 2; column-gap: var(--spacing-col-gap);">
+      <p>Under ${year} fortsatte vår tillväxtresa med imponerande kraft. Vi nådde en nettoomsättning på 1 243 MSEK, en ökning med 12,4 procent jämfört med föregående år. Denna framgång är ett resultat av hårt arbete från vår dedikerade personal och ett tydligt strategiskt fokus.</p>
+      <p>Vår satsning på digitala lösningar har gett tydliga resultat. Den digitala försäljningskanalen växte med 34 procent och utgör nu 28 procent av den totala omsättningen. Vi ser fortsatt stor potential i detta segment.</p>
+      <p>Hållbarhet är en integrerad del av vår affärsstrategi. Under året minskade vi våra koldioxidutsläpp med 18 procent och är nu på god väg mot vårt mål om klimatneutralitet år 2030.</p>
+      <p>Jag vill rikta ett varmt tack till alla medarbetare, kunder och aktieägare för ert fortsatta förtroende och engagemang.</p>
+    </div>
+    <div style="margin-top: 6mm; border-top: 1pt solid var(--color-surface); padding-top: 4mm;">
+      <div style="font-family: var(--font-heading); font-size: 12pt; font-weight: 700;">Anna Lindqvist</div>
+      <div style="font-size: 9pt; color: var(--color-text-light);">Verkställande direktör, ${name}</div>
+    </div>
+  </section>
+</div>
+
+<!-- ── TABLE ── -->
+<div class="moodboard-label">Modul: Tabell (table)</div>
+<div class="page-shell" style="padding: 10mm 12mm;">
+  <section>
+    <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Finansiell sammanfattning</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Post</th>
+          <th class="number">${year}</th>
+          <th class="number">${year - 1}</th>
+          <th class="number">Förändring</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Nettoomsättning</td><td class="number">1 243,2</td><td class="number">1 106,0</td><td class="number" style="color:#2e7d32;">+12,4 %</td></tr>
+        <tr><td>Bruttoresultat</td><td class="number">498,1</td><td class="number">436,4</td><td class="number" style="color:#2e7d32;">+14,1 %</td></tr>
+        <tr><td>EBITDA</td><td class="number">187,0</td><td class="number">172,0</td><td class="number" style="color:#2e7d32;">+8,7 %</td></tr>
+        <tr><td>EBIT</td><td class="number">143,2</td><td class="number">131,8</td><td class="number" style="color:#2e7d32;">+8,6 %</td></tr>
+        <tr class="total"><td>Årets resultat</td><td class="number">98,4</td><td class="number">89,1</td><td class="number" style="color:#2e7d32;">+10,4 %</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size: 8pt; color: var(--color-text-light); margin-top: 2mm;">Alla belopp i MSEK.</p>
+  </section>
+</div>
+
+<!-- ── QUOTE CALLOUT ── -->
+<div class="moodboard-label">Modul: Citat (quote_callout)</div>
+<div class="page-shell" style="padding: 16mm; min-height: 100mm;">
+  <section class="module-quote-callout">
+    <blockquote>
+      "Vi ser en marknad i snabb förändring där de som agerar med beslutsamhet och långsiktighet kommer att vinna. Det är precis vad vi gör."
+      <cite>Anna Lindqvist, VD ${name}</cite>
+    </blockquote>
+  </section>
+</div>
+
+<!-- ── SVG CHART ── -->
+<div class="moodboard-label">Modul: Diagram (data_chart) — Inline SVG linjediagram</div>
+<div class="page-shell" style="padding: 10mm 12mm;">
+  <section>
+    <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Omsättningsutveckling, MSEK</h3>
+    <figure class="chart">
+      <svg viewBox="0 0 500 220" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-height:180px;">
+        <!-- Grid lines -->
+        <line x1="60" y1="20" x2="60" y2="180" stroke="${c.surface || "#E8E4DE"}" stroke-width="1"/>
+        <line x1="60" y1="180" x2="480" y2="180" stroke="${c.surface || "#E8E4DE"}" stroke-width="1"/>
+        <line x1="60" y1="130" x2="480" y2="130" stroke="${c.surface || "#E8E4DE"}" stroke-width="0.5" stroke-dasharray="4,4"/>
+        <line x1="60" y1="80" x2="480" y2="80" stroke="${c.surface || "#E8E4DE"}" stroke-width="0.5" stroke-dasharray="4,4"/>
+        <!-- Y axis labels -->
+        <text x="50" y="184" text-anchor="end" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">800</text>
+        <text x="50" y="134" text-anchor="end" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">1 000</text>
+        <text x="50" y="84" text-anchor="end" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">1 200</text>
+        <!-- Area fill -->
+        <polygon points="60,155 165,148 270,138 375,125 480,104 480,180 60,180" fill="${c.primary || "#1A2B5C"}" opacity="0.08"/>
+        <!-- Line -->
+        <polyline points="60,155 165,148 270,138 375,125 480,104" fill="none" stroke="${c.primary || "#1A2B5C"}" stroke-width="2.5" stroke-linejoin="round"/>
+        <!-- Comparison line -->
+        <polyline points="60,162 165,160 270,155 375,148 480,135" fill="none" stroke="${c.secondary || "#4A7C9E"}" stroke-width="1.5" stroke-dasharray="6,3" stroke-linejoin="round"/>
+        <!-- Data points -->
+        <circle cx="60" cy="155" r="4" fill="${c.primary || "#1A2B5C"}"/>
+        <circle cx="165" cy="148" r="4" fill="${c.primary || "#1A2B5C"}"/>
+        <circle cx="270" cy="138" r="4" fill="${c.primary || "#1A2B5C"}"/>
+        <circle cx="375" cy="125" r="4" fill="${c.primary || "#1A2B5C"}"/>
+        <circle cx="480" cy="104" r="5" fill="${c.accent || "#E8A838"}"/>
+        <!-- Value labels -->
+        <text x="480" y="98" text-anchor="middle" font-size="9" font-weight="700" fill="${c.primary || "#1A2B5C"}" font-family="system-ui">1 243</text>
+        <!-- X axis labels -->
+        <text x="60" y="198" text-anchor="middle" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">${year - 4}</text>
+        <text x="165" y="198" text-anchor="middle" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">${year - 3}</text>
+        <text x="270" y="198" text-anchor="middle" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">${year - 2}</text>
+        <text x="375" y="198" text-anchor="middle" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">${year - 1}</text>
+        <text x="480" y="198" text-anchor="middle" font-size="9" font-weight="700" fill="${c.primary || "#1A2B5C"}" font-family="system-ui">${year}</text>
+        <!-- Legend -->
+        <line x1="330" y1="215" x2="350" y2="215" stroke="${c.primary || "#1A2B5C"}" stroke-width="2.5"/>
+        <text x="355" y="218" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">Faktisk</text>
+        <line x1="400" y1="215" x2="420" y2="215" stroke="${c.secondary || "#4A7C9E"}" stroke-width="1.5" stroke-dasharray="4,2"/>
+        <text x="425" y="218" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">Budget</text>
+      </svg>
+      <figcaption>Nettoomsättning per år, MSEK. Gestreckat: budget.</figcaption>
+    </figure>
+  </section>
+</div>
+
+<!-- ── FINANCIAL SUMMARY ── -->
+<div class="moodboard-label">Modul: Finansiell sammanfattning (financial_summary)</div>
+<div class="page-shell" style="padding: 12mm; background: var(--color-bg-alt);">
+  <section>
+    <h3 style="font-size: 14pt; margin: 0 0 6mm; color: var(--color-primary);">Finansiella höjdpunkter ${year}</h3>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin-bottom: 8mm;">
+      <div style="background: var(--color-primary); color: white; padding: 8mm; border-radius: 2mm;">
+        <div style="font-size: 36pt; font-weight: 700; line-height: 1;">1 243</div>
+        <div style="font-size: 10pt; opacity: 0.8; margin-top: 2mm;">MSEK Nettoomsättning</div>
+        <div style="font-size: 9pt; color: var(--color-accent); margin-top: 1mm;">▲ 12,4 % tillväxt</div>
+      </div>
+      <div style="background: white; padding: 8mm; border-radius: 2mm; border: 1pt solid var(--color-surface);">
+        <div style="font-size: 36pt; font-weight: 700; line-height: 1; color: var(--color-primary);">15,0 %</div>
+        <div style="font-size: 10pt; color: var(--color-text-light); margin-top: 2mm;">EBITDA-marginal</div>
+        <div style="font-size: 9pt; color: #c62828; margin-top: 1mm;">▼ 0,5 pp</div>
+      </div>
+    </div>
+    <table>
+      <tr><td>Rörelseresultat (EBIT)</td><td class="number">143,2 MSEK</td></tr>
+      <tr><td>Kassaflöde från verksamheten</td><td class="number">201,4 MSEK</td></tr>
+      <tr class="total"><td>Utdelning per aktie</td><td class="number">4,50 SEK</td></tr>
+    </table>
+  </section>
+</div>
+
+<!-- ── TWO COL TEXT ── -->
+<div class="moodboard-label">Modul: Två kolumner (two_col_text)</div>
+<div class="page-shell" style="padding: 12mm 14mm;">
+  <section>
+    <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Marknad & omvärld</h3>
+    <div class="module-two-col-text sample-body-text">
+      <p>Den globala marknaden för digitala tjänster fortsatte att växa under ${year}, trots ett utmanande makroekonomiskt klimat. Räntehöjningar och inflationstryck påverkade köpbeteenden, men efterfrågan på effektivisering och automatisering förblev stark.</p>
+      <p>Vår nordiska hemmamarknad stod för 48 procent av omsättningen och visade en tillväxt om 9,2 procent. Den tyska marknaden är nu vår näst största och växte med hela 22 procent.</p>
+      <p>Vi bedömer att marknaden för AI-assisterade lösningar kommer att växa med 35-40 procent per år de kommande tre åren. Vi är väl positionerade för att ta en stor del av detta.</p>
+      <p>Konkurrensbilden förblir fragmenterad med ett fåtal stora aktörer och många nischspelare. Vår differentieringsstrategi baseras på djup branschkännedom och lokal närvaro.</p>
+    </div>
+  </section>
+</div>
+
+<!-- ── BACK COVER ── -->
+<div class="moodboard-label">Modul: Baksida (back_cover)</div>
+<div class="page-shell full-page">
+  <section class="module module-back-cover" style="padding: 14mm;">
+    <div>
+      <div style="width: 20mm; height: 3pt; background: var(--color-accent); margin-bottom: 6mm;"></div>
+      <div style="font-family: var(--font-heading); font-size: 14pt; font-weight: 700; color: var(--color-primary); margin-bottom: 2mm;">${name}</div>
+      <div style="font-size: 9pt; color: var(--color-text-light); line-height: 1.8;">
+        Org.nr 556xxx-xxxx<br>
+        Huvudkontor: Storgatan 1, 111 11 Stockholm<br>
+        info@foretaget.se | www.foretaget.se<br>
+        +46 (0)8 123 456 78
+      </div>
+      <div style="margin-top: 6mm; font-size: 7.5pt; color: var(--color-text-light); max-width: 140mm; line-height: 1.5;">
+        Denna årsredovisning är framtagen i enlighet med årsredovisningslagen (1995:1554) och Bokföringsnämndens allmänna råd. Rapporten har granskats av bolagets revisor.
+      </div>
+    </div>
+  </section>
+</div>
+
+<div style="padding: 24px; font-family: system-ui, sans-serif; font-size: 13px; color: #666; text-align: center; background: #e8e8e8;">
+  Designförhandsvisning för ${name} — genererad av Report AI
+</div>
+
+</body>
+</html>`;
+}
+
+async function handlePreviewDesign(hubUserId, args) {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, design_system, brand_input, title FROM documents
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const doc = rows[0];
+  if (!doc.design_system) {
+    return { content: [{ type: "text", text: "Design system not saved yet. Call save_design_system first." }], isError: true };
+  }
+
+  let fonts = [];
+  try {
+    fonts = await sql`
+      SELECT family_name, weight, style, format, blob_key
+      FROM custom_fonts WHERE hub_user_id = ${hubUserId} ORDER BY created_at DESC
+    `;
+  } catch {}
+
+  const companyName = args.company_name
+    || doc.brand_input?.company_name
+    || doc.title
+    || "Företag AB";
+
+  const moodboardHtml = generateMoodboardHtml(doc.design_system, companyName, fonts);
+
+  // Save the moodboard as the current html_output so it can be previewed
+  await sql`
+    UPDATE documents SET html_output = ${moodboardHtml}, updated_at = NOW()
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+  `;
+
+  const key = previewKey(args.document_id);
+  const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+  const previewUrl = `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`;
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        preview_url: previewUrl,
+        instruction_for_claude: "Show this URL to the user. Explain that it shows all module types rendered with their chosen colors and fonts. Ask: 'Öppna länken och kolla designen. Ser färgerna, typografin och modulerna bra ut? Vill du ändra något innan vi fortsätter med innehållet?'. Wait for approval before proceeding to Step 2.",
+        modules_shown: ["cover", "chapter_break", "kpi_grid", "text_spread", "table", "quote_callout", "data_chart (line chart)", "financial_summary", "two_col_text", "back_cover"],
+        design_used: {
+          primary: doc.design_system?.colors?.primary,
+          heading_font: doc.design_system?.typography?.heading_family,
+          body_font: doc.design_system?.typography?.body_family,
+          custom_fonts_loaded: fonts.length,
+        },
+      }, null, 2),
+    }],
+  };
+}
+
 async function handleAssembleDocument(hubUserId, args) {
   const sql = getSql();
   const docs = await sql`SELECT id, module_plan, design_system, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
@@ -579,7 +975,12 @@ async function handleAssembleDocument(hubUserId, args) {
     return { content: [{ type: "text", text: `${missing.length} module(s) still missing HTML: ${missing.map((m) => m.title).join(", ")}. Save them first.` }], isError: true };
   }
 
-  const html = assembleHtml(docs[0].design_system || {}, plan);
+  let fonts = [];
+  try {
+    fonts = await sql`SELECT family_name, weight, style, format, blob_key FROM custom_fonts WHERE hub_user_id = ${hubUserId} ORDER BY created_at DESC`;
+  } catch {}
+
+  const html = assembleHtml(docs[0].design_system || {}, plan, fonts);
   const validation = validateHtml(html);
 
   await sql`UPDATE documents SET html_output = ${html}, status = ${validation.valid ? "ready" : "error"}::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
@@ -744,17 +1145,18 @@ async function handleExtractBrandFromUrl(hubUserId, args) {
 // ─── Tool dispatch ──────────────────────────────────────────────────────────
 
 const HANDLERS = {
-  get_template_info: handleGetTemplateInfo,
-  list_documents: handleListDocuments,
-  get_document: handleGetDocument,
-  create_document: handleCreateDocument,
-  save_design_system: handleSaveDesignSystem,
-  save_module_plan: handleSaveModulePlan,
-  save_module_html: handleSaveModuleHtml,
-  assemble_document: handleAssembleDocument,
-  export_pdf: handleExportPdf,
-  get_preview_url: handleGetPreviewUrl,
-  extract_brand_from_url: handleExtractBrandFromUrl,
+  get_template_info:       handleGetTemplateInfo,
+  list_documents:          handleListDocuments,
+  get_document:            handleGetDocument,
+  create_document:         handleCreateDocument,
+  save_design_system:      handleSaveDesignSystem,
+  preview_design:          handlePreviewDesign,
+  save_module_plan:        handleSaveModulePlan,
+  save_module_html:        handleSaveModuleHtml,
+  assemble_document:       handleAssembleDocument,
+  export_pdf:              handleExportPdf,
+  get_preview_url:         handleGetPreviewUrl,
+  extract_brand_from_url:  handleExtractBrandFromUrl,
 };
 
 // ─── Main handler ───────────────────────────────────────────────────────────
