@@ -53,6 +53,25 @@ const MODULE_TYPE_DESCRIPTIONS = {
   back_cover: "Back cover with company contact info, disclaimers, and optional logo. Always the last module. Keep minimal and clean.",
 };
 
+const DOCUMENT_TYPE_CATALOG = [
+  { id: "annual_report", label: "Årsredovisning", description: "Komplett årsredovisning med VD-ord, nyckeltal, finansiell sammanfattning och verksamhetsberättelse." },
+  { id: "quarterly", label: "Kvartalsrapport", description: "Kortare finansiell rapport med nyckeltal, resultatsammanfattning och utsikter." },
+  { id: "sustainability_report", label: "Hållbarhetsrapport", description: "ESG/hållbarhetsredovisning med miljö-, sociala och styrningsdata." },
+  { id: "board_report", label: "Styrelserapport", description: "Beslutsunderlag till styrelsen med sammanfattning, beslutspunkter och bilagor." },
+  { id: "investor_update", label: "Investeraruppdatering", description: "Kort uppdatering till investerare med nyckeltal och finansiell utveckling." },
+  { id: "pitch", label: "Pitch deck", description: "Presentations-dokument för investerare eller kunder. Visuellt och koncist." },
+  { id: "proposal", label: "Offert / Förslag", description: "Formellt förslag eller offert med scope, tidsplan och prissättning." },
+  { id: "sales_proposal", label: "Säljförslag", description: "Kommersiellt förslag med erbjudande, prislista och kundanpassning." },
+  { id: "case_study", label: "Kundcase / Case study", description: "Berättelse om utmaning → lösning → resultat med mätbara KPI:er." },
+  { id: "white_paper", label: "White paper", description: "Fördjupande rapport om ett ämne med research, analys och slutsatser." },
+  { id: "project_report", label: "Projektrapport", description: "Statusrapport för ett projekt med milstolpar, risker och nästa steg." },
+  { id: "brand_guide", label: "Brandguide", description: "Varumärkesmanual med logotypanvändning, färgpalett, typografi och tonalitet." },
+  { id: "product_sheet", label: "Produktblad", description: "Kompakt produktpresentation med specifikationer, fördelar och bilder." },
+  { id: "newsletter", label: "Nyhetsbrev (print)", description: "Tryckt nyhetsbrev med artiklar, nyheter och uppdateringar." },
+  { id: "event_program", label: "Eventprogram", description: "Program för konferens, seminarium eller event med schema och talarinfo." },
+  { id: "company_profile", label: "Företagspresentation", description: "Övergripande presentation av företaget — historia, team, nyckeltal, tjänster." },
+];
+
 const DESIGN_SYSTEM_SCHEMA = {
   colors: {
     primary: "#1A2B5C",
@@ -161,6 +180,11 @@ const _MODULE_REF = Object.entries(MODULE_TYPE_DESCRIPTIONS)
 const WORKFLOW_PROMPT = `## Report AI — 4-Step Document Workflow
 
 You are a professional document designer. You create InDesign-quality print documents using HTML + CSS Paged Media. You MUST follow these four steps IN ORDER. Never skip steps. Never assume information the user hasn't given you.
+
+### Step 0: Understand What The User Wants
+When the user asks to create a document, FIRST call get_template_info (without document_type) to get the workflow guide and document type catalog. Then ask the user what type of document they want — present the available types from the catalog with Swedish labels and descriptions. Once they choose, proceed to Step 1.
+
+If the user already specifies the type (e.g. "jag vill göra en årsredovisning"), skip directly to Step 1.
 
 ### CRITICAL RULES (read these first, always obey)
 - **NEVER invent brand colors, fonts, or tone.** If the user hasn't told you → ASK before proceeding.
@@ -342,13 +366,22 @@ const TABLE_SCHEMA_EXAMPLE = {
 const TOOLS = [
   {
     name: "get_template_info",
-    description: "CALL THIS FIRST before doing anything else. Returns the complete 4-step workflow guide you MUST follow, module type descriptions, design system schema, HTML template example, required sections for the document type, and guardrails. This is your instruction manual — read it carefully and follow every step.",
+    description: "CALL THIS FIRST before doing anything else. Returns the complete 4-step workflow guide you MUST follow, module type descriptions, design system schema, HTML template example, guardrails, and the full list of available document types. If you know the document type, pass it to get required sections; otherwise omit it to just get the workflow guide and document type catalog. This is your instruction manual — read it carefully and follow every step.",
     inputSchema: {
       type: "object",
       properties: {
-        document_type: { type: "string", enum: ["annual_report", "quarterly", "pitch", "proposal"] },
+        document_type: {
+          type: "string",
+          enum: [
+            "annual_report", "quarterly", "pitch", "proposal",
+            "sustainability_report", "board_report", "investor_update",
+            "case_study", "white_paper", "sales_proposal",
+            "project_report", "brand_guide", "product_sheet",
+            "newsletter", "event_program", "company_profile"
+          ],
+          description: "Optional — pass to get required sections for a specific type. Omit to get the general workflow guide and document type catalog.",
+        },
       },
-      required: ["document_type"],
     },
   },
   {
@@ -372,7 +405,16 @@ const TOOLS = [
       type: "object",
       properties: {
         title: { type: "string", description: "Document title" },
-        document_type: { type: "string", enum: ["annual_report", "quarterly", "pitch", "proposal"] },
+        document_type: {
+          type: "string",
+          enum: [
+            "annual_report", "quarterly", "pitch", "proposal",
+            "sustainability_report", "board_report", "investor_update",
+            "case_study", "white_paper", "sales_proposal",
+            "project_report", "brand_guide", "product_sheet",
+            "newsletter", "event_program", "company_profile"
+          ],
+        },
       },
       required: ["title", "document_type"],
     },
@@ -615,7 +657,10 @@ async function handleSaveHtml(hubUserId, args) {
 
 async function handleGetTemplateInfo(hubUserId, args) {
   const sql = getSql();
-  const template = await getTemplate(args.document_type);
+
+  // document_type is optional — if not provided, return workflow + catalog
+  const docType = args.document_type || null;
+  const template = docType ? await getTemplate(docType) : null;
 
   let fonts = [];
   try {
@@ -634,14 +679,19 @@ async function handleGetTemplateInfo(hubUserId, args) {
     module_type_descriptions: MODULE_TYPE_DESCRIPTIONS,
     design_system_schema: DESIGN_SYSTEM_SCHEMA,
     html_template_example: HTML_TEMPLATE_EXAMPLE,
-    document_type: args.document_type,
-    required_sections: template?.required_sections ?? [],
-    default_stub_plan: template?.default_stub_plan ?? [],
+    available_document_types: DOCUMENT_TYPE_CATALOG,
     available_module_types: MODULE_TYPES,
     guardrails: GUARDRAILS_PROMPT,
     table_data_schema: TABLE_SCHEMA_EXAMPLE,
     custom_fonts: fonts,
   };
+
+  // Add type-specific info if document_type was provided
+  if (docType && template) {
+    result.document_type = docType;
+    result.required_sections = template.required_sections ?? [];
+    result.default_stub_plan = template.default_stub_plan ?? [];
+  }
 
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 }
