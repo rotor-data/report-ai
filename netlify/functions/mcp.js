@@ -1594,7 +1594,7 @@ export const handler = async (event) => {
 
   const { method, params, id } = rpc;
 
-  if (method === "initialize") return rpcResult(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "report-ai", version: "0.3.0" } });
+  if (method === "initialize") return rpcResult(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "report-ai", version: "0.3.1" } });
   if (method === "notifications/initialized") return rpcResult(id, {});
   if (method === "ping") return rpcResult(id, {});
   if (method === "tools/list") return rpcResult(id, { tools: TOOLS });
