@@ -4,7 +4,10 @@
  * JSON-RPC 2.0 server following the Rotor Platform module contract.
  * Auth: Hub JWT (RS256) in Authorization: Bearer header.
  *
- * Tools are exposed without prefix — the Hub gateway adds "report__" automatically.
+ * Architecture:
+ *   save_module_html  → saves HTML fragment per module (small payloads)
+ *   assemble_document → server builds full HTML from fragments + design CSS
+ *   export_pdf        → renders assembled HTML to PDF via local headless Chrome
  */
 import { randomUUID } from "node:crypto";
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
@@ -22,11 +25,9 @@ function jsonResponse(statusCode, payload) {
     body: JSON.stringify(payload),
   };
 }
-
 function rpcResult(id, result) {
   return jsonResponse(200, { jsonrpc: "2.0", result, id });
 }
-
 function rpcError(id, code, message) {
   return jsonResponse(200, { jsonrpc: "2.0", error: { code, message }, id });
 }
@@ -40,311 +41,164 @@ const MODULE_TYPES = [
 ];
 
 const MODULE_TYPE_DESCRIPTIONS = {
-  cover: "Full-bleed cover page. Contains logo, document title, subtitle, and optional date/author. Always the first module. Use strong visual hierarchy — title should dominate.",
-  chapter_break: "Section divider page. Shows chapter number, chapter title, and optional intro paragraph. Use page-break-before: always. Creates rhythm between content sections.",
-  text_spread: "One or two-page text content. Ideal for CEO letter, narrative summaries, strategy descriptions. Supports drop caps, pull quotes inline, and footnotes.",
-  kpi_grid: "Key performance indicators in a grid layout, 2-4 KPIs per row. Each KPI: large number, label, optional delta/trend arrow. Use for financial highlights, operational metrics.",
-  table: "Structured data table with proper column alignment. Supports header rows, total rows, alternating row shading. Data must follow the table_data_schema. Use for financial statements, comparisons.",
-  quote_callout: "Full-page or half-page pull quote / testimonial. Large typography (24-32pt), attribution below. Use accent color for quotation marks or a vertical rule.",
-  image_text: "Split layout — image placeholder on one side, text on the other (50/50 or 60/40). Image area gets a placeholder background with dimensions noted.",
-  data_chart: "Placeholder for charts/visualizations. Include a descriptive caption and the data summary so the reader understands the chart even as a placeholder.",
-  two_col_text: "Two-column text layout for dense content like appendices, notes, or detailed descriptions. Use column-gap and balanced column heights.",
-  financial_summary: "Financial highlights page with key figures prominently displayed. Combines large hero numbers with supporting tables or mini-KPIs. Use for revenue, EBITDA, margins.",
-  back_cover: "Back cover with company contact info, disclaimers, and optional logo. Always the last module. Keep minimal and clean.",
+  cover: "Full-bleed cover page. Title, subtitle, date, logo. Always first. height: 297mm, no @page margins on :first.",
+  chapter_break: "Section divider. Chapter number + title. height: 297mm. page-break-before: always.",
+  text_spread: "Narrative text (CEO letter, summaries). Flows naturally across pages. Use proper paragraph spacing.",
+  kpi_grid: "2-6 KPI cards in CSS grid. Each: large number (28-36pt), label (9pt), optional trend arrow.",
+  table: "Data table. border-collapse, th with primary-color border, numbers right-aligned, .total bold.",
+  quote_callout: "Pull quote / testimonial. Large text (24-32pt), attribution, accent color vertical rule.",
+  image_text: "50/50 split — image placeholder + text. Image area gets colored placeholder box.",
+  data_chart: "SVG chart placeholder with descriptive caption. Use inline SVG for line/bar/pie charts.",
+  two_col_text: "Two-column layout. column-count: 2, column-gap, balanced heights.",
+  financial_summary: "Hero numbers + supporting table. Revenue, EBITDA, margins prominently displayed.",
+  back_cover: "Company info, disclaimers, contact. Always last. height: 297mm, flex-end layout.",
 };
 
 const DOCUMENT_TYPE_CATALOG = [
-  { id: "annual_report", label: "Årsredovisning", description: "Komplett årsredovisning med VD-ord, nyckeltal, finansiell sammanfattning och verksamhetsberättelse." },
-  { id: "quarterly", label: "Kvartalsrapport", description: "Kortare finansiell rapport med nyckeltal, resultatsammanfattning och utsikter." },
-  { id: "sustainability_report", label: "Hållbarhetsrapport", description: "ESG/hållbarhetsredovisning med miljö-, sociala och styrningsdata." },
-  { id: "board_report", label: "Styrelserapport", description: "Beslutsunderlag till styrelsen med sammanfattning, beslutspunkter och bilagor." },
-  { id: "investor_update", label: "Investeraruppdatering", description: "Kort uppdatering till investerare med nyckeltal och finansiell utveckling." },
-  { id: "pitch", label: "Pitch deck", description: "Presentations-dokument för investerare eller kunder. Visuellt och koncist." },
-  { id: "proposal", label: "Offert / Förslag", description: "Formellt förslag eller offert med scope, tidsplan och prissättning." },
-  { id: "sales_proposal", label: "Säljförslag", description: "Kommersiellt förslag med erbjudande, prislista och kundanpassning." },
-  { id: "case_study", label: "Kundcase / Case study", description: "Berättelse om utmaning → lösning → resultat med mätbara KPI:er." },
-  { id: "white_paper", label: "White paper", description: "Fördjupande rapport om ett ämne med research, analys och slutsatser." },
-  { id: "project_report", label: "Projektrapport", description: "Statusrapport för ett projekt med milstolpar, risker och nästa steg." },
-  { id: "brand_guide", label: "Brandguide", description: "Varumärkesmanual med logotypanvändning, färgpalett, typografi och tonalitet." },
-  { id: "product_sheet", label: "Produktblad", description: "Kompakt produktpresentation med specifikationer, fördelar och bilder." },
-  { id: "newsletter", label: "Nyhetsbrev (print)", description: "Tryckt nyhetsbrev med artiklar, nyheter och uppdateringar." },
-  { id: "event_program", label: "Eventprogram", description: "Program för konferens, seminarium eller event med schema och talarinfo." },
-  { id: "company_profile", label: "Företagspresentation", description: "Övergripande presentation av företaget — historia, team, nyckeltal, tjänster." },
+  { id: "annual_report", label: "Årsredovisning", description: "Komplett årsredovisning med VD-ord, nyckeltal, finansiell sammanfattning." },
+  { id: "quarterly", label: "Kvartalsrapport", description: "Finansiell rapport med nyckeltal, resultat och utsikter." },
+  { id: "sustainability_report", label: "Hållbarhetsrapport", description: "ESG-redovisning med miljö-, sociala och styrningsdata." },
+  { id: "board_report", label: "Styrelserapport", description: "Beslutsunderlag med sammanfattning och beslutspunkter." },
+  { id: "investor_update", label: "Investeraruppdatering", description: "Kort uppdatering med nyckeltal och finansiell utveckling." },
+  { id: "pitch", label: "Pitch deck", description: "Visuellt presentations-dokument för investerare eller kunder." },
+  { id: "proposal", label: "Offert / Förslag", description: "Formellt förslag med scope, tidsplan och prissättning." },
+  { id: "sales_proposal", label: "Säljförslag", description: "Kommersiellt förslag med erbjudande och prislista." },
+  { id: "case_study", label: "Kundcase", description: "Utmaning → lösning → resultat med mätbara KPI:er." },
+  { id: "white_paper", label: "White paper", description: "Fördjupande rapport med research och analys." },
+  { id: "project_report", label: "Projektrapport", description: "Status med milstolpar, risker och nästa steg." },
+  { id: "brand_guide", label: "Brandguide", description: "Varumärkesmanual med logotyp, färger, typografi." },
+  { id: "product_sheet", label: "Produktblad", description: "Kompakt produktpresentation med specifikationer." },
+  { id: "newsletter", label: "Nyhetsbrev (print)", description: "Tryckt nyhetsbrev med artiklar och nyheter." },
+  { id: "event_program", label: "Eventprogram", description: "Program med schema och talarinfo." },
+  { id: "company_profile", label: "Företagspresentation", description: "Företagsöversikt med historia, team, nyckeltal." },
 ];
 
 const DESIGN_SYSTEM_SCHEMA = {
-  colors: {
-    primary: "#1A2B5C",
-    secondary: "#4A7C9E",
-    accent: "#E8A838",
-    text: "#1A1A1A",
-    text_light: "#666666",
-    bg: "#FFFFFF",
-    bg_alt: "#F5F5F0",
-    surface: "#E8E4DE",
-  },
-  typography: {
-    heading_family: "Georgia, serif",
-    body_family: "system-ui, sans-serif",
-    heading_weight: "700",
-    base_size_pt: 10.5,
-    line_height: 1.5,
-    scale: [42, 28, 20, 16, 13, 10.5, 9],
-  },
-  spacing: {
-    base_mm: 5,
-    section_gap_mm: 15,
-    column_gap_mm: 8,
-  },
-  page: {
-    size: "A4",
-    margin_top_mm: 20,
-    margin_bottom_mm: 25,
-    margin_inner_mm: 25,
-    margin_outer_mm: 20,
-  },
+  colors: { primary: "#1A2B5C", secondary: "#4A7C9E", accent: "#E8A838", text: "#1A1A1A", text_light: "#666666", bg: "#FFFFFF", bg_alt: "#F5F5F0", surface: "#E8E4DE" },
+  typography: { heading_family: "Georgia, serif", body_family: "system-ui, sans-serif", heading_weight: "700", base_size_pt: 10.5, line_height: 1.5, scale: [42, 28, 20, 16, 13, 10.5, 9] },
+  spacing: { base_mm: 5, section_gap_mm: 15, column_gap_mm: 8 },
+  page: { size: "A4", margin_top_mm: 20, margin_bottom_mm: 25, margin_inner_mm: 25, margin_outer_mm: 20 },
 };
-
-const HTML_TEMPLATE_EXAMPLE = `<!DOCTYPE html>
-<html lang="sv">
-<head>
-<meta charset="UTF-8">
-<style>
-  :root {
-    --color-primary: #1A2B5C;
-    --color-secondary: #4A7C9E;
-    --color-accent: #E8A838;
-    --color-text: #1A1A1A;
-    --color-text-light: #666666;
-    --color-bg: #FFFFFF;
-    --color-bg-alt: #F5F5F0;
-    --color-surface: #E8E4DE;
-    --font-heading: Georgia, serif;
-    --font-body: system-ui, sans-serif;
-    --heading-weight: 700;
-    --base-size: 10.5pt;
-    --line-height: 1.5;
-    --spacing-base: 5mm;
-    --spacing-section: 15mm;
-    --spacing-col-gap: 8mm;
-  }
-  @page { size: A4; margin: 20mm 20mm 25mm 25mm;
-    @bottom-center { content: counter(page); font-size: 9pt; color: var(--color-text-light); }
-  }
-  @page :first { margin: 0; @bottom-center { content: none; } }
-  @page :left  { margin-left: 20mm; margin-right: 25mm; }
-  @page :right { margin-left: 25mm; margin-right: 20mm; }
-  body { font-family: var(--font-body); font-size: var(--base-size); line-height: var(--line-height); color: var(--color-text); }
-  h1 { font-family: var(--font-heading); font-size: 42pt; font-weight: var(--heading-weight); }
-  h2 { font-family: var(--font-heading); font-size: 28pt; }
-  h3 { font-family: var(--font-heading); font-size: 20pt; }
-  .module { page-break-after: always; }
-  .module:last-child { page-break-after: auto; }
-  .module-cover { padding: 0; height: 297mm; display: flex; flex-direction: column; justify-content: center; align-items: center; background: var(--color-primary); color: white; }
-  .module-chapter-break { height: 297mm; display: flex; flex-direction: column; justify-content: center; padding: var(--spacing-section); }
-  .module-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120mm, 1fr)); gap: var(--spacing-base); }
-  .kpi-card { padding: var(--spacing-base); }
-  .kpi-value { font-size: 32pt; font-weight: 700; color: var(--color-primary); }
-  .kpi-label { font-size: 9pt; color: var(--color-text-light); text-transform: uppercase; }
-  .module-table table { width: 100%; border-collapse: collapse; font-size: 9pt; }
-  .module-table th { text-align: left; border-bottom: 2pt solid var(--color-primary); padding: 2mm 3mm; }
-  .module-table td { padding: 2mm 3mm; border-bottom: 0.5pt solid var(--color-surface); }
-  .module-table tr.total td { font-weight: 700; border-top: 1pt solid var(--color-text); }
-  .module-two-col-text { column-count: 2; column-gap: var(--spacing-col-gap); }
-  .module-back-cover { height: 297mm; display: flex; flex-direction: column; justify-content: flex-end; padding: var(--spacing-section); background: var(--color-bg-alt); }
-</style>
-</head>
-<body>
-  <section class="module module-cover">
-    <h1>Document Title</h1>
-    <p>Subtitle here</p>
-  </section>
-  <section class="module module-chapter-break">
-    <span class="chapter-number">01</span>
-    <h2>Chapter Title</h2>
-  </section>
-  <section class="module module-text-spread">
-    <h3>Section heading</h3>
-    <p>Body text...</p>
-  </section>
-  <section class="module module-back-cover">
-    <p>Company Name AB | org.nr 556xxx-xxxx</p>
-  </section>
-</body>
-</html>`;
 
 const _MODULE_REF = Object.entries(MODULE_TYPE_DESCRIPTIONS)
   .map(([k, v]) => `- **${k}**: ${v}`)
   .join("\n");
 
-const WORKFLOW_PROMPT = `## Report AI — 4-Step Document Workflow
+const WORKFLOW_PROMPT = `## Report AI — Modular Document Workflow
 
-You are a professional document designer. You create InDesign-quality print documents using HTML + CSS Paged Media. You MUST follow these four steps IN ORDER. Never skip steps. Never assume information the user hasn't given you.
+You are a professional document designer. You create InDesign-quality print documents using HTML + CSS Paged Media.
 
-### Step 0: Understand What The User Wants
-When the user asks to create a document, FIRST call get_template_info (without document_type) to get the workflow guide and document type catalog. Then ask the user what type of document they want — present the available types from the catalog with Swedish labels and descriptions. Once they choose, proceed to Step 1.
-
-If the user already specifies the type (e.g. "jag vill göra en årsredovisning"), skip directly to Step 1.
-
-### CRITICAL RULES (read these first, always obey)
-- **NEVER invent brand colors, fonts, or tone.** If the user hasn't told you → ASK before proceeding.
-- **NEVER generate content from thin air.** If the user hasn't pasted or described the text/data → ASK them to paste it.
-- **ALWAYS speak the user's language** (Swedish if they write Swedish, English if English).
-- **Ask ONE focused question at a time** when information is missing. Don't overwhelm with 5 questions at once.
-- **Summarize decisions** after each step: "Så här ser designsystemet ut nu: primärfärg X, typsnitt Y…"
-- **Offer 2-3 choices with tradeoffs** when a design decision is needed (e.g., "Formell stil ger lugn och trovärdighet, kreativ ger mer energi och personlighet").
+### CRITICAL RULES
+- **NEVER invent brand colors, fonts, or tone.** ASK the user first.
+- **NEVER generate content from thin air.** ASK the user to paste/describe their content.
+- **ALWAYS speak the user's language** (Swedish if they write Swedish).
+- **Ask ONE focused question at a time.**
 
 ---
 
-### Step 1: Brand Extraction (MANDATORY)
+### Step 0: Choose Document Type
+Call get_template_info (without document_type) to see available types. Ask the user what they want. If they already specified, skip ahead.
 
-**Goal:** Build a complete design system BEFORE creating any document.
-
-**1a. Gathering brand info — ask the user these questions (one at a time, adapt to what they've already told you):**
-- "Vad heter företaget exakt som det ska stå på omslaget?"
-- "Har du en webbplats jag kan hämta designinfo ifrån? (Jag kan extrahera färger, typsnitt och stil automatiskt)" → If they give a URL, call extract_brand_from_url to scrape colors, fonts, and styling. Use the extracted data as the starting point.
-- "Har du en brandguide, logotyp eller exempelmaterial jag kan utgå ifrån? (Du kan klistra in en länk eller beskriva)"
-- If URL extraction didn't give complete info, ask: "Vilka färger vill du använda?" → If they're unsure, offer 2-3 palette suggestions based on their industry/tone:
-  - Corporate/formell: djupblå + grå + guld
-  - Modern/tech: svart + vit + elektrisk blå
-  - Kreativ/lekfull: korall + teal + ljusgrå
-- "Vilka typsnitt föredrar du?" → If they're unsure, suggest:
-  - Serif-rubrik + sans-serif-brödtext (klassiskt, trovärdigt)
-  - Sans-serif genomgående (modernt, rent)
-  - Slab-serif + monospace (djärvt, editorialt)
-- "Vilken ton passar bäst: formell/corporate, modern/clean, eller kreativ/djärv?"
-
-**1b. Building the design system — once you have answers, create a COMPLETE design system:**
-- colors: primary, secondary, accent, text (#1A1A1A), text_light (#666), bg (#FFF), bg_alt (light tone), surface (border/divider tone)
-- typography: heading_family, body_family, heading_weight, base_size_pt (10-11pt for body), line_height (1.4-1.6), scale (7 sizes from 42pt down to 9pt)
-- spacing: base_mm (4-6mm), section_gap_mm (12-18mm), column_gap_mm (6-10mm)
-- page: size (A4), margins (top 18-22mm, bottom 22-28mm, inner 22-28mm for binding, outer 18-22mm)
-
-**1c. Confirming with user:**
-Present the design system as a summary: "Här är designsystemet jag byggt utifrån dina val: [colors, fonts, tone]. Ser det bra ut, eller vill du justera något?"
-
-WAIT for confirmation. Then call save_design_system.
-
----
+### Step 1: Brand Extraction
+Ask for: company name, website URL (call extract_brand_from_url), colors, fonts, tone.
+If the user says "välj åt mig", pick a cohesive design and explain your choices.
+Call create_document + save_design_system.
 
 ### Step 2: Content & Module Planning
+ASK the user to PASTE their text/data. WAIT for it.
+Map content to modules, present the plan, get confirmation.
+Call save_module_plan.
 
-**Goal:** Map the user's REAL content to a structured module plan.
+### Step 3: HTML Generation — MODULE BY MODULE
+**IMPORTANT: Generate HTML one module at a time using save_module_html.**
+This avoids huge payloads and makes revisions fast (re-save only the changed module).
 
-**2a. Getting the content — ask the user:**
-- "Nu behöver jag innehållet. Klistra in texten/datan du vill ha med, eller beskriv vilka avsnitt rapporten ska ha."
-- "Har du siffror/nyckeltal som ska lyftas fram? (Revenue, tillväxt, antal anställda…)"
-- "Finns det tabeller eller finansiella data som ska med?"
+For each module in the plan, call save_module_html with:
+- module_id (from the plan)
+- html_fragment: a single <section class="module module-{type}"> element
 
-WAIT for the user to paste/describe content. Do NOT proceed without real content.
+After all modules are saved, call assemble_document to build the complete HTML.
 
-**2b. Planning modules — map content to the right module types:**
-- cover: ALWAYS first. Use title, subtitle, date, company name from brand input.
-- chapter_break: Insert between major sections. Gives rhythm and breathing room.
-- text_spread: For narratives like CEO letter, strategy descriptions, summaries. One spread = 1-2 pages.
-- kpi_grid: For 2-6 key metrics. Each KPI gets: large number, label, optional trend arrow (▲/▼).
-- table: For structured data. Use the table_data_schema format. Right-align numbers.
-- financial_summary: For revenue/EBITDA/margin hero numbers + supporting details.
-- quote_callout: For testimonials, CEO quotes, or important pull-quotes.
-- image_text: Split layout with image placeholder + text.
-- data_chart: Placeholder for charts with descriptive caption.
-- two_col_text: Dense text in two columns (appendices, notes).
-- back_cover: ALWAYS last. Company info, disclaimers, contact.
-
-**2c. Presenting the plan:**
-Show the user the proposed structure: "Så här tänker jag lägga upp rapporten: [list of modules]. Vill du ändra ordning eller lägga till/ta bort något?"
-
-WAIT for confirmation. Then call save_module_plan with raw_content (the user's pasted text) and the module_plan array.
+### Step 4: PDF Export & Download
+Call export_pdf to generate a PDF. Returns a download URL the user can save.
+Also call get_preview_url for a browser preview if they want to inspect first.
 
 ---
 
-### Step 3: HTML Generation
+## HTML Fragment Rules (for save_module_html)
 
-**Goal:** Produce a single, self-contained HTML document that renders perfectly in print.
+Each fragment is ONE <section> element. Do NOT include <!DOCTYPE>, <html>, <head>, or <style> — those are added by assemble_document.
 
-**3a. Document structure:**
-- DOCTYPE html, lang attribute matching content language
-- All CSS inline in a <style> block — no external stylesheets
-- No <script> tags whatsoever
-- No external images (use CSS backgrounds or placeholder boxes instead)
+### CSS Class Pattern:
+\`<section class="module module-{type}" data-module-id="{id}">\`
 
-**3b. CSS Paged Media (this is what makes it InDesign-quality):**
-\`\`\`css
-@page {
-  size: A4;
-  margin: [top]mm [outer]mm [bottom]mm [inner]mm;
-  @bottom-center { content: counter(page); font-size: 9pt; color: var(--color-text-light); }
-}
-@page :first { margin: 0; @bottom-center { content: none; } }
-@page :left  { margin-left: [outer]mm; margin-right: [inner]mm; }
-@page :right { margin-left: [inner]mm; margin-right: [outer]mm; }
+### Use CSS variables from the design system:
+var(--color-primary), var(--font-heading), var(--spacing-base), etc.
+NEVER hardcode colors or font names in fragments.
+
+### Module-specific rules:
+- **cover**: height: 297mm; full-bleed background; centered title. NO @page margins (handled by @page :first).
+- **chapter_break**: height: 297mm; chapter number + title centered.
+- **text_spread**: normal flow; paragraphs with margin-bottom: var(--spacing-base); proper heading hierarchy.
+- **kpi_grid**: CSS grid; .kpi-card with large .kpi-value (28-36pt) + .kpi-label (9pt).
+- **table**: full-width; border-collapse; th bottom-border in primary color; numbers right-aligned; .total row bold.
+- **data_chart**: Use INLINE SVG for charts (line, bar, pie). NO <script> or JS. SVG viewBox="0 0 width height". Include axis labels, data points, legend in SVG. Add a <figcaption> below.
+- **back_cover**: height: 297mm; content pushed to bottom with flex-end.
+
+### Typography:
+- h1: 42pt (cover only), h2: 28pt, h3: 20pt, body: var(--base-size), captions: 9pt
+- Min font: 7pt
+
+### Number formatting (sv-SE):
+- Thousands: 1 234 567 (thin space)
+- Decimals: comma (1 234,50)
+- Currency: 48,2 MSEK
+- Percent: 12,7 %
+
+### FONTS — CRITICAL:
+- Use Google Fonts via @import URL in the design system, e.g.: @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Playfair+Display:wght@700&display=swap');
+- NEVER embed fonts as base64 data URLs — this bloats HTML to 900K+
+- Fallback to system fonts: system-ui, -apple-system, sans-serif
+
+### Page breaks:
+- .module { page-break-after: always; } .module:last-child { page-break-after: auto; }
+- NEVER set height on text_spread or flowing content modules — let them grow naturally
+- ONLY set height: 297mm on cover, chapter_break, back_cover (full-page modules)
+- Use page-break-inside: avoid on KPI cards, table rows, and quote blocks
+
+### SVG Chart Example (line chart):
+\`\`\`html
+<figure class="chart">
+  <svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <line x1="40" y1="180" x2="380" y2="180" stroke="var(--color-surface)" stroke-width="1"/>
+    <line x1="40" y1="20" x2="40" y2="180" stroke="var(--color-surface)" stroke-width="1"/>
+    <polyline points="40,160 120,120 200,140 280,80 360,40" fill="none" stroke="var(--color-primary)" stroke-width="2.5"/>
+    <circle cx="40" cy="160" r="4" fill="var(--color-primary)"/>
+    <circle cx="120" cy="120" r="4" fill="var(--color-primary)"/>
+    <text x="40" y="195" font-size="8pt" fill="var(--color-text-light)">Q1</text>
+    <text x="120" y="195" font-size="8pt" fill="var(--color-text-light)">Q2</text>
+  </svg>
+  <figcaption>Omsättning per kvartal, MSEK</figcaption>
+</figure>
 \`\`\`
 
-**3c. Design system as CSS custom properties:**
-Convert EVERY token from the design system into a --var in :root. The HTML body must reference ONLY these variables — never hardcode colors or sizes.
-
-**3d. Module HTML pattern:**
-Each module is: \`<section class="module module-{type}">\`
-- page-break-after: always on .module (except :last-child)
-- Cover: height: 297mm, full-bleed background, centered content
-- Chapter break: height: 297mm, large chapter number + title
-- Text spread: standard page flow with proper headings
-- KPI grid: CSS grid with minmax(80mm, 1fr) cards
-- Table: full-width, border-collapse, th with primary-color bottom border, td with light borders, .total row bold
-- Back cover: height: 297mm, pushed to bottom with flex-end
-
-**3e. Typography rules:**
-- Heading hierarchy: h1 (42pt cover), h2 (28pt sections), h3 (20pt subsections)
-- Body: base_size_pt (typically 10-11pt)
-- Captions/footnotes: 8-9pt
-- KPI values: 28-36pt bold
-- Minimum font size: 7pt (guardrail enforced)
-
-**3f. Number formatting (sv-SE):**
-- Thousands: thin space → 1 234 567
-- Decimals: comma → 1 234,50
-- Currency: 48,2 MSEK or 48 200 TSEK
-- Percent: 12,7 % (with space)
-- Dates: 2026-03-28 or "28 mars 2026"
-
-**3g. Quality checklist before saving:**
-✓ @page rule present with A4 size
-✓ All design tokens as CSS variables
-✓ Cover and back_cover modules present
-✓ No <script> tags
-✓ No lorem ipsum
-✓ No hardcoded colors (use variables)
-✓ Page breaks between modules
-✓ Numbers formatted as sv-SE
-✓ All content from user's input — nothing invented
-
-Call save_html. If guardrails return issues, fix them and call save_html again.
-
 ---
 
-### Step 4: Preview & PDF
+## Revisions
+When the user wants to change something:
+1. Identify which module(s) need updating
+2. Call save_module_html ONLY for the changed module(s)
+3. Call assemble_document to rebuild
+4. Call export_pdf for a new PDF
 
-Call get_preview_url. Present the link to the user with instructions:
-- "Öppna denna länk i Chrome"
-- "Klicka 'Skriv ut / Spara som PDF' eller tryck ⌘P / Ctrl+P"
-- "Välj 'Spara som PDF' som destination"
-- "CSS Paged Media-reglerna ser till att sidbrytningar, marginaler och layout blir exakt som designat"
-
-Ask if they want adjustments: "Vill du att jag justerar något? Färger, typografi, ordning, innehåll?"
+NEVER re-generate all modules for a small change. This is the key advantage of the modular approach.
 
 ---
 
 ## Module Types Reference
 ${_MODULE_REF}
 
-## Swedish Document Conventions
-- Numbers: 1 234 567,89 (thin space thousands, comma decimals)
-- Currency: 48,2 MSEK or 48 200 TSEK
-- Dates: 2026-03-28 or "28 mars 2026"
-- Percent: 12,7 % (space before %)
-- Quotes: \u201Ctext\u201D
-
-## Design System Schema Reference
+## Design System Schema
 ${JSON.stringify(DESIGN_SYSTEM_SCHEMA, null, 2)}`;
 
 const TABLE_SCHEMA_EXAMPLE = {
@@ -357,16 +211,131 @@ const TABLE_SCHEMA_EXAMPLE = {
     { id: "row_1", is_header: false, is_total: false, cells: { col_a: "Norden", col_b: 48200000, col_c: 0.127 } },
     { id: "row_total", is_header: false, is_total: true, cells: { col_a: "Total", col_b: 142000000, col_c: 0.118 } },
   ],
-  caption: "Revenue by region",
-  notes: "All figures in MSEK.",
 };
+
+// ─── HTML Assembly ──────────────────────────────────────────────────────────
+
+function buildDocumentCss(ds) {
+  const c = ds?.colors || {};
+  const t = ds?.typography || {};
+  const s = ds?.spacing || {};
+  const p = ds?.page || {};
+
+  // Google Fonts import if heading/body contain known Google Font names
+  const googleImport = ds?.google_fonts_import || "";
+
+  return `${googleImport}
+:root {
+  --color-primary: ${c.primary || "#1A2B5C"};
+  --color-secondary: ${c.secondary || "#4A7C9E"};
+  --color-accent: ${c.accent || "#E8A838"};
+  --color-text: ${c.text || "#1A1A1A"};
+  --color-text-light: ${c.text_light || "#666666"};
+  --color-bg: ${c.bg || "#FFFFFF"};
+  --color-bg-alt: ${c.bg_alt || "#F5F5F0"};
+  --color-surface: ${c.surface || "#E8E4DE"};
+  --font-heading: ${t.heading_family || "Georgia, serif"};
+  --font-body: ${t.body_family || "system-ui, sans-serif"};
+  --heading-weight: ${t.heading_weight || "700"};
+  --base-size: ${t.base_size_pt || 10.5}pt;
+  --line-height: ${t.line_height || 1.5};
+  --spacing-base: ${s.base_mm || 5}mm;
+  --spacing-section: ${s.section_gap_mm || 15}mm;
+  --spacing-col-gap: ${s.column_gap_mm || 8}mm;
+}
+@page {
+  size: ${p.size || "A4"};
+  margin: ${p.margin_top_mm || 20}mm ${p.margin_outer_mm || 20}mm ${p.margin_bottom_mm || 25}mm ${p.margin_inner_mm || 25}mm;
+  @bottom-center { content: counter(page); font-size: 9pt; color: var(--color-text-light); }
+}
+@page :first { margin: 0; @bottom-center { content: none; } }
+@page :left  { margin-left: ${p.margin_outer_mm || 20}mm; margin-right: ${p.margin_inner_mm || 25}mm; }
+@page :right { margin-left: ${p.margin_inner_mm || 25}mm; margin-right: ${p.margin_outer_mm || 20}mm; }
+body {
+  font-family: var(--font-body);
+  font-size: var(--base-size);
+  line-height: var(--line-height);
+  color: var(--color-text);
+  margin: 0;
+  padding: 0;
+}
+h1 { font-family: var(--font-heading); font-size: 42pt; font-weight: var(--heading-weight); margin: 0 0 var(--spacing-base); }
+h2 { font-family: var(--font-heading); font-size: 28pt; font-weight: var(--heading-weight); margin: 0 0 var(--spacing-base); }
+h3 { font-family: var(--font-heading); font-size: 20pt; font-weight: var(--heading-weight); margin: 0 0 var(--spacing-base); }
+p { margin: 0 0 var(--spacing-base); }
+
+/* Module base */
+.module { page-break-after: always; padding: var(--spacing-section); box-sizing: border-box; }
+.module:last-child { page-break-after: auto; }
+
+/* Full-page modules */
+.module-cover { height: 297mm; padding: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; background: var(--color-primary); color: white; text-align: center; }
+.module-chapter-break { height: 297mm; display: flex; flex-direction: column; justify-content: center; }
+.module-back-cover { height: 297mm; display: flex; flex-direction: column; justify-content: flex-end; background: var(--color-bg-alt); }
+
+/* Flowing modules — NO height set, let content flow */
+.module-text-spread { }
+.module-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(70mm, 1fr)); gap: var(--spacing-base); }
+.module-financial-summary { }
+.module-two-col-text { column-count: 2; column-gap: var(--spacing-col-gap); }
+.module-quote-callout { display: flex; flex-direction: column; justify-content: center; min-height: 100mm; }
+.module-image-text { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-col-gap); align-items: start; }
+.module-data-chart { }
+
+/* Component styles */
+.kpi-card { padding: var(--spacing-base); page-break-inside: avoid; }
+.kpi-value { font-size: 32pt; font-weight: 700; color: var(--color-primary); line-height: 1.1; }
+.kpi-label { font-size: 9pt; color: var(--color-text-light); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2mm; }
+.kpi-delta { font-size: 10pt; margin-top: 1mm; }
+.kpi-delta.positive { color: #2e7d32; }
+.kpi-delta.negative { color: #c62828; }
+
+table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+th { text-align: left; border-bottom: 2pt solid var(--color-primary); padding: 2mm 3mm; font-weight: 700; }
+td { padding: 2mm 3mm; border-bottom: 0.5pt solid var(--color-surface); }
+tr.total td { font-weight: 700; border-top: 1pt solid var(--color-text); border-bottom: none; }
+td.number, th.number { text-align: right; font-variant-numeric: tabular-nums; }
+
+.chapter-number { font-size: 64pt; font-weight: 700; color: var(--color-accent); line-height: 1; }
+blockquote { font-size: 24pt; font-family: var(--font-heading); line-height: 1.3; border-left: 4pt solid var(--color-accent); padding-left: var(--spacing-base); margin: var(--spacing-section) 0; }
+blockquote cite { display: block; font-size: 10pt; font-family: var(--font-body); color: var(--color-text-light); margin-top: var(--spacing-base); }
+
+figure.chart { page-break-inside: avoid; margin: var(--spacing-base) 0; }
+figure.chart svg { width: 100%; max-height: 200mm; }
+figcaption { font-size: 9pt; color: var(--color-text-light); margin-top: 2mm; }
+
+.image-placeholder { background: var(--color-bg-alt); border: 1pt dashed var(--color-surface); display: flex; align-items: center; justify-content: center; min-height: 80mm; color: var(--color-text-light); font-size: 9pt; }
+`;
+}
+
+function assembleHtml(designSystem, modules) {
+  const css = buildDocumentCss(designSystem);
+  const fragments = modules
+    .sort((a, b) => (a.order ?? 999) - (b.order ?? 999))
+    .map((m) => m.html_fragment || `<section class="module module-${m.module_type}"><p>[${m.title} — inget HTML-fragment sparat ännu]</p></section>`)
+    .join("\n\n");
+
+  return `<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+${css}
+</style>
+</head>
+<body>
+${fragments}
+</body>
+</html>`;
+}
 
 // ─── Tool definitions ───────────────────────────────────────────────────────
 
 const TOOLS = [
   {
     name: "get_template_info",
-    description: "CALL THIS FIRST before doing anything else. Returns the complete 4-step workflow guide you MUST follow, module type descriptions, design system schema, HTML template example, guardrails, and the full list of available document types. If you know the document type, pass it to get required sections; otherwise omit it to just get the workflow guide and document type catalog. This is your instruction manual — read it carefully and follow every step.",
+    description: "CALL THIS FIRST. Returns workflow guide, document types, module descriptions, design system schema, and guardrails. Pass document_type to get required sections; omit for general guide + type catalog.",
     inputSchema: {
       type: "object",
       properties: {
@@ -377,9 +346,8 @@ const TOOLS = [
             "sustainability_report", "board_report", "investor_update",
             "case_study", "white_paper", "sales_proposal",
             "project_report", "brand_guide", "product_sheet",
-            "newsletter", "event_program", "company_profile"
+            "newsletter", "event_program", "company_profile",
           ],
-          description: "Optional — pass to get required sections for a specific type. Omit to get the general workflow guide and document type catalog.",
         },
       },
     },
@@ -400,11 +368,11 @@ const TOOLS = [
   },
   {
     name: "create_document",
-    description: "Create a new report document. IMPORTANT: Before calling this you MUST have asked the user about their brand (colors, fonts, tone). You MUST also have asked what content they want in the report. Do NOT call this until you have both brand info AND content from the user.",
+    description: "Create a new report document. You MUST have asked the user about brand and content BEFORE calling this.",
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "Document title" },
+        title: { type: "string" },
         document_type: {
           type: "string",
           enum: [
@@ -412,7 +380,7 @@ const TOOLS = [
             "sustainability_report", "board_report", "investor_update",
             "case_study", "white_paper", "sales_proposal",
             "project_report", "brand_guide", "product_sheet",
-            "newsletter", "event_program", "company_profile"
+            "newsletter", "event_program", "company_profile",
           ],
         },
       },
@@ -421,55 +389,64 @@ const TOOLS = [
   },
   {
     name: "save_design_system",
-    description: "Step 1: Save design system based on the user's brand answers. NEVER call this with made-up values — only use colors/fonts/tone the user actually provided. Provide brand_input (raw user answers) AND design_system (structured tokens).",
+    description: "Step 1: Save design system. NEVER use made-up values. Include google_fonts_import (@import url) if using Google Fonts.",
     inputSchema: {
       type: "object",
       properties: {
         document_id: { type: "string" },
-        brand_input: {
-          type: "object",
-          description: "Raw brand input from user: { company_name, colors, fonts, tone, logo_url }",
-        },
-        design_system: {
-          type: "object",
-          description: "Complete design tokens: { colors: {primary,secondary,accent,text,text_light,bg,bg_alt,surface}, typography: {heading_family,body_family,heading_weight,base_size_pt,line_height,scale[]}, spacing: {base_mm,section_gap_mm,column_gap_mm}, page: {size,margin_top_mm,margin_bottom_mm,margin_inner_mm,margin_outer_mm} }",
-        },
+        brand_input: { type: "object", description: "Raw brand input: { company_name, colors, fonts, tone, logo_url }" },
+        design_system: { type: "object", description: "Structured tokens + google_fonts_import string" },
       },
       required: ["document_id", "design_system"],
     },
   },
   {
     name: "save_module_plan",
-    description: "Step 2: Save module plan based on the user's ACTUAL content. Map their content to module types. NEVER generate fake content — use exactly what the user provided. Ask user to paste content if you don't have it.",
+    description: "Step 2: Save module plan. Map the user's ACTUAL content to modules. Ask user to paste content if you don't have it.",
     inputSchema: {
       type: "object",
       properties: {
         document_id: { type: "string" },
-        raw_content: { type: "string", description: "The raw text/data the user pasted or described" },
-        module_plan: {
-          type: "array",
-          description: "Ordered modules: { module_type, title, semantic_role?, content?, data? }",
-          items: { type: "object" },
-        },
+        raw_content: { type: "string", description: "The raw content the user pasted" },
+        module_plan: { type: "array", items: { type: "object" }, description: "Ordered: { module_type, title, semantic_role?, content?, data? }" },
       },
       required: ["document_id", "module_plan"],
     },
   },
   {
-    name: "save_html",
-    description: "Step 3: Save print-ready HTML. Must include CSS Paged Media (@page, size: A4), design tokens as CSS custom properties, mm/pt units, module sections with page-break-after. Validates against guardrails — fix and re-save if issues found.",
+    name: "save_module_html",
+    description: "Step 3: Save HTML fragment for ONE module. Call this for each module in the plan. The fragment is a single <section class='module module-{type}'> element — do NOT include doctype, head, style, or body tags. Use CSS variables from the design system. For charts use inline SVG (no JS). For fonts use Google Fonts @import (no base64). After saving all modules, call assemble_document.",
     inputSchema: {
       type: "object",
       properties: {
         document_id: { type: "string" },
-        html: { type: "string", description: "Complete self-contained HTML document" },
+        module_id: { type: "string", description: "The module ID from the plan" },
+        html_fragment: { type: "string", description: "Single <section> HTML fragment for this module" },
       },
-      required: ["document_id", "html"],
+      required: ["document_id", "module_id", "html_fragment"],
+    },
+  },
+  {
+    name: "assemble_document",
+    description: "Step 3b: Server assembles the complete HTML from all module fragments + design system CSS. Call this AFTER saving all module HTML fragments. Validates against guardrails. Returns status and preview URL.",
+    inputSchema: {
+      type: "object",
+      properties: { document_id: { type: "string" } },
+      required: ["document_id"],
+    },
+  },
+  {
+    name: "export_pdf",
+    description: "Step 4: Generate PDF from the assembled HTML using built-in headless Chrome. No API key needed. Returns a download URL where the user can save the PDF. Call assemble_document first.",
+    inputSchema: {
+      type: "object",
+      properties: { document_id: { type: "string" } },
+      required: ["document_id"],
     },
   },
   {
     name: "get_preview_url",
-    description: "Step 4: Get a preview URL for the document. The user opens this in Chrome and uses Print (Cmd/Ctrl+P) → Save as PDF. The CSS Paged Media rules ensure perfect print layout. No external service or API key needed.",
+    description: "Get a browser preview URL for the document. User opens in Chrome to inspect the layout before PDF export.",
     inputSchema: {
       type: "object",
       properties: { document_id: { type: "string" } },
@@ -478,12 +455,10 @@ const TOOLS = [
   },
   {
     name: "extract_brand_from_url",
-    description: "Extract brand design info from a website URL. Fetches the page HTML/CSS and extracts: color palette (primary, secondary, accent, backgrounds), typography (font families, weights, sizes), spacing patterns, and overall visual tone. Use this when the user provides their company website — it gives you a real starting point for the design system instead of guessing. Returns structured design signals you should use in save_design_system.",
+    description: "Extract brand design info from a website URL. Scrapes colors, fonts, CSS tokens. Use when user provides their company website.",
     inputSchema: {
       type: "object",
-      properties: {
-        url: { type: "string", description: "Website URL to analyze (e.g. https://example.com)" },
-      },
+      properties: { url: { type: "string" } },
       required: ["url"],
     },
   },
@@ -495,8 +470,7 @@ async function handleListDocuments(hubUserId) {
   const sql = getSql();
   const rows = await sql`
     SELECT id, title, document_type, status, created_at, updated_at
-    FROM documents
-    WHERE hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    FROM documents WHERE hub_user_id = ${hubUserId} AND deleted_at IS NULL
     ORDER BY updated_at DESC
   `;
   return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
@@ -506,29 +480,26 @@ async function handleGetDocument(hubUserId, args) {
   const sql = getSql();
   const rows = await sql`
     SELECT id, title, document_type, status, brand_input, design_system,
-           raw_content, module_plan, html_output, created_at, updated_at
-    FROM documents
-    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
-    LIMIT 1
+           raw_content, module_plan, created_at, updated_at
+    FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1
   `;
   if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
-
+  // Don't return html_output (too large) — return module plan with fragment status
   const doc = { ...rows[0] };
-  if (doc.html_output && doc.html_output.length > 50000) {
-    doc.html_output = doc.html_output.slice(0, 500) + `\n... (${doc.html_output.length} chars total, truncated)`;
+  if (doc.module_plan) {
+    doc.module_plan = doc.module_plan.map((m) => ({
+      ...m,
+      has_html: Boolean(m.html_fragment),
+      html_fragment: undefined, // don't send fragments back
+    }));
   }
   return { content: [{ type: "text", text: JSON.stringify(doc, null, 2) }] };
 }
 
 async function handleCreateDocument(hubUserId, args) {
   const sql = getSql();
-
   let stubPlan = [];
-  try {
-    stubPlan = await getDefaultStubPlan(args.document_type);
-  } catch (e) {
-    console.warn("[create_document] getDefaultStubPlan failed, using empty plan:", e.message);
-  }
+  try { stubPlan = await getDefaultStubPlan(args.document_type); } catch {}
   const planWithIds = stubPlan.map((m) => ({ id: randomUUID(), ...m }));
 
   const rows = await sql`
@@ -536,323 +507,254 @@ async function handleCreateDocument(hubUserId, args) {
     VALUES (${hubUserId}, ${args.title}, ${args.document_type}::document_type, ${JSON.stringify(planWithIds)}::jsonb, 'draft')
     RETURNING id, title, document_type, status, module_plan, created_at
   `;
-  return {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        ...rows[0],
-        next_step: "Now save the design system (Step 1) using the brand info the user provided.",
-      }, null, 2),
-    }],
-  };
+  return { content: [{ type: "text", text: JSON.stringify({ ...rows[0], next_step: "Call save_design_system with the user's brand info." }, null, 2) }] };
 }
 
 async function handleSaveDesignSystem(hubUserId, args) {
   const sql = getSql();
   const rows = await sql`
-    UPDATE documents
-    SET
+    UPDATE documents SET
       brand_input = ${JSON.stringify(args.brand_input ?? {})}::jsonb,
       design_system = ${JSON.stringify(args.design_system)}::jsonb,
-      status = 'ready'::doc_status,
-      updated_at = NOW()
+      status = 'ready'::doc_status, updated_at = NOW()
     WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
     RETURNING id, status
   `;
   if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
-  return {
-    content: [{
-      type: "text",
-      text: `Design system saved for document ${rows[0].id}. Next step: ask user to paste their content, then call save_module_plan.`,
-    }],
-  };
+  return { content: [{ type: "text", text: `Design system saved. Next: ask user to paste content, then call save_module_plan.` }] };
 }
 
 async function handleSaveModulePlan(hubUserId, args) {
   const sql = getSql();
-
-  const docs = await sql`
-    SELECT id, document_type FROM documents
-    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
-    LIMIT 1
-  `;
+  const docs = await sql`SELECT id, document_type FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
   if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
 
-  const planWithIds = args.module_plan.map((m, idx) => ({
-    id: m.id ?? randomUUID(),
-    order: idx + 1,
-    ...m,
-  }));
-
+  const planWithIds = args.module_plan.map((m, idx) => ({ id: m.id ?? randomUUID(), order: idx + 1, ...m }));
   let merged;
-  try {
-    merged = await mergeMissingStubs(docs[0].document_type, planWithIds);
-  } catch (e) {
-    console.warn("[save_module_plan] mergeMissingStubs failed:", e.message);
-    merged = { modulePlan: planWithIds, warnings: [] };
-  }
+  try { merged = await mergeMissingStubs(docs[0].document_type, planWithIds); } catch { merged = { modulePlan: planWithIds, warnings: [] }; }
 
-  await sql`
-    UPDATE documents
-    SET
-      raw_content = ${args.raw_content ?? null},
-      module_plan = ${JSON.stringify(merged.modulePlan)}::jsonb,
-      status = 'ready'::doc_status,
-      updated_at = NOW()
-    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
-  `;
+  await sql`UPDATE documents SET raw_content = ${args.raw_content ?? null}, module_plan = ${JSON.stringify(merged.modulePlan)}::jsonb, status = 'ready'::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
 
-  return {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        ok: true,
-        module_count: merged.modulePlan.length,
-        warnings: merged.warnings.length > 0
-          ? `Auto-added missing required sections: ${merged.warnings.map((w) => w.label).join(", ")}`
-          : null,
-        next_step: "Now generate the full HTML (Step 3) and call save_html.",
-      }, null, 2),
-    }],
-  };
+  return { content: [{ type: "text", text: JSON.stringify({
+    ok: true, module_count: merged.modulePlan.length,
+    modules: merged.modulePlan.map((m) => ({ id: m.id, module_type: m.module_type, title: m.title })),
+    warnings: merged.warnings.length > 0 ? merged.warnings.map((w) => w.label).join(", ") : null,
+    next_step: "Now generate HTML for each module using save_module_html, one at a time.",
+  }, null, 2) }] };
 }
 
-async function handleSaveHtml(hubUserId, args) {
+async function handleSaveModuleHtml(hubUserId, args) {
   const sql = getSql();
-
-  const docs = await sql`
-    SELECT id FROM documents
-    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
-    LIMIT 1
-  `;
+  const docs = await sql`SELECT id, module_plan FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
   if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
 
-  const validation = validateHtml(args.html);
+  const plan = docs[0].module_plan || [];
+  const moduleIdx = plan.findIndex((m) => m.id === args.module_id);
+  if (moduleIdx === -1) return { content: [{ type: "text", text: `Module ${args.module_id} not found in plan` }], isError: true };
 
-  await sql`
-    UPDATE documents
-    SET
-      html_output = ${args.html},
-      status = ${validation.valid ? "ready" : "error"}::doc_status,
-      updated_at = NOW()
-    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
-  `;
+  // Store the HTML fragment in the module plan entry
+  plan[moduleIdx].html_fragment = args.html_fragment;
 
-  if (!validation.valid) {
-    return {
-      content: [{
-        type: "text",
-        text: `HTML saved but has guardrail issues:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix these issues and call save_html again.`,
-      }],
-    };
+  await sql`UPDATE documents SET module_plan = ${JSON.stringify(plan)}::jsonb, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
+
+  const saved = plan.filter((m) => m.html_fragment).length;
+  const total = plan.length;
+  const remaining = plan.filter((m) => !m.html_fragment).map((m) => ({ id: m.id, type: m.module_type, title: m.title }));
+
+  return { content: [{ type: "text", text: JSON.stringify({
+    ok: true, module: plan[moduleIdx].title, saved_count: saved, total_count: total,
+    remaining: remaining.length > 0 ? remaining : null,
+    next_step: remaining.length > 0 ? `Save HTML for the next module: ${remaining[0].title} (${remaining[0].id})` : "All modules saved! Call assemble_document to build the complete HTML.",
+  }, null, 2) }] };
+}
+
+async function handleAssembleDocument(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`SELECT id, module_plan, design_system, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const plan = docs[0].module_plan || [];
+  const missing = plan.filter((m) => !m.html_fragment);
+  if (missing.length > 0) {
+    return { content: [{ type: "text", text: `${missing.length} module(s) still missing HTML: ${missing.map((m) => m.title).join(", ")}. Save them first.` }], isError: true };
   }
 
-  return {
-    content: [{
-      type: "text",
-      text: "HTML saved successfully. Call get_preview_url to give the user a link to preview and print to PDF.",
-    }],
-  };
+  const html = assembleHtml(docs[0].design_system || {}, plan);
+  const validation = validateHtml(html);
+
+  await sql`UPDATE documents SET html_output = ${html}, status = ${validation.valid ? "ready" : "error"}::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
+
+  const key = previewKey(args.document_id);
+  const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+
+  if (!validation.valid) {
+    return { content: [{ type: "text", text: `Document assembled but has guardrail issues:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_html and call assemble_document again.` }] };
+  }
+
+  return { content: [{ type: "text", text: JSON.stringify({
+    ok: true, html_size_kb: Math.round(html.length / 1024),
+    preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
+    next_step: "Call export_pdf to generate a downloadable PDF.",
+  }, null, 2) }] };
+}
+
+async function handleExportPdf(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`SELECT id, html_output, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+  if (!docs[0].html_output) return { content: [{ type: "text", text: "No assembled HTML. Call assemble_document first." }], isError: true };
+
+  try {
+    const chromium = await import("@sparticuz/chromium");
+    const puppeteer = await import("puppeteer-core");
+
+    const browser = await puppeteer.default.launch({
+      args: chromium.default.args,
+      defaultViewport: chromium.default.defaultViewport,
+      executablePath: await chromium.default.executablePath(),
+      headless: chromium.default.headless,
+    });
+
+    const page = await browser.newPage();
+    await page.setContent(docs[0].html_output, { waitUntil: "networkidle0", timeout: 30000 });
+    const pdfBuffer = await page.pdf({
+      format: "A4",
+      printBackground: true,
+      preferCSSPageSize: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+    });
+    await browser.close();
+
+    // Store PDF as base64 in a separate column or return directly
+    const pdfBase64 = pdfBuffer.toString("base64");
+    const pdfSizeKb = Math.round(pdfBase64.length * 0.75 / 1024);
+
+    // Store in DB for download
+    await sql`UPDATE documents SET status = 'ready'::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
+
+    // Return download URL via preview function with pdf flag
+    const key = previewKey(args.document_id);
+    const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+    const downloadUrl = `${siteUrl}/api/preview?id=${args.document_id}&key=${key}&format=pdf`;
+
+    // Store the PDF bytes temporarily (we'll serve via the preview function)
+    // For now, store in a pdf_output column if available, otherwise use blobs
+    try {
+      await sql`UPDATE documents SET pdf_output = decode(${pdfBase64}, 'base64'), updated_at = NOW() WHERE id = ${args.document_id}`;
+    } catch {
+      // pdf_output column might not exist — that's OK, we still have the base64
+      console.warn("[export_pdf] Could not store PDF in pdf_output column");
+    }
+
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: true,
+      pdf_size_kb: pdfSizeKb,
+      download_url: downloadUrl,
+      title: docs[0].title,
+      instructions: "Klicka på länken för att ladda ner PDF:en. Alternativt kan du öppna preview-länken i Chrome och skriva ut till PDF med ⌘P.",
+    }, null, 2) }] };
+  } catch (e) {
+    console.error("[export_pdf] Chrome rendering failed:", e);
+    // Fallback to preview URL
+    const key = previewKey(args.document_id);
+    const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: false,
+      error: "PDF-rendering misslyckades på servern. Du kan istället öppna preview-länken i Chrome och spara som PDF med ⌘P / Ctrl+P.",
+      preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
+      technical_error: e.message,
+    }, null, 2) }] };
+  }
 }
 
 async function handleGetTemplateInfo(hubUserId, args) {
   const sql = getSql();
-
-  // document_type is optional — if not provided, return workflow + catalog
-  const docType = args.document_type || null;
+  const docType = args?.document_type || null;
   const template = docType ? await getTemplate(docType) : null;
-
   let fonts = [];
-  try {
-    fonts = await sql`
-      SELECT family_name, weight, style, format, blob_key
-      FROM custom_fonts
-      WHERE hub_user_id = ${hubUserId}
-      ORDER BY created_at DESC
-    `;
-  } catch (e) {
-    console.warn("[get_template_info] custom_fonts query failed:", e.message);
-  }
+  try { fonts = await sql`SELECT family_name, weight, style, format, blob_key FROM custom_fonts WHERE hub_user_id = ${hubUserId} ORDER BY created_at DESC`; } catch {}
 
   const result = {
     workflow_prompt: WORKFLOW_PROMPT,
     module_type_descriptions: MODULE_TYPE_DESCRIPTIONS,
     design_system_schema: DESIGN_SYSTEM_SCHEMA,
-    html_template_example: HTML_TEMPLATE_EXAMPLE,
     available_document_types: DOCUMENT_TYPE_CATALOG,
     available_module_types: MODULE_TYPES,
     guardrails: GUARDRAILS_PROMPT,
     table_data_schema: TABLE_SCHEMA_EXAMPLE,
     custom_fonts: fonts,
   };
-
-  // Add type-specific info if document_type was provided
   if (docType && template) {
     result.document_type = docType;
     result.required_sections = template.required_sections ?? [];
     result.default_stub_plan = template.default_stub_plan ?? [];
   }
-
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 }
 
 async function handleGetPreviewUrl(hubUserId, args) {
   const sql = getSql();
-  const rows = await sql`
-    SELECT id, html_output, title FROM documents
-    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
-    LIMIT 1
-  `;
+  const rows = await sql`SELECT id, html_output, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
   if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
-  if (!rows[0].html_output) {
-    return { content: [{ type: "text", text: "Document has no HTML yet. Generate HTML first (Step 3)." }], isError: true };
-  }
+  if (!rows[0].html_output) return { content: [{ type: "text", text: "No HTML yet. Call assemble_document first." }], isError: true };
 
   const key = previewKey(args.document_id);
   const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
-  const previewUrl = `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`;
-
-  return {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        preview_url: previewUrl,
-        instructions: "Öppna länken i Chrome. Klicka 'Skriv ut / Spara som PDF' eller tryck Cmd/Ctrl+P. Välj 'Spara som PDF'. CSS Paged Media-reglerna ser till att sidbrytningar, marginaler och layout blir rätt.",
-        title: rows[0].title,
-      }, null, 2),
-    }],
-  };
+  return { content: [{ type: "text", text: JSON.stringify({
+    preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
+    title: rows[0].title,
+  }, null, 2) }] };
 }
 
 async function handleExtractBrandFromUrl(hubUserId, args) {
-  const url = args.url;
-  if (!url) return { content: [{ type: "text", text: "URL is required" }], isError: true };
-
+  if (!args.url) return { content: [{ type: "text", text: "URL is required" }], isError: true };
   try {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; ReportAI/1.0; brand-extraction)",
-        "Accept": "text/html,application/xhtml+xml",
-      },
+    const response = await fetch(args.url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; ReportAI/1.0)", "Accept": "text/html" },
       signal: AbortSignal.timeout(15000),
     });
-
-    if (!response.ok) {
-      return { content: [{ type: "text", text: `Could not fetch ${url}: HTTP ${response.status}` }], isError: true };
-    }
-
+    if (!response.ok) return { content: [{ type: "text", text: `Could not fetch: HTTP ${response.status}` }], isError: true };
     const html = await response.text();
 
-    // Extract colors from inline styles, style blocks, and common patterns
-    const colorPattern = /#(?:[0-9a-fA-F]{3,8})\b/g;
-    const rgbPattern = /rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*[\d.]+)?\s*\)/g;
-    const hslPattern = /hsla?\(\s*\d+\s*,\s*[\d.]+%?\s*,\s*[\d.]+%?(?:\s*,\s*[\d.]+)?\s*\)/g;
-
-    const hexColors = [...new Set((html.match(colorPattern) || []))];
-    const rgbColors = [...new Set((html.match(rgbPattern) || []))];
-    const hslColors = [...new Set((html.match(hslPattern) || []))];
-
-    // Extract font families
-    const fontPattern = /font-family\s*:\s*([^;}"]+)/gi;
-    const fontMatches = [...html.matchAll(fontPattern)].map(m => m[1].trim());
+    const hexColors = [...new Set((html.match(/#(?:[0-9a-fA-F]{3,8})\b/g) || []))];
+    const fontMatches = [...html.matchAll(/font-family\s*:\s*([^;}"]+)/gi)].map((m) => m[1].trim());
     const fontFamilies = [...new Set(fontMatches)].slice(0, 10);
-
-    // Extract Google Fonts references
-    const googleFontPattern = /fonts\.googleapis\.com\/css2?\?family=([^"&']+)/gi;
-    const googleFonts = [...html.matchAll(googleFontPattern)].map(m =>
-      decodeURIComponent(m[1]).replace(/\+/g, " ").split("|").map(f => f.split(":")[0].trim())
-    ).flat();
-
-    // Extract CSS custom properties (design tokens)
-    const cssVarPattern = /--([a-zA-Z0-9_-]+)\s*:\s*([^;}"]+)/g;
-    const cssVariables = {};
-    for (const match of html.matchAll(cssVarPattern)) {
-      cssVariables[match[1].trim()] = match[2].trim();
-    }
-
-    // Extract font sizes
-    const fontSizePattern = /font-size\s*:\s*([^;}"]+)/gi;
-    const fontSizes = [...new Set([...html.matchAll(fontSizePattern)].map(m => m[1].trim()))].slice(0, 15);
-
-    // Extract background colors
-    const bgColorPattern = /background(?:-color)?\s*:\s*([^;}"]+)/gi;
-    const bgColors = [...new Set([...html.matchAll(bgColorPattern)].map(m => m[1].trim()))].slice(0, 10);
-
-    // Extract meta info
+    const googleFonts = [...html.matchAll(/fonts\.googleapis\.com\/css2?\?family=([^"&']+)/gi)]
+      .map((m) => decodeURIComponent(m[1]).replace(/\+/g, " ").split("|").map((f) => f.split(":")[0].trim())).flat();
+    const cssVars = {};
+    for (const m of html.matchAll(/--([a-zA-Z0-9_-]+)\s*:\s*([^;}"]+)/g)) cssVars[m[1].trim()] = m[2].trim();
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    const descMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)/i);
-    const ogImageMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)/i);
 
-    // Filter to most likely brand colors (exclude common grays/whites/blacks)
-    const isBrandColor = (c) => {
-      const lower = c.toLowerCase();
-      return !["#fff", "#ffffff", "#000", "#000000", "#333", "#666", "#999", "#ccc", "#eee", "#f5f5f5", "#fafafa"].includes(lower);
-    };
-    const brandHexColors = hexColors.filter(isBrandColor).slice(0, 15);
+    const skip = new Set(["#fff", "#ffffff", "#000", "#000000", "#333", "#666", "#999", "#ccc", "#eee", "#f5f5f5"]);
+    const brandColors = hexColors.filter((c) => !skip.has(c.toLowerCase())).slice(0, 15);
 
-    const extraction = {
-      source_url: url,
+    return { content: [{ type: "text", text: JSON.stringify({
+      source_url: args.url,
       page_title: titleMatch?.[1]?.trim() || null,
-      page_description: descMatch?.[1]?.trim() || null,
-      og_image: ogImageMatch?.[1]?.trim() || null,
-
-      colors: {
-        hex_colors_found: brandHexColors,
-        rgb_colors_found: rgbColors.slice(0, 10),
-        hsl_colors_found: hslColors.slice(0, 5),
-        background_colors: bgColors,
-        suggestion: brandHexColors.length >= 3
-          ? `Possible palette: primary=${brandHexColors[0]}, secondary=${brandHexColors[1]}, accent=${brandHexColors[2]}`
-          : "Could not determine a clear palette — ask the user to confirm colors.",
-      },
-
-      typography: {
-        font_families: fontFamilies,
-        google_fonts: [...new Set(googleFonts)],
-        font_sizes: fontSizes,
-        suggestion: fontFamilies.length > 0
-          ? `Primary font families found: ${fontFamilies.slice(0, 3).join(", ")}`
-          : "No clear font families detected — ask the user.",
-      },
-
-      css_design_tokens: Object.keys(cssVariables).length > 0
-        ? cssVariables
-        : "No CSS custom properties found on this page.",
-
-      instructions_for_claude: [
-        "Use the extracted colors and fonts as the STARTING POINT for the design system.",
-        "Present these findings to the user: 'Jag hittade dessa färger och typsnitt på er webbplats: [list]. Ska jag använda dem?'",
-        "The user may want to adjust — always confirm before saving.",
-        "If the extraction is sparse, supplement with tasteful defaults that match the detected tone.",
-        "Map the most prominent/repeated color as primary, the next as secondary, and any standout accent color as accent.",
-        "For typography: use the first serif font found for headings and first sans-serif for body (or vice versa if the site is sans-first).",
-      ],
-    };
-
-    return { content: [{ type: "text", text: JSON.stringify(extraction, null, 2) }] };
+      colors: { hex: brandColors, suggestion: brandColors.length >= 3 ? `primary=${brandColors[0]}, secondary=${brandColors[1]}, accent=${brandColors[2]}` : "Ask user" },
+      typography: { families: fontFamilies, google_fonts: [...new Set(googleFonts)] },
+      css_tokens: Object.keys(cssVars).length > 0 ? cssVars : null,
+      instructions: "Present findings to user. Ask to confirm before using. Supplement sparse data with tasteful defaults.",
+    }, null, 2) }] };
   } catch (e) {
-    return {
-      content: [{
-        type: "text",
-        text: `Could not extract brand info from ${url}: ${e.message}. Ask the user for brand details manually instead.`,
-      }],
-      isError: true,
-    };
+    return { content: [{ type: "text", text: `Could not extract from ${args.url}: ${e.message}. Ask for brand details manually.` }], isError: true };
   }
 }
 
 // ─── Tool dispatch ──────────────────────────────────────────────────────────
 
 const HANDLERS = {
-  get_template_info:        handleGetTemplateInfo,
-  list_documents:           handleListDocuments,
-  get_document:             handleGetDocument,
-  create_document:          handleCreateDocument,
-  save_design_system:       handleSaveDesignSystem,
-  save_module_plan:         handleSaveModulePlan,
-  save_html:                handleSaveHtml,
-  get_preview_url:          handleGetPreviewUrl,
-  extract_brand_from_url:   handleExtractBrandFromUrl,
+  get_template_info: handleGetTemplateInfo,
+  list_documents: handleListDocuments,
+  get_document: handleGetDocument,
+  create_document: handleCreateDocument,
+  save_design_system: handleSaveDesignSystem,
+  save_module_plan: handleSaveModulePlan,
+  save_module_html: handleSaveModuleHtml,
+  assemble_document: handleAssembleDocument,
+  export_pdf: handleExportPdf,
+  get_preview_url: handleGetPreviewUrl,
+  extract_brand_from_url: handleExtractBrandFromUrl,
 };
 
 // ─── Main handler ───────────────────────────────────────────────────────────
@@ -873,42 +775,25 @@ export const handler = async (event) => {
   if (!hubUserId) return jsonResponse(401, { error: "JWT missing subject" });
 
   let rpc;
-  try {
-    rpc = JSON.parse(event.body ?? "{}");
-  } catch {
-    return rpcError(null, -32700, "Parse error");
-  }
+  try { rpc = JSON.parse(event.body ?? "{}"); } catch { return rpcError(null, -32700, "Parse error"); }
 
   const { method, params, id } = rpc;
 
-  if (method === "initialize") {
-    return rpcResult(id, {
-      protocolVersion: "2024-11-05",
-      capabilities: { tools: {} },
-      serverInfo: { name: "report-ai", version: "0.2.0" },
-    });
-  }
-
+  if (method === "initialize") return rpcResult(id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "report-ai", version: "0.3.0" } });
   if (method === "notifications/initialized") return rpcResult(id, {});
   if (method === "ping") return rpcResult(id, {});
-
-  if (method === "tools/list") {
-    return rpcResult(id, { tools: TOOLS });
-  }
+  if (method === "tools/list") return rpcResult(id, { tools: TOOLS });
 
   if (method === "tools/call") {
     const name = params?.name ?? "";
     const args = params?.arguments ?? {};
     const toolName = name.startsWith("report__") ? name.slice(8) : name;
-
-    const handlerFn = HANDLERS[toolName];
-    if (!handlerFn) return rpcError(id, -32601, `Unknown tool: ${name}`);
-
+    const fn = HANDLERS[toolName];
+    if (!fn) return rpcError(id, -32601, `Unknown tool: ${name}`);
     try {
-      const result = await handlerFn(hubUserId, args);
-      return rpcResult(id, result);
+      return rpcResult(id, await fn(hubUserId, args));
     } catch (e) {
-      console.error(`[mcp] tool ${toolName} failed:`, e);
+      console.error(`[mcp] ${toolName} failed:`, e);
       return rpcError(id, -32000, e.message ?? "Internal error");
     }
   }
