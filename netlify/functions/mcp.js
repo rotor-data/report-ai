@@ -180,10 +180,11 @@ ACTIONS: [generate document] [edit module] [add module]
 NEXT: Generating HTML module by module.
 
 ### Step 3: HTML Generation — MODULE BY MODULE
-For each module: call save_module_html.
+Call save_module_html ONLY for modules that are missing HTML or have changed content/structure.
+Do NOT regenerate unchanged modules.
 Every fragment MUST use the 4-level margin system.
 Text modules MUST have content-frame wrappers.
-After all saved: call assemble_document.
+When changed modules are saved: call assemble_document ONCE.
 
 ### Step 4: PDF Export
 Call export_pdf. Present download link.
@@ -306,7 +307,7 @@ Step 1: Theme + Design → save_design_system
 Step 1.5: DESIGN PREVIEW → preview_design → user approves look
 Step 2: Module plan → save_module_plan → STRUCTURE PREVIEW → preview_structure → user approves structure
 Step 2.5: CONTENT PREVIEW → preview_content → user approves content mapping
-Step 3: HTML generation (module by module) → save_module_html per module → assemble_document
+Step 3: HTML generation (incremental) → save_module_html for changed modules → assemble_document (once)
 Step 4: export_pdf
 
 Previews are decision tools, not final output.
@@ -792,17 +793,45 @@ async function handleSaveModulePlan(hubUserId, args) {
   const docs = await sql`SELECT id, document_type FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
   if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
 
+  const existingDocRows = await sql`
+    SELECT module_plan
+    FROM documents
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  const existingPlan = existingDocRows[0]?.module_plan || [];
+  const existingFragmentsById = new Map(
+    existingPlan
+      .filter((m) => m?.id && m?.html_fragment)
+      .map((m) => [m.id, m.html_fragment]),
+  );
+
   const planWithIds = args.module_plan.map((m, idx) => ({ id: m.id ?? randomUUID(), order: idx + 1, ...m }));
   let merged;
   try { merged = await mergeMissingStubs(docs[0].document_type, planWithIds); } catch { merged = { modulePlan: planWithIds, warnings: [] }; }
+
+  // Preserve existing per-module HTML fragments when structure is resaved.
+  // This prevents unnecessary full rerenders if the module still exists.
+  let reusedFragments = 0;
+  merged.modulePlan = merged.modulePlan.map((module) => {
+    if (module.html_fragment) return module;
+    const existingFragment = module.id ? existingFragmentsById.get(module.id) : null;
+    if (!existingFragment) return module;
+    reusedFragments += 1;
+    return { ...module, html_fragment: existingFragment };
+  });
 
   await sql`UPDATE documents SET raw_content = ${args.raw_content ?? null}, module_plan = ${JSON.stringify(merged.modulePlan)}::jsonb, status = 'ready'::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
 
   return { content: [{ type: "text", text: JSON.stringify({
     ok: true, module_count: merged.modulePlan.length,
     modules: merged.modulePlan.map((m) => ({ id: m.id, module_type: m.module_type, title: m.title })),
+    reused_html_fragments: reusedFragments,
+    modules_needing_html: merged.modulePlan.filter((m) => !m.html_fragment).map((m) => ({ id: m.id, title: m.title })),
     warnings: merged.warnings.length > 0 ? merged.warnings.map((w) => w.label).join(", ") : null,
-    next_step: "Now generate HTML for each module using save_module_html, one at a time.",
+    next_step: merged.modulePlan.some((m) => !m.html_fragment)
+      ? "Generate HTML only for modules listed in modules_needing_html, then call assemble_document once."
+      : "No missing module HTML. If content changed, update only affected modules. Then call assemble_document once.",
   }, null, 2) }] };
 }
 
@@ -814,6 +843,26 @@ async function handleSaveModuleHtml(hubUserId, args) {
   const plan = docs[0].module_plan || [];
   const moduleIdx = plan.findIndex((m) => m.id === args.module_id);
   if (moduleIdx === -1) return { content: [{ type: "text", text: `Module ${args.module_id} not found in plan` }], isError: true };
+
+  const existingFragment = plan[moduleIdx].html_fragment || "";
+  if (existingFragment === args.html_fragment) {
+    const savedCount = plan.filter((m) => m.html_fragment).length;
+    const totalCount = plan.length;
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          ok: true,
+          module: plan[moduleIdx].title,
+          skipped: true,
+          reason: "No change in html_fragment",
+          saved_count: savedCount,
+          total_count: totalCount,
+          next_step: "No update needed for this module. Continue only with modules that changed.",
+        }, null, 2),
+      }],
+    };
+  }
 
   // Store the HTML fragment in the module plan entry
   plan[moduleIdx].html_fragment = args.html_fragment;
@@ -1303,7 +1352,7 @@ async function handleLockState(hubUserId, args) {
 
 async function handleAssembleDocument(hubUserId, args) {
   const sql = getSql();
-  const docs = await sql`SELECT id, module_plan, design_system, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  const docs = await sql`SELECT id, module_plan, design_system, title, html_output FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
   if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
 
   const plan = docs[0].module_plan || [];
@@ -1319,11 +1368,35 @@ async function handleAssembleDocument(hubUserId, args) {
 
   const html = assembleHtml(docs[0].design_system || {}, plan, fonts);
   const validation = validateHtml(html);
-
-  await sql`UPDATE documents SET html_output = ${html}, status = ${validation.valid ? "ready" : "error"}::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
-
+  const previousHtml = docs[0].html_output || "";
   const key = previewKey(args.document_id);
   const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+
+  if (previousHtml === html) {
+    if (!validation.valid) {
+      return {
+        content: [{
+          type: "text",
+          text: `No assembly changes detected, but guardrail issues remain:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_html and call assemble_document again.`,
+        }],
+      };
+    }
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          ok: true,
+          skipped: true,
+          reason: "No changes since last assembly",
+          html_size_kb: Math.round(html.length / 1024),
+          preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
+          next_step: "Call export_pdf if you need a new PDF, or update changed modules only.",
+        }, null, 2),
+      }],
+    };
+  }
+
+  await sql`UPDATE documents SET html_output = ${html}, status = ${validation.valid ? "ready" : "error"}::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
 
   if (!validation.valid) {
     return { content: [{ type: "text", text: `Document assembled but has guardrail issues:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_html and call assemble_document again.` }] };
