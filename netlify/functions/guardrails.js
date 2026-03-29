@@ -29,6 +29,32 @@ export function validateHtml(html = "") {
   if (!/class=["'][^"']*cover/i.test(html)) issues.push("cover module missing");
   if (!/class=["'][^"']*back_cover/i.test(html)) issues.push("back_cover module missing");
 
+  // ── Layout validation ──
+  // Check text modules have content-frame
+  const textModuleTypes = ["text_spread", "two_col_text"];
+  for (const type of textModuleTypes) {
+    const modulePattern = new RegExp(`class="[^"]*module-${type}[^"]*"[\\s\\S]*?(?=<section|$)`, "gi");
+    const matches = html.match(modulePattern) || [];
+    for (const match of matches) {
+      if (!match.includes("content-frame")) {
+        issues.push(`Layout: ${type} module missing content-frame wrapper`);
+      }
+    }
+  }
+
+  // Check full-bleed not applied to text modules
+  if (/module-text[_-]spread[^"]*full-bleed/i.test(html)) {
+    issues.push("Layout: full-bleed incorrectly applied to text_spread module");
+  }
+  if (/module-two[_-]col[_-]text[^"]*full-bleed/i.test(html)) {
+    issues.push("Layout: full-bleed incorrectly applied to two_col_text module");
+  }
+
+  // Check body text max-width (warn if content-frame missing entirely)
+  if (html.includes("module-text-spread") && !html.includes("content-frame")) {
+    issues.push("Layout: document has text_spread modules but no content-frame wrappers — body text will be flush against page edge");
+  }
+
   return {
     valid: issues.length === 0,
     issues,

@@ -88,50 +88,109 @@ const WORKFLOW_PROMPT = `## Report AI — Modular Document Workflow
 
 You are a professional document designer. You create InDesign-quality print documents using HTML + CSS Paged Media.
 
-### CRITICAL RULES
-- **NEVER invent brand colors, fonts, or tone.** ASK the user first.
-- **NEVER generate content from thin air.** ASK the user to paste/describe their content.
-- **ALWAYS speak the user's language** (Swedish if they write Swedish).
+### CRITICAL RULES:
+- **NEVER invent brand colors, fonts, or tone.** Ask first.
+- **NEVER generate content from thin air.** Ask user to paste content.
+- **ALWAYS speak the user's language.**
 - **Ask ONE focused question at a time.**
 
----
+## Architecture: THEME / DESIGN / TEMPLATE
+
+Three separate layers — never conflate them:
+
+THEME = raw design tokens only
+  Colors (primary, secondary, accent, text, text_light, bg, bg_alt, surface)
+  Typography scale (font families, sizes 42/28/20/16/13/10.5/9pt, weights, line-height)
+  Spacing system (base_mm, section_gap_mm, column_gap_mm)
+  Page geometry (A4, margins)
+  → Stored in document.design_system
+
+DESIGN = how the theme is applied visually
+  hierarchy: what dominates visually (e.g. "cover title is 48pt, KPI values are 32pt, body is 10.5pt")
+  rhythm: spacing pattern between sections (e.g. "16mm between modules, 8mm inside")
+  density: airy / balanced / compact (affects spacing multiplier)
+  module_behavior: per-module layout rules (bleed, insets, max text width)
+  → Stored in document.design_system.design {}
+
+TEMPLATE = document structure
+  Which modules in which order
+  Required sections per document type
+  → Stored in document.module_plan []
+
+Rules:
+- THEME can change without affecting DESIGN
+- DESIGN can change without affecting TEMPLATE
+- TEMPLATE can change without affecting THEME
+- When generating HTML, read DESIGN to decide spacing, hierarchy, density — not just THEME tokens
+
+## Locking
+
+Parts of the document state can be LOCKED to prevent accidental changes:
+- theme_locked: true → design_system tokens cannot be modified
+- template_locked: true → module_plan structure cannot be modified
+- design_locked: true → design_system.design cannot be modified
+- content: NEVER locked — always free to iterate
+
+Lock state is stored in document.design_system._locks = { theme: bool, template: bool, design: bool }
+
+When a part is locked:
+- Tell the user: "[THEME LOCKED] Temat är låst. Skriv 'lås upp theme' för att ändra."
+- Do NOT modify locked parts
+- Only unlock via explicit user command: "lås upp theme" / "unlock theme"
+
+After Step 1.5 (design preview approved): auto-lock theme and design.
+After Step 2 (module plan approved): auto-lock template.
+Content and module HTML are always editable.
 
 ### Step 0: Choose Document Type
-Call get_template_info (without document_type) to see available types. Ask the user what they want. If they already specified, skip ahead.
+Call get_template_info (without document_type) to see available types.
+Ask user what they want. If they already specified, skip ahead.
 
-### Step 1: Brand Extraction
+### Step 1: Theme + Design Extraction
 Ask for: company name, website URL (call extract_brand_from_url), colors, fonts, tone.
-If custom fonts are available (shown in get_template_info → custom_fonts), present them as an option.
-If the user says "välj åt mig", pick a cohesive design using system fonts and explain your choices.
-Call create_document + save_design_system.
+Also ask about DESIGN preferences:
+- "Vill du ha en luftig, balanserad eller kompakt layout?" (density)
+- "Ska visuell hierarki vara standard, editorial eller datatung?" (hierarchy)
+If custom fonts are available (custom_fonts[]), present them.
+If user says "välj åt mig", pick a cohesive theme+design and explain.
+Call create_document + save_design_system (with both theme tokens AND design object).
 
-### Step 1.5: Design Preview — MANDATORY before proceeding
-After saving the design system, call preview_design.
-This generates a visual moodboard showing how all module types look with the chosen colors and fonts.
-Tell the user: "Här är en förhandsgranskning av designen: [URL]. Kolla igenom hur omslaget, tabeller, nyckeltal och textspreadar ser ut. Vill du ändra något?"
-WAIT for approval. If they want changes: update the design system (save_design_system again) and regenerate preview (preview_design again).
-ONLY proceed to Step 2 when the user is satisfied with the design.
+### Step 1.5: DESIGN PREVIEW — MANDATORY
+Call preview_design. Show URL to user.
+"Öppna länken. Kolla färger, typsnitt, modulernas spacing och bredd. Godkänn eller be om ändringar."
+WAIT for approval.
+On approval: auto-lock theme + design (call lock_state twice).
+Present:
+
+STATUS: Design approved and locked.
+ACTIONS: [start content] [adjust design] [change document type]
+NEXT: Paste or describe your content.
 
 ### Step 2: Content & Module Planning
-ASK the user to PASTE their text/data. WAIT for it.
-Map content to modules, present the plan, get confirmation.
-Call save_module_plan.
+ASK user to PASTE content. WAIT.
+Map content to modules. Call save_module_plan.
+Call preview_structure — show to user. Get approval.
+Call preview_content — show to user. Get approval.
+On approval: auto-lock template.
+Present:
+
+STATUS: Structure and content approved. Template locked.
+DIFF: [list modules added]
+ACTIONS: [generate document] [edit module] [add module]
+NEXT: Generating HTML module by module.
 
 ### Step 3: HTML Generation — MODULE BY MODULE
-**IMPORTANT: Generate HTML one module at a time using save_module_html.**
-This avoids huge payloads and makes revisions fast (re-save only the changed module).
+For each module: call save_module_html.
+Every fragment MUST use the 4-level margin system.
+Text modules MUST have content-frame wrappers.
+After all saved: call assemble_document.
 
-For each module in the plan, call save_module_html with:
-- module_id (from the plan)
-- html_fragment: a single <section class="module module-{type}"> element
+### Step 4: PDF Export
+Call export_pdf. Present download link.
 
-After all modules are saved, call assemble_document to build the complete HTML.
-
-### Step 4: PDF Export & Download
-Call export_pdf to generate a PDF. Returns a download URL the user can save.
-Also call get_preview_url for a browser preview if they want to inspect first.
-
----
+STATUS: PDF generated (X KB).
+ACTIONS: [download] [preview in browser] [revise module] [new document]
+NEXT: Done. Ask if adjustments needed.
 
 ## HTML Fragment Rules (for save_module_html)
 
@@ -140,69 +199,119 @@ Each fragment is ONE <section> element. Do NOT include <!DOCTYPE>, <html>, <head
 ### CSS Class Pattern:
 \`<section class="module module-{type}" data-module-id="{id}">\`
 
-### Use CSS variables from the design system:
-var(--color-primary), var(--font-heading), var(--spacing-base), etc.
-NEVER hardcode colors or font names in fragments.
+### 4-Level Margin System — MANDATORY:
+Every module fragment must use this structure:
 
-### Module-specific rules:
-- **cover**: height: 297mm; full-bleed background; centered title. NO @page margins (handled by @page :first).
-- **chapter_break**: height: 297mm; chapter number + title centered.
-- **text_spread**: normal flow; paragraphs with margin-bottom: var(--spacing-base); proper heading hierarchy.
-- **kpi_grid**: CSS grid; .kpi-card with large .kpi-value (28-36pt) + .kpi-label (9pt).
-- **table**: full-width; border-collapse; th bottom-border in primary color; numbers right-aligned; .total row bold.
-- **data_chart**: Use INLINE SVG for charts (line, bar, pie). NO <script> or JS. SVG viewBox="0 0 width height". Include axis labels, data points, legend in SVG. Add a <figcaption> below.
-- **back_cover**: height: 297mm; content pushed to bottom with flex-end.
+LEVEL 1 — PAGE MARGINS: handled by @page CSS rule. Never set body margins.
+LEVEL 2 — CONTENT FRAME: wrap body text in <div class="content-frame">. This ensures max-width and centering.
+LEVEL 3 — MODULE INSETS: use <div class="module-inset"> for per-module padding when needed.
+LEVEL 4 — FULL-BLEED: use class="full-bleed" only on cover, chapter_break, back_cover. NEVER on text modules.
 
-### Typography:
-- h1: 42pt (cover only), h2: 28pt, h3: 20pt, body: var(--base-size), captions: 9pt
-- Min font: 7pt
+Body text (text_spread, two_col_text) MUST always be inside a content-frame.
+Body text MUST NEVER be flush against the page edge.
+Body text max-width: 150mm (ensures ~65-75 characters per line for optimal readability).
 
-### Number formatting (sv-SE):
-- Thousands: 1 234 567 (thin space)
-- Decimals: comma (1 234,50)
-- Currency: 48,2 MSEK
-- Percent: 12,7 %
+### Module-Specific Layout Rules:
 
-### FONTS — CRITICAL:
-- Custom fonts are automatically loaded via @font-face from the user's uploaded fonts (returned in get_template_info as custom_fonts[]). Use those family names directly in the design system.
-- If no custom fonts are uploaded, use system fonts: Georgia, serif / system-ui, sans-serif / "Helvetica Neue", Helvetica, sans-serif — these work everywhere without any import.
-- NEVER embed fonts as base64 data URLs — this bloats HTML to 900K+
-- NEVER require Google Fonts — this creates an external dependency and breaks offline use
+**cover** (full-bleed):
+  <section class="module module-cover"><div class="content-frame">...</div></section>
+  - height: 297mm, full-bleed background, content centered via flex
+  - Content-frame inside for text positioning
 
-### Page breaks:
-- .module { page-break-after: always; } .module:last-child { page-break-after: auto; }
-- NEVER set height on text_spread or flowing content modules — let them grow naturally
-- ONLY set height: 297mm on cover, chapter_break, back_cover (full-page modules)
-- Use page-break-inside: avoid on KPI cards, table rows, and quote blocks
+**chapter_break** (full-bleed):
+  <section class="module module-chapter-break"><div class="content-frame">...</div></section>
+  - height: 297mm, chapter number + title
 
-### SVG Chart Example (line chart):
-\`\`\`html
-<figure class="chart">
-  <svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
-    <line x1="40" y1="180" x2="380" y2="180" stroke="var(--color-surface)" stroke-width="1"/>
-    <line x1="40" y1="20" x2="40" y2="180" stroke="var(--color-surface)" stroke-width="1"/>
-    <polyline points="40,160 120,120 200,140 280,80 360,40" fill="none" stroke="var(--color-primary)" stroke-width="2.5"/>
-    <circle cx="40" cy="160" r="4" fill="var(--color-primary)"/>
-    <circle cx="120" cy="120" r="4" fill="var(--color-primary)"/>
-    <text x="40" y="195" font-size="8pt" fill="var(--color-text-light)">Q1</text>
-    <text x="120" y="195" font-size="8pt" fill="var(--color-text-light)">Q2</text>
-  </svg>
-  <figcaption>Omsättning per kvartal, MSEK</figcaption>
-</figure>
-\`\`\`
+**text_spread** (content-frame REQUIRED):
+  <section class="module module-text-spread"><div class="content-frame">...</div></section>
+  - NO height set — flows naturally
+  - ALL text inside content-frame (max-width 150mm, centered)
+  - Paragraphs: margin-bottom: var(--spacing-base)
+  - page-break-inside: avoid on paragraphs
 
----
+**kpi_grid** (content-frame):
+  <section class="module module-kpi-grid"><div class="content-frame">...</div></section>
+  - Grid inside content-frame
+  - page-break-inside: avoid on .kpi-card
 
-## Revisions
-When the user wants to change something:
-1. Identify which module(s) need updating
-2. Call save_module_html ONLY for the changed module(s)
-3. Call assemble_document to rebuild
-4. Call export_pdf for a new PDF
+**table** (content-frame):
+  <section class="module module-table"><div class="content-frame">...</div></section>
+  - Table inside content-frame (max-width 175mm)
+  - page-break-inside: avoid on table
 
-NEVER re-generate all modules for a small change. This is the key advantage of the modular approach.
+**quote_callout** (content-frame, narrow):
+  <section class="module module-quote-callout"><div class="content-frame">...</div></section>
+  - Narrow content-frame (max-width 130mm via CSS)
 
----
+**data_chart** (content-frame):
+  <section class="module module-data-chart"><div class="content-frame">...</div></section>
+  - SVG inside content-frame
+
+**financial_summary** (content-frame):
+  <section class="module module-financial-summary"><div class="content-frame">...</div></section>
+  - Hero numbers + table inside content-frame
+
+**two_col_text** (content-frame REQUIRED):
+  <section class="module module-two-col-text"><div class="content-frame">...</div></section>
+  - column-count: 2 inside content-frame
+
+**back_cover** (full-bleed):
+  <section class="module module-back-cover"><div class="content-frame">...</div></section>
+  - height: 297mm, flex-end layout
+
+## Response Format — GUI-like behavior
+
+ALL responses must follow this structure:
+
+STATUS: [what just happened]
+[optional diff if something changed]
+
+ACTIONS:
+- [action 1]
+- [action 2]
+NEXT: [what happens next if user approves]
+
+Rules:
+- Never use free-form dialog. Always use STATUS / ACTIONS / NEXT.
+- Keep STATUS to one line.
+- Keep ACTIONS to 2-4 concrete choices.
+- NEXT should be one sentence.
+
+## Output Discipline
+
+- All output must be structured and directly actionable.
+- No filler, no fluff, no restating what the user said.
+- When showing design_system or module_plan: show only the relevant part, not the entire object.
+- When a small change is made: show ONLY the diff, not the full structure.
+
+## Diff Logic
+
+When any part of the document changes, show a diff:
+
+DIFF:
+UPDATED: design.rhythm "balanced" → "airy"
+ADDED: module #5 quote_callout "CEO Quote"
+REMOVED: module #3 data_chart "Revenue Chart"
+
+Rules:
+- ADDED = new item
+- UPDATED = changed value (show old → new)
+- REMOVED = deleted item
+- UNCHANGED items: do not list them
+- For module HTML changes: show only module title + what changed, NOT the full HTML
+
+## Preview Workflow
+
+Step 1: Theme + Design → save_design_system
+Step 1.5: DESIGN PREVIEW → preview_design → user approves look
+Step 2: Module plan → save_module_plan → STRUCTURE PREVIEW → preview_structure → user approves structure
+Step 2.5: CONTENT PREVIEW → preview_content → user approves content mapping
+Step 3: HTML generation (module by module) → save_module_html per module → assemble_document
+Step 4: export_pdf
+
+Previews are decision tools, not final output.
+After design preview approved: auto-lock theme + design.
+After structure preview approved: auto-lock template.
 
 ## Module Types Reference
 ${_MODULE_REF}
@@ -326,14 +435,66 @@ figure.chart svg { width: 100%; max-height: 200mm; }
 figcaption { font-size: 9pt; color: var(--color-text-light); margin-top: 2mm; }
 
 .image-placeholder { background: var(--color-bg-alt); border: 1pt dashed var(--color-surface); display: flex; align-items: center; justify-content: center; min-height: 80mm; color: var(--color-text-light); font-size: 9pt; }
+
+/* ── 4-level margin system ── */
+/* Level 1: Page margins — handled by @page rule above */
+/* Level 2: Content frame — main text area */
+.content-frame {
+  max-width: ${ds?.design?.module_behavior?.text_spread?.max_text_width_mm || 160}mm;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0 ${ds?.design?.module_behavior?.text_spread?.inset_mm || 0}mm;
+}
+
+/* Level 3: Module insets — per-module internal padding */
+.module-inset {
+  padding-left: var(--spacing-section);
+  padding-right: var(--spacing-section);
+}
+
+/* Level 4: Full-bleed — explicitly override margins */
+.full-bleed {
+  margin-left: calc(-1 * ${p.margin_outer_mm || 20}mm);
+  margin-right: calc(-1 * ${p.margin_inner_mm || 25}mm);
+  padding: 0;
+}
+
+/* ── Design-driven spacing ── */
+.rhythm-airy .module { margin-bottom: ${(s.section_gap_mm || 15) * 1.5}mm; }
+.rhythm-balanced .module { margin-bottom: ${s.section_gap_mm || 15}mm; }
+.rhythm-compact .module { margin-bottom: ${(s.section_gap_mm || 15) * 0.6}mm; }
+
+.density-airy { --density-factor: 1.4; }
+.density-balanced { --density-factor: 1.0; }
+.density-compact { --density-factor: 0.7; }
+
+/* ── Body text protection ── */
+.module-text-spread .content-frame,
+.module-two-col-text .content-frame {
+  max-width: ${ds?.design?.module_behavior?.text_spread?.max_text_width_mm || 150}mm;
+  margin: 0 auto;
+}
+
+/* ── Module-specific layout rules ── */
+.module-cover { position: relative; overflow: hidden; }
+.module-cover .content-frame { position: relative; z-index: 1; }
+.module-chapter-break .content-frame { max-width: 180mm; }
+.module-kpi-grid .content-frame { max-width: 180mm; margin: 0 auto; }
+.module-table .content-frame { max-width: 175mm; margin: 0 auto; }
+.module-quote-callout .content-frame { max-width: 130mm; margin: 0 auto; }
+.module-financial-summary .content-frame { max-width: 175mm; margin: 0 auto; }
+.module-data-chart .content-frame { max-width: 170mm; margin: 0 auto; }
 `;
 }
 
 function assembleHtml(designSystem, modules, customFonts = []) {
   const css = buildDocumentCss(designSystem, customFonts);
+  const design = designSystem?.design || {};
+  const rhythmClass = `rhythm-${design.rhythm || "balanced"}`;
+  const densityClass = `density-${design.density || "balanced"}`;
   const fragments = modules
     .sort((a, b) => (a.order ?? 999) - (b.order ?? 999))
-    .map((m) => m.html_fragment || `<section class="module module-${m.module_type}"><p>[${m.title} — inget HTML-fragment sparat ännu]</p></section>`)
+    .map((m) => m.html_fragment || `<section class="module module-${m.module_type}"><div class="content-frame"><p>[${m.title}]</p></div></section>`)
     .join("\n\n");
 
   return `<!DOCTYPE html>
@@ -345,7 +506,7 @@ function assembleHtml(designSystem, modules, customFonts = []) {
 ${css}
 </style>
 </head>
-<body>
+<body class="${rhythmClass} ${densityClass}">
 ${fragments}
 </body>
 </html>`;
@@ -410,7 +571,7 @@ const TOOLS = [
   },
   {
     name: "save_design_system",
-    description: "Step 1: Save design system. NEVER use made-up values — use exactly what the user told you. For fonts: use custom_fonts family names if the user has uploaded fonts, otherwise system fonts (Georgia, system-ui, etc). NO Google Fonts required.",
+    description: "Step 1: Save theme tokens + design layer. design_system must include: colors, typography, spacing, page, AND a design object: { hierarchy: 'standard'|'editorial'|'data-dense', rhythm: 'airy'|'balanced'|'compact', density: 'airy'|'balanced'|'compact', module_behavior: { cover: {bleed:true}, text_spread: {max_text_width_mm:140, inset_mm:25}, ... } }. NEVER use made-up token values.",
     inputSchema: {
       type: "object",
       properties: {
@@ -434,6 +595,24 @@ const TOOLS = [
     },
   },
   {
+    name: "preview_structure",
+    description: "Generate a STRUCTURE PREVIEW showing the document's section hierarchy, module types, and order as a structured outline. Returns a text representation — not HTML. Use after save_module_plan to confirm structure with the user before generating HTML.",
+    inputSchema: {
+      type: "object",
+      properties: { document_id: { type: "string" } },
+      required: ["document_id"],
+    },
+  },
+  {
+    name: "preview_content",
+    description: "Generate a CONTENT PREVIEW showing how the user's actual content maps into each module. Returns a text summary per module: title, content snippet, data summary. Use before generating HTML to let the user verify content placement. This is NOT the final output — it is a decision tool.",
+    inputSchema: {
+      type: "object",
+      properties: { document_id: { type: "string" } },
+      required: ["document_id"],
+    },
+  },
+  {
     name: "save_module_plan",
     description: "Step 2: Save module plan. Map the user's ACTUAL content to modules. Ask user to paste content if you don't have it.",
     inputSchema: {
@@ -444,6 +623,19 @@ const TOOLS = [
         module_plan: { type: "array", items: { type: "object" }, description: "Ordered: { module_type, title, semantic_role?, content?, data? }" },
       },
       required: ["document_id", "module_plan"],
+    },
+  },
+  {
+    name: "lock_state",
+    description: "Lock or unlock theme, design, or template. Locked parts cannot be modified. Content is always unlocked.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        document_id: { type: "string" },
+        action: { type: "string", enum: ["lock", "unlock"] },
+        target: { type: "string", enum: ["theme", "design", "template"] },
+      },
+      required: ["document_id", "action", "target"],
     },
   },
   {
@@ -545,10 +737,38 @@ async function handleCreateDocument(hubUserId, args) {
 
 async function handleSaveDesignSystem(hubUserId, args) {
   const sql = getSql();
+  const existingDoc = await sql`
+    SELECT design_system
+    FROM documents
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (existingDoc[0]?.design_system?._locks?.theme) {
+    return { content: [{ type: "text", text: "BLOCKED: Theme is locked. User must say 'unlock theme' / 'lås upp theme' to modify." }], isError: true };
+  }
+  if (existingDoc[0]?.design_system?._locks?.design) {
+    return { content: [{ type: "text", text: "BLOCKED: Design is locked. User must say 'unlock design' / 'lås upp design' to modify." }], isError: true };
+  }
+
+  const incoming = { ...(args.design_system || {}) };
+  const design = incoming.design || {
+    hierarchy: "standard",
+    rhythm: "balanced",
+    density: "balanced",
+    module_behavior: {},
+  };
+  incoming.design = {
+    hierarchy: design.hierarchy || "standard",
+    rhythm: design.rhythm || "balanced",
+    density: design.density || "balanced",
+    module_behavior: design.module_behavior || {},
+  };
+  incoming._locks = existingDoc[0]?.design_system?._locks || incoming._locks || { theme: false, template: false, design: false };
+
   const rows = await sql`
     UPDATE documents SET
       brand_input = ${JSON.stringify(args.brand_input ?? {})}::jsonb,
-      design_system = ${JSON.stringify(args.design_system)}::jsonb,
+      design_system = ${JSON.stringify(incoming)}::jsonb,
       status = 'ready'::doc_status, updated_at = NOW()
     WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
     RETURNING id, status
@@ -559,6 +779,16 @@ async function handleSaveDesignSystem(hubUserId, args) {
 
 async function handleSaveModulePlan(hubUserId, args) {
   const sql = getSql();
+  const docCheck = await sql`
+    SELECT design_system
+    FROM documents
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (docCheck[0]?.design_system?._locks?.template) {
+    return { content: [{ type: "text", text: "BLOCKED: Template is locked. User must say 'unlock template' / 'lås upp template' to modify." }], isError: true };
+  }
+
   const docs = await sql`SELECT id, document_type FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
   if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
 
@@ -682,11 +912,13 @@ body { margin: 0; padding: 0; background: #e8e8e8; }
 <div class="moodboard-label">Modul: Omslag (cover)</div>
 <div class="page-shell full-page">
   <section class="module module-cover" style="padding: 20mm;">
-    <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 16mm;">
-      <div style="font-family: var(--font-body); font-size: 10pt; opacity: 0.6; margin-bottom: 6mm; text-transform: uppercase; letter-spacing: 0.15em;">${year}</div>
-      <h1 style="color: white; margin-bottom: 4mm; font-size: 38pt;">Årsredovisning<br>${year}</h1>
-      <p style="color: rgba(255,255,255,0.75); font-size: 14pt; margin: 0 0 8mm;">${name}</p>
-      <div style="width: 40mm; height: 2pt; background: var(--color-accent);"></div>
+    <div class="content-frame">
+      <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 16mm;">
+        <div style="font-family: var(--font-body); font-size: 10pt; opacity: 0.6; margin-bottom: 6mm; text-transform: uppercase; letter-spacing: 0.15em;">${year}</div>
+        <h1 style="color: white; margin-bottom: 4mm; font-size: 38pt;">Årsredovisning<br>${year}</h1>
+        <p style="color: rgba(255,255,255,0.75); font-size: 14pt; margin: 0 0 8mm;">${name}</p>
+        <div style="width: 40mm; height: 2pt; background: var(--color-accent);"></div>
+      </div>
     </div>
   </section>
 </div>
@@ -695,7 +927,7 @@ body { margin: 0; padding: 0; background: #e8e8e8; }
 <div class="moodboard-label">Modul: Kapitelbrytare (chapter_break)</div>
 <div class="page-shell" style="min-height: 180mm;">
   <section class="module module-chapter-break" style="min-height: 180mm; padding: 16mm;">
-    <div>
+    <div class="content-frame">
       <div class="chapter-number" style="font-size: 80pt; font-weight: 700; color: var(--color-accent); line-height: 1; margin-bottom: 6mm;">01</div>
       <h2 style="font-size: 28pt; color: var(--color-primary); margin: 0 0 4mm;">Verksamhetsöversikt</h2>
       <p style="font-size: 12pt; color: var(--color-text-light); margin: 0; max-width: 120mm;">En sammanfattning av årets verksamhet, strategiska prioriteringar och framsteg mot långsiktiga mål.</p>
@@ -706,33 +938,35 @@ body { margin: 0; padding: 0; background: #e8e8e8; }
 <!-- ── KPI GRID ── -->
 <div class="moodboard-label">Modul: Nyckeltal (kpi_grid)</div>
 <div class="page-shell" style="padding: 10mm;">
-  <section class="module-kpi-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-base); page-break-after: never;">
-    <div class="kpi-card" style="border-top: 3pt solid var(--color-primary); padding-top: 4mm;">
-      <div class="kpi-value">1 243 MSEK</div>
-      <div class="kpi-label">Nettoomsättning</div>
-      <div class="kpi-delta positive" style="font-size: 9pt; color: #2e7d32; margin-top: 2mm;">▲ 12,4 % vs föregående år</div>
-    </div>
-    <div class="kpi-card" style="border-top: 3pt solid var(--color-secondary); padding-top: 4mm;">
-      <div class="kpi-value">187 MSEK</div>
-      <div class="kpi-label">EBITDA</div>
-      <div class="kpi-delta positive" style="font-size: 9pt; color: #2e7d32; margin-top: 2mm;">▲ 8,7 % vs föregående år</div>
-    </div>
-    <div class="kpi-card" style="border-top: 3pt solid var(--color-accent); padding-top: 4mm;">
-      <div class="kpi-value">15,0 %</div>
-      <div class="kpi-label">EBITDA-marginal</div>
-      <div class="kpi-delta negative" style="font-size: 9pt; color: #c62828; margin-top: 2mm;">▼ 0,5 pp vs föregående år</div>
-    </div>
-    <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
-      <div class="kpi-value">2 847</div>
-      <div class="kpi-label">Antal anställda</div>
-    </div>
-    <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
-      <div class="kpi-value">14</div>
-      <div class="kpi-label">Länder</div>
-    </div>
-    <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
-      <div class="kpi-value">92 %</div>
-      <div class="kpi-label">Kundnöjdhet (NPS)</div>
+  <section class="module module-kpi-grid" style="page-break-after: never;">
+    <div class="content-frame" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-base);">
+      <div class="kpi-card" style="border-top: 3pt solid var(--color-primary); padding-top: 4mm;">
+        <div class="kpi-value">1 243 MSEK</div>
+        <div class="kpi-label">Nettoomsättning</div>
+        <div class="kpi-delta positive" style="font-size: 9pt; color: #2e7d32; margin-top: 2mm;">▲ 12,4 % vs föregående år</div>
+      </div>
+      <div class="kpi-card" style="border-top: 3pt solid var(--color-secondary); padding-top: 4mm;">
+        <div class="kpi-value">187 MSEK</div>
+        <div class="kpi-label">EBITDA</div>
+        <div class="kpi-delta positive" style="font-size: 9pt; color: #2e7d32; margin-top: 2mm;">▲ 8,7 % vs föregående år</div>
+      </div>
+      <div class="kpi-card" style="border-top: 3pt solid var(--color-accent); padding-top: 4mm;">
+        <div class="kpi-value">15,0 %</div>
+        <div class="kpi-label">EBITDA-marginal</div>
+        <div class="kpi-delta negative" style="font-size: 9pt; color: #c62828; margin-top: 2mm;">▼ 0,5 pp vs föregående år</div>
+      </div>
+      <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
+        <div class="kpi-value">2 847</div>
+        <div class="kpi-label">Antal anställda</div>
+      </div>
+      <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
+        <div class="kpi-value">14</div>
+        <div class="kpi-label">Länder</div>
+      </div>
+      <div class="kpi-card" style="padding-top: 4mm; border-top: 1pt solid var(--color-surface);">
+        <div class="kpi-value">92 %</div>
+        <div class="kpi-label">Kundnöjdhet (NPS)</div>
+      </div>
     </div>
   </section>
 </div>
@@ -740,18 +974,20 @@ body { margin: 0; padding: 0; background: #e8e8e8; }
 <!-- ── TEXT SPREAD ── -->
 <div class="moodboard-label">Modul: Textsida (text_spread) — VD-ord</div>
 <div class="page-shell" style="padding: 14mm 16mm;">
-  <section>
-    <h3 style="color: var(--color-secondary); font-size: 10pt; text-transform: uppercase; letter-spacing: 0.1em; margin: 0 0 3mm;">VD-ord</h3>
-    <h2 style="font-size: 24pt; margin: 0 0 6mm; color: var(--color-primary);">${year} — ett år av stark tillväxt och strategisk förnyelse</h2>
-    <div class="sample-body-text" style="column-count: 2; column-gap: var(--spacing-col-gap);">
-      <p>Under ${year} fortsatte vår tillväxtresa med imponerande kraft. Vi nådde en nettoomsättning på 1 243 MSEK, en ökning med 12,4 procent jämfört med föregående år. Denna framgång är ett resultat av hårt arbete från vår dedikerade personal och ett tydligt strategiskt fokus.</p>
-      <p>Vår satsning på digitala lösningar har gett tydliga resultat. Den digitala försäljningskanalen växte med 34 procent och utgör nu 28 procent av den totala omsättningen. Vi ser fortsatt stor potential i detta segment.</p>
-      <p>Hållbarhet är en integrerad del av vår affärsstrategi. Under året minskade vi våra koldioxidutsläpp med 18 procent och är nu på god väg mot vårt mål om klimatneutralitet år 2030.</p>
-      <p>Jag vill rikta ett varmt tack till alla medarbetare, kunder och aktieägare för ert fortsatta förtroende och engagemang.</p>
-    </div>
-    <div style="margin-top: 6mm; border-top: 1pt solid var(--color-surface); padding-top: 4mm;">
-      <div style="font-family: var(--font-heading); font-size: 12pt; font-weight: 700;">Anna Lindqvist</div>
-      <div style="font-size: 9pt; color: var(--color-text-light);">Verkställande direktör, ${name}</div>
+  <section class="module module-text-spread">
+    <div class="content-frame">
+      <h3 style="color: var(--color-secondary); font-size: 10pt; text-transform: uppercase; letter-spacing: 0.1em; margin: 0 0 3mm;">VD-ord</h3>
+      <h2 style="font-size: 24pt; margin: 0 0 6mm; color: var(--color-primary);">${year} — ett år av stark tillväxt och strategisk förnyelse</h2>
+      <div class="sample-body-text" style="column-count: 2; column-gap: var(--spacing-col-gap);">
+        <p>Under ${year} fortsatte vår tillväxtresa med imponerande kraft. Vi nådde en nettoomsättning på 1 243 MSEK, en ökning med 12,4 procent jämfört med föregående år. Denna framgång är ett resultat av hårt arbete från vår dedikerade personal och ett tydligt strategiskt fokus.</p>
+        <p>Vår satsning på digitala lösningar har gett tydliga resultat. Den digitala försäljningskanalen växte med 34 procent och utgör nu 28 procent av den totala omsättningen. Vi ser fortsatt stor potential i detta segment.</p>
+        <p>Hållbarhet är en integrerad del av vår affärsstrategi. Under året minskade vi våra koldioxidutsläpp med 18 procent och är nu på god väg mot vårt mål om klimatneutralitet år 2030.</p>
+        <p>Jag vill rikta ett varmt tack till alla medarbetare, kunder och aktieägare för ert fortsatta förtroende och engagemang.</p>
+      </div>
+      <div style="margin-top: 6mm; border-top: 1pt solid var(--color-surface); padding-top: 4mm;">
+        <div style="font-family: var(--font-heading); font-size: 12pt; font-weight: 700;">Anna Lindqvist</div>
+        <div style="font-size: 9pt; color: var(--color-text-light);">Verkställande direktör, ${name}</div>
+      </div>
     </div>
   </section>
 </div>
@@ -759,46 +995,51 @@ body { margin: 0; padding: 0; background: #e8e8e8; }
 <!-- ── TABLE ── -->
 <div class="moodboard-label">Modul: Tabell (table)</div>
 <div class="page-shell" style="padding: 10mm 12mm;">
-  <section>
-    <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Finansiell sammanfattning</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Post</th>
-          <th class="number">${year}</th>
-          <th class="number">${year - 1}</th>
-          <th class="number">Förändring</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>Nettoomsättning</td><td class="number">1 243,2</td><td class="number">1 106,0</td><td class="number" style="color:#2e7d32;">+12,4 %</td></tr>
-        <tr><td>Bruttoresultat</td><td class="number">498,1</td><td class="number">436,4</td><td class="number" style="color:#2e7d32;">+14,1 %</td></tr>
-        <tr><td>EBITDA</td><td class="number">187,0</td><td class="number">172,0</td><td class="number" style="color:#2e7d32;">+8,7 %</td></tr>
-        <tr><td>EBIT</td><td class="number">143,2</td><td class="number">131,8</td><td class="number" style="color:#2e7d32;">+8,6 %</td></tr>
-        <tr class="total"><td>Årets resultat</td><td class="number">98,4</td><td class="number">89,1</td><td class="number" style="color:#2e7d32;">+10,4 %</td></tr>
-      </tbody>
-    </table>
-    <p style="font-size: 8pt; color: var(--color-text-light); margin-top: 2mm;">Alla belopp i MSEK.</p>
+  <section class="module module-table">
+    <div class="content-frame">
+      <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Finansiell sammanfattning</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Post</th>
+            <th class="number">${year}</th>
+            <th class="number">${year - 1}</th>
+            <th class="number">Förändring</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Nettoomsättning</td><td class="number">1 243,2</td><td class="number">1 106,0</td><td class="number" style="color:#2e7d32;">+12,4 %</td></tr>
+          <tr><td>Bruttoresultat</td><td class="number">498,1</td><td class="number">436,4</td><td class="number" style="color:#2e7d32;">+14,1 %</td></tr>
+          <tr><td>EBITDA</td><td class="number">187,0</td><td class="number">172,0</td><td class="number" style="color:#2e7d32;">+8,7 %</td></tr>
+          <tr><td>EBIT</td><td class="number">143,2</td><td class="number">131,8</td><td class="number" style="color:#2e7d32;">+8,6 %</td></tr>
+          <tr class="total"><td>Årets resultat</td><td class="number">98,4</td><td class="number">89,1</td><td class="number" style="color:#2e7d32;">+10,4 %</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size: 8pt; color: var(--color-text-light); margin-top: 2mm;">Alla belopp i MSEK.</p>
+    </div>
   </section>
 </div>
 
 <!-- ── QUOTE CALLOUT ── -->
 <div class="moodboard-label">Modul: Citat (quote_callout)</div>
 <div class="page-shell" style="padding: 16mm; min-height: 100mm;">
-  <section class="module-quote-callout">
-    <blockquote>
-      "Vi ser en marknad i snabb förändring där de som agerar med beslutsamhet och långsiktighet kommer att vinna. Det är precis vad vi gör."
-      <cite>Anna Lindqvist, VD ${name}</cite>
-    </blockquote>
+  <section class="module module-quote-callout">
+    <div class="content-frame">
+      <blockquote>
+        "Vi ser en marknad i snabb förändring där de som agerar med beslutsamhet och långsiktighet kommer att vinna. Det är precis vad vi gör."
+        <cite>Anna Lindqvist, VD ${name}</cite>
+      </blockquote>
+    </div>
   </section>
 </div>
 
 <!-- ── SVG CHART ── -->
 <div class="moodboard-label">Modul: Diagram (data_chart) — Inline SVG linjediagram</div>
 <div class="page-shell" style="padding: 10mm 12mm;">
-  <section>
-    <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Omsättningsutveckling, MSEK</h3>
-    <figure class="chart">
+  <section class="module module-data-chart">
+    <div class="content-frame">
+      <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Omsättningsutveckling, MSEK</h3>
+      <figure class="chart">
       <svg viewBox="0 0 500 220" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-height:180px;">
         <!-- Grid lines -->
         <line x1="60" y1="20" x2="60" y2="180" stroke="${c.surface || "#E8E4DE"}" stroke-width="1"/>
@@ -835,46 +1076,51 @@ body { margin: 0; padding: 0; background: #e8e8e8; }
         <line x1="400" y1="215" x2="420" y2="215" stroke="${c.secondary || "#4A7C9E"}" stroke-width="1.5" stroke-dasharray="4,2"/>
         <text x="425" y="218" font-size="8" fill="${c.text_light || "#666"}" font-family="system-ui">Budget</text>
       </svg>
-      <figcaption>Nettoomsättning per år, MSEK. Gestreckat: budget.</figcaption>
-    </figure>
+        <figcaption>Nettoomsättning per år, MSEK. Gestreckat: budget.</figcaption>
+      </figure>
+    </div>
   </section>
 </div>
 
 <!-- ── FINANCIAL SUMMARY ── -->
 <div class="moodboard-label">Modul: Finansiell sammanfattning (financial_summary)</div>
 <div class="page-shell" style="padding: 12mm; background: var(--color-bg-alt);">
-  <section>
-    <h3 style="font-size: 14pt; margin: 0 0 6mm; color: var(--color-primary);">Finansiella höjdpunkter ${year}</h3>
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin-bottom: 8mm;">
-      <div style="background: var(--color-primary); color: white; padding: 8mm; border-radius: 2mm;">
-        <div style="font-size: 36pt; font-weight: 700; line-height: 1;">1 243</div>
-        <div style="font-size: 10pt; opacity: 0.8; margin-top: 2mm;">MSEK Nettoomsättning</div>
-        <div style="font-size: 9pt; color: var(--color-accent); margin-top: 1mm;">▲ 12,4 % tillväxt</div>
+  <section class="module module-financial-summary">
+    <div class="content-frame">
+      <h3 style="font-size: 14pt; margin: 0 0 6mm; color: var(--color-primary);">Finansiella höjdpunkter ${year}</h3>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin-bottom: 8mm;">
+        <div style="background: var(--color-primary); color: white; padding: 8mm; border-radius: 2mm;">
+          <div style="font-size: 36pt; font-weight: 700; line-height: 1;">1 243</div>
+          <div style="font-size: 10pt; opacity: 0.8; margin-top: 2mm;">MSEK Nettoomsättning</div>
+          <div style="font-size: 9pt; color: var(--color-accent); margin-top: 1mm;">▲ 12,4 % tillväxt</div>
+        </div>
+        <div style="background: white; padding: 8mm; border-radius: 2mm; border: 1pt solid var(--color-surface);">
+          <div style="font-size: 36pt; font-weight: 700; line-height: 1; color: var(--color-primary);">15,0 %</div>
+          <div style="font-size: 10pt; color: var(--color-text-light); margin-top: 2mm;">EBITDA-marginal</div>
+          <div style="font-size: 9pt; color: #c62828; margin-top: 1mm;">▼ 0,5 pp</div>
+        </div>
       </div>
-      <div style="background: white; padding: 8mm; border-radius: 2mm; border: 1pt solid var(--color-surface);">
-        <div style="font-size: 36pt; font-weight: 700; line-height: 1; color: var(--color-primary);">15,0 %</div>
-        <div style="font-size: 10pt; color: var(--color-text-light); margin-top: 2mm;">EBITDA-marginal</div>
-        <div style="font-size: 9pt; color: #c62828; margin-top: 1mm;">▼ 0,5 pp</div>
-      </div>
+      <table>
+        <tr><td>Rörelseresultat (EBIT)</td><td class="number">143,2 MSEK</td></tr>
+        <tr><td>Kassaflöde från verksamheten</td><td class="number">201,4 MSEK</td></tr>
+        <tr class="total"><td>Utdelning per aktie</td><td class="number">4,50 SEK</td></tr>
+      </table>
     </div>
-    <table>
-      <tr><td>Rörelseresultat (EBIT)</td><td class="number">143,2 MSEK</td></tr>
-      <tr><td>Kassaflöde från verksamheten</td><td class="number">201,4 MSEK</td></tr>
-      <tr class="total"><td>Utdelning per aktie</td><td class="number">4,50 SEK</td></tr>
-    </table>
   </section>
 </div>
 
 <!-- ── TWO COL TEXT ── -->
 <div class="moodboard-label">Modul: Två kolumner (two_col_text)</div>
 <div class="page-shell" style="padding: 12mm 14mm;">
-  <section>
-    <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Marknad & omvärld</h3>
-    <div class="module-two-col-text sample-body-text">
-      <p>Den globala marknaden för digitala tjänster fortsatte att växa under ${year}, trots ett utmanande makroekonomiskt klimat. Räntehöjningar och inflationstryck påverkade köpbeteenden, men efterfrågan på effektivisering och automatisering förblev stark.</p>
-      <p>Vår nordiska hemmamarknad stod för 48 procent av omsättningen och visade en tillväxt om 9,2 procent. Den tyska marknaden är nu vår näst största och växte med hela 22 procent.</p>
-      <p>Vi bedömer att marknaden för AI-assisterade lösningar kommer att växa med 35-40 procent per år de kommande tre åren. Vi är väl positionerade för att ta en stor del av detta.</p>
-      <p>Konkurrensbilden förblir fragmenterad med ett fåtal stora aktörer och många nischspelare. Vår differentieringsstrategi baseras på djup branschkännedom och lokal närvaro.</p>
+  <section class="module module-two-col-text">
+    <div class="content-frame">
+      <h3 style="font-size: 14pt; margin: 0 0 4mm; color: var(--color-primary);">Marknad & omvärld</h3>
+      <div class="module-two-col-text sample-body-text">
+        <p>Den globala marknaden för digitala tjänster fortsatte att växa under ${year}, trots ett utmanande makroekonomiskt klimat. Räntehöjningar och inflationstryck påverkade köpbeteenden, men efterfrågan på effektivisering och automatisering förblev stark.</p>
+        <p>Vår nordiska hemmamarknad stod för 48 procent av omsättningen och visade en tillväxt om 9,2 procent. Den tyska marknaden är nu vår näst största och växte med hela 22 procent.</p>
+        <p>Vi bedömer att marknaden för AI-assisterade lösningar kommer att växa med 35-40 procent per år de kommande tre åren. Vi är väl positionerade för att ta en stor del av detta.</p>
+        <p>Konkurrensbilden förblir fragmenterad med ett fåtal stora aktörer och många nischspelare. Vår differentieringsstrategi baseras på djup branschkännedom och lokal närvaro.</p>
+      </div>
     </div>
   </section>
 </div>
@@ -883,7 +1129,7 @@ body { margin: 0; padding: 0; background: #e8e8e8; }
 <div class="moodboard-label">Modul: Baksida (back_cover)</div>
 <div class="page-shell full-page">
   <section class="module module-back-cover" style="padding: 14mm;">
-    <div>
+    <div class="content-frame">
       <div style="width: 20mm; height: 3pt; background: var(--color-accent); margin-bottom: 6mm;"></div>
       <div style="font-family: var(--font-heading); font-size: 14pt; font-weight: 700; color: var(--color-primary); margin-bottom: 2mm;">${name}</div>
       <div style="font-size: 9pt; color: var(--color-text-light); line-height: 1.8;">
@@ -962,6 +1208,97 @@ async function handlePreviewDesign(hubUserId, args) {
       }, null, 2),
     }],
   };
+}
+
+async function handlePreviewStructure(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`
+    SELECT id, module_plan, document_type, title
+    FROM documents
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const plan = docs[0].module_plan || [];
+  if (plan.length === 0) return { content: [{ type: "text", text: "Module plan is empty. Call save_module_plan first." }], isError: true };
+
+  const lines = plan.map((m, i) => {
+    const num = String(i + 1).padStart(2, "0");
+    const bleed = ["cover", "chapter_break", "back_cover"].includes(m.module_type) ? " [FULL-BLEED]" : " [CONTENT-FRAME]";
+    const role = m.semantic_role ? ` (${m.semantic_role})` : "";
+    const hasHtml = m.html_fragment ? " ✓ HTML" : " ○ pending";
+    return `${num}. ${m.module_type}${bleed} — "${m.title}"${role}${hasHtml}`;
+  });
+
+  const structure = [
+    `STRUCTURE PREVIEW: ${docs[0].title}`,
+    `Type: ${docs[0].document_type}`,
+    `Modules: ${plan.length}`,
+    `---`,
+    ...lines,
+    `---`,
+    `ACTIONS: [approve] [reorder] [add module] [remove module]`,
+  ].join("\n");
+
+  return { content: [{ type: "text", text: structure }] };
+}
+
+async function handlePreviewContent(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`
+    SELECT id, module_plan, raw_content, title
+    FROM documents
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const plan = docs[0].module_plan || [];
+  if (plan.length === 0) return { content: [{ type: "text", text: "Module plan is empty." }], isError: true };
+
+  const lines = plan.map((m, i) => {
+    const num = String(i + 1).padStart(2, "0");
+    const contentSnippet = m.content ? m.content.slice(0, 120).replace(/\n/g, " ") + (m.content.length > 120 ? "..." : "") : "[no content yet]";
+    const dataKeys = m.data && Object.keys(m.data).length > 0 ? ` data: {${Object.keys(m.data).join(", ")}}` : "";
+    return `${num}. ${m.module_type} — "${m.title}"\n    Content: ${contentSnippet}${dataKeys}`;
+  });
+
+  const mappedCount = plan.filter((m) => m.content || (m.data && Object.keys(m.data).length > 0)).length;
+  const preview = [
+    `CONTENT PREVIEW: ${docs[0].title}`,
+    `---`,
+    ...lines,
+    `---`,
+    `STATUS: Content mapped to ${mappedCount}/${plan.length} modules`,
+    `ACTIONS: [approve and generate HTML] [edit module content] [paste more content]`,
+  ].join("\n");
+
+  return { content: [{ type: "text", text: preview }] };
+}
+
+async function handleLockState(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`
+    SELECT id, design_system
+    FROM documents
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const ds = docs[0].design_system || {};
+  ds._locks = ds._locks || {};
+  ds._locks[args.target] = args.action === "lock";
+
+  await sql`
+    UPDATE documents
+    SET design_system = ${JSON.stringify(ds)}::jsonb, updated_at = NOW()
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+  `;
+
+  const status = args.action === "lock" ? "LOCKED" : "UNLOCKED";
+  return { content: [{ type: "text", text: `${args.target.toUpperCase()}: ${status}` }] };
 }
 
 async function handleAssembleDocument(hubUserId, args) {
@@ -1151,7 +1488,10 @@ const HANDLERS = {
   create_document:         handleCreateDocument,
   save_design_system:      handleSaveDesignSystem,
   preview_design:          handlePreviewDesign,
+  preview_structure:       handlePreviewStructure,
+  preview_content:         handlePreviewContent,
   save_module_plan:        handleSaveModulePlan,
+  lock_state:              handleLockState,
   save_module_html:        handleSaveModuleHtml,
   assemble_document:       handleAssembleDocument,
   export_pdf:              handleExportPdf,
