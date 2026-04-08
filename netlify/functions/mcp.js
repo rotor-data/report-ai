@@ -151,61 +151,112 @@ After Step 2 (module plan approved): auto-lock template.
 Content and module HTML are always editable.
 
 ### Step 0: Choose Document Type
-Call get_template_info (without document_type) to see available types.
-Ask user what they want. If they already specified, skip ahead.
+If the user hasn't specified, present the document types as clear choices:
 
-### Step 1: Theme + Design Extraction
-FIRST: Check if the user has a brand profile (via brand__get_visual_profile or brand__get_context).
-If brand data exists: use those colors, fonts, and tone as the foundation for the design system.
-Only ask the user to confirm/adjust — do NOT ask them to re-enter brand info they already onboarded.
+"Vilken typ av dokument vill du skapa?"
 
-If no brand profile: ask for company name, website URL (call extract_brand_from_url), colors, fonts, tone.
+- **Årsredovisning** — VD-ord, nyckeltal, finansiell sammanfattning
+- **Kvartalsrapport** — Resultat, utsikter, nyckeltal
+- **Pitch deck** — Visuell presentation för investerare
+- **Kundcase** — Utmaning → lösning → resultat
+- ... (show relevant subset based on context)
 
-Also ask about DESIGN preferences:
-- "Vill du ha en luftig, balanserad eller kompakt layout?" (density)
-- "Ska visuell hierarki vara standard, editorial eller datatung?" (hierarchy)
-If custom fonts are available (custom_fonts[]), present them.
-If user says "välj åt mig", pick a cohesive theme+design and explain.
-Call create_document + save_design_system (with both theme tokens AND design object).
+If the user already said what they want, skip this and proceed.
+
+### Step 1: Theme + Design — ALWAYS check brand profile first
+
+FIRST: Call brand__get_visual_profile to check if the user has a brand profile from onboarding.
+
+**If brand profile exists (PREFERRED PATH):**
+1. Tell the user: "Jag hittade er varumärkesprofil — jag använder era färger, typsnitt och stil som grund."
+2. Show a summary: primary color, fonts, layout density
+3. Ask: "Vill du justera något för just det här dokumentet, eller kör vi med dessa inställningar?"
+   - Kör med dessa (default)
+   - Justera layout (density/hierarchy)
+   - Ändra färger eller typsnitt
+4. Call save_design_system with brand_profile parameter — server extracts tokens automatically
+
+**If no brand profile:**
+1. Ask for: company name, website URL (call extract_brand_from_url), colors, fonts, tone
+2. Ask about layout: "Vill du ha en luftig, balanserad eller kompakt layout?" (density)
+3. Ask about hierarchy: "Standard, editorial eller datatung?" (hierarchy)
+4. Call save_design_system with manual design_system
+
+If user says "välj åt mig", pick a cohesive theme+design and explain your choices.
 
 ### Step 1.5: DESIGN PREVIEW — MANDATORY
-Call preview_design. Show URL to user.
-"Öppna länken. Kolla färger, typsnitt, modulernas spacing och bredd. Godkänn eller be om ändringar."
-WAIT for approval.
-On approval: auto-lock theme + design (call lock_state twice).
-Present:
+Call preview_design. Show URL to user with clear instructions:
 
-STATUS: Design approved and locked.
-ACTIONS: [start content] [adjust design] [change document type]
-NEXT: Paste or describe your content.
+"Här är en förhandsvisning av designen — färger, typsnitt och layout. Öppna länken och kolla att det känns rätt."
+[preview URL]
+
+"Hur vill du gå vidare?"
+- **Godkänn** — Ser bra ut, gå vidare till innehåll ⭐
+- **Justera färger** — Ändra en eller flera färger
+- **Justera typsnitt** — Byt rubrik- eller brödtextfont
+- **Ändra layout** — Byt mellan luftig/balanserad/kompakt
+- **Börja om** — Välj annan dokumenttyp
+
+On approval: auto-lock theme + design (call lock_state twice).
 
 ### Step 2: Content & Module Planning
-ASK user to PASTE content. WAIT.
-Map content to modules. Call save_module_plan.
-Call preview_structure — show to user. Get approval.
-Call preview_content — show to user. Get approval.
-On approval: auto-lock template.
-Present:
+Ask clearly what the user should provide:
 
-STATUS: Structure and content approved. Template locked.
-DIFF: [list modules added]
-ACTIONS: [generate document] [edit module] [add module]
-NEXT: Generating HTML module by module.
+"Nu behöver jag innehållet. Du kan:"
+- **Klistra in text** — Klistra in direkt i chatten
+- **Ge mig en brief** — Beskriv vad dokumentet ska innehålla
+- **Ange en URL** — Jag hämtar innehållet
+
+WAIT for user input.
+Map content to modules. Call save_module_plan.
+Call preview_structure — show to user with clear summary:
+
+"Här är strukturen jag föreslår — X moduler:"
+1. Omslag
+2. VD-ord (text)
+3. Nyckeltal (KPI-grid)
+...
+
+"Stämmer detta?"
+- **Godkänn** — Bra, generera dokumentet ⭐
+- **Ändra ordning** — Flytta om modulerna
+- **Lägg till modul** — Jag saknar en sektion
+- **Ta bort modul** — En sektion behövs inte
+- **Ändra innehåll** — Justera texten i en modul
+
+On approval: auto-lock template.
 
 ### Step 3: Module Content — ONE AT A TIME
 Use save_module_content (PREFERRED) — send structured JSON content per module, the server renders HTML.
 Only use save_module_html if you need custom HTML that save_module_content cannot produce.
 
 Do NOT regenerate unchanged modules — only save content for modules that need updates.
-After saving preview URL in browser. Ask user to review. Iterate on specific modules if needed.
-When all modules are done: call assemble_document ONCE.
+After saving all modules, call assemble_document and show preview URL:
 
-### Step 4: PDF Export
-Call export_pdf. Present download link.
+"Dokumentet är ihopsatt! Öppna förhandsvisningen:"
+[preview URL]
 
-STATUS: PDF generated (X KB).
-ACTIONS: [download] [preview in browser] [revise module] [new document]
-NEXT: Done. Ask if adjustments needed.
+"Hur ser det ut?"
+- **Bra, exportera** — Generera PDF ⭐
+- **Justera en modul** — Beskriv vad du vill ändra
+- **Exportera till InDesign** — Ladda ner IDML-fil
+- **Exportera till Word** — Ladda ner DOCX-fil
+
+### Step 4: Export
+Based on user's choice:
+- PDF: call export_pdf
+- IDML: call export_idml
+- DOCX: call export_docx
+
+Present download link clearly:
+
+"Klart! Här kan du ladda ner din rapport:"
+[download URL]
+
+"Vill du göra något mer?"
+- **Ladda ner i annat format** — PDF / InDesign / Word
+- **Justera och exportera igen** — Gå tillbaka och ändra
+- **Skapa nytt dokument** — Börja om med ny rapport
 
 ## HTML Fragment Rules (for save_module_html)
 
@@ -274,17 +325,16 @@ Body text max-width: 150mm (ensures ~65-75 characters per line for optimal reada
   <section class="module module-back-cover"><div class="content-frame">...</div></section>
   - height: 297mm, flex-end layout
 
-## Response Format — GUI-like behavior
+## Response Format — Clear, Friendly, Choice-Driven
 
-ALL responses must follow this structure:
-
-STATUS: [what just happened]
-[optional diff if something changed]
-
-ACTIONS:
-- [action 1]
-- [action 2]
-NEXT: [what happens next if user approves]
+ALL responses must:
+1. **Summarize** what just happened in one sentence
+2. **Show relevant data** (preview URL, summary, changes)
+3. **Present clear choices** with one marked as recommended (⭐)
+4. NEVER show technical IDs, JSON, or metadata to the user
+5. ALWAYS speak the user's language (Swedish if they write Swedish)
+6. Use bold for choice labels and regular text for descriptions
+7. Keep it conversational — not robotic status updates
 
 Rules:
 - Never use free-form dialog. Always use STATUS / ACTIONS / NEXT.
@@ -586,15 +636,23 @@ const TOOLS = [
   },
   {
     name: "save_design_system",
-    description: "Step 1: Save theme tokens + design layer. design_system must include: colors, typography, spacing, page, AND a design object: { hierarchy: 'standard'|'editorial'|'data-dense', rhythm: 'airy'|'balanced'|'compact', density: 'airy'|'balanced'|'compact', module_behavior: { cover: {bleed:true}, text_spread: {max_text_width_mm:140, inset_mm:25}, ... } }. NEVER use made-up token values.",
+    description: `Step 1: Save theme tokens + design layer.
+
+PREFERRED: If user has a brand profile from onboarding, pass it as brand_profile. The server extracts colors, typography, spacing, page, and design — no manual mapping needed. Call brand__get_visual_profile first to get the data.
+
+FALLBACK: If no brand profile, pass design_system manually with: colors, typography, spacing, page, AND a design object.
+
+design object: { hierarchy: 'standard'|'editorial'|'data-dense', rhythm: 'airy'|'balanced'|'compact', density: 'airy'|'balanced'|'compact', module_behavior: {} }.
+NEVER use made-up token values — ask user or extract from brand profile.`,
     inputSchema: {
       type: "object",
       properties: {
         document_id: { type: "string" },
+        brand_profile: { type: "object", description: "Brand visual profile from brand__get_visual_profile. Server extracts design_system automatically. If provided, design_system is optional." },
         brand_input: { type: "object", description: "Raw brand input: { company_name, colors, fonts, tone, logo_url }" },
-        design_system: { type: "object", description: "Structured tokens: { colors, typography, spacing, page }. Font families must be system fonts or names from custom_fonts[]." },
+        design_system: { type: "object", description: "Structured tokens: { colors, typography, spacing, page }. Only needed if brand_profile is not provided." },
       },
-      required: ["document_id", "design_system"],
+      required: ["document_id"],
     },
   },
   {
@@ -850,6 +908,77 @@ async function handleCreateDocument(hubUserId, args) {
   return { content: [{ type: "text", text: JSON.stringify({ ...rows[0], next_step: "Call save_design_system with the user's brand info." }, null, 2) }] };
 }
 
+/**
+ * Extract a clean design_system from a brand visual profile.
+ * Strips metadata fields (_source, _note, _uploaded_fonts, etc.)
+ * and returns only the design tokens report-ai needs.
+ */
+function designSystemFromBrandProfile(profile) {
+  const ds = {};
+
+  // Colors — strip metadata, keep hex values
+  if (profile.colors && typeof profile.colors === "object") {
+    const { _source, _note, ...colors } = profile.colors;
+    ds.colors = {};
+    for (const [k, v] of Object.entries(colors)) {
+      if (typeof v === "string" && v.startsWith("#")) ds.colors[k] = v;
+    }
+    // Fill defaults for missing roles
+    const defaults = { primary: "#1A2B5C", secondary: "#4A7C9E", accent: "#E8A838", text: "#1A1A1A", text_light: "#666666", bg: "#FFFFFF", bg_alt: "#F5F5F0", surface: "#E8E4DE" };
+    for (const [k, v] of Object.entries(defaults)) {
+      if (!ds.colors[k]) ds.colors[k] = v;
+    }
+  }
+
+  // Typography — strip internal fields, keep design tokens
+  if (profile.typography && typeof profile.typography === "object") {
+    const { _uploaded_fonts, _font_assets, ...typo } = profile.typography;
+    ds.typography = {
+      heading_family: typo.heading_family || "Georgia, serif",
+      body_family: typo.body_family || "system-ui, sans-serif",
+      heading_weight: typo.heading_weight || "700",
+      base_size_pt: typo.base_size_pt || 10.5,
+      line_height: typo.line_height || 1.5,
+      scale: Array.isArray(typo.scale) ? typo.scale : [42, 28, 20, 16, 13, 10.5, 9],
+    };
+    // Preserve font asset references for custom font loading
+    if (_font_assets?.length) ds._custom_fonts = _font_assets;
+    if (_uploaded_fonts?.length && !_font_assets?.length) ds._custom_fonts = _uploaded_fonts;
+  }
+
+  // Spacing
+  if (profile.spacing && typeof profile.spacing === "object") {
+    ds.spacing = {
+      base_mm: profile.spacing.base_mm || 5,
+      section_gap_mm: profile.spacing.section_gap_mm || 15,
+      column_gap_mm: profile.spacing.column_gap_mm || 8,
+    };
+  }
+
+  // Page
+  if (profile.page && typeof profile.page === "object") {
+    ds.page = {
+      size: profile.page.size || "A4",
+      margin_top_mm: profile.page.margin_top_mm || 20,
+      margin_bottom_mm: profile.page.margin_bottom_mm || 25,
+      margin_inner_mm: profile.page.margin_inner_mm || 25,
+      margin_outer_mm: profile.page.margin_outer_mm || 20,
+    };
+  }
+
+  // Design strategy
+  if (profile.design && typeof profile.design === "object") {
+    ds.design = {
+      hierarchy: profile.design.hierarchy || "standard",
+      rhythm: profile.design.rhythm || "balanced",
+      density: profile.design.density || "balanced",
+      module_behavior: profile.design.module_behavior || {},
+    };
+  }
+
+  return ds;
+}
+
 async function handleSaveDesignSystem(hubUserId, args) {
   const sql = getSql();
   const existingDoc = await sql`
@@ -865,7 +994,21 @@ async function handleSaveDesignSystem(hubUserId, args) {
     return { content: [{ type: "text", text: "BLOCKED: Design is locked. User must say 'unlock design' / 'lås upp design' to modify." }], isError: true };
   }
 
-  const incoming = { ...(args.design_system || {}) };
+  // Determine design_system source: brand_profile (preferred) or manual design_system
+  let incoming;
+  let fromBrand = false;
+  if (args.brand_profile && typeof args.brand_profile === "object") {
+    // Auto-extract from brand profile — handles visual_payload or design_system wrapper
+    const profile = args.brand_profile.design_system || args.brand_profile;
+    incoming = designSystemFromBrandProfile(profile);
+    fromBrand = true;
+  } else if (args.design_system && typeof args.design_system === "object") {
+    incoming = { ...args.design_system };
+  } else {
+    return { content: [{ type: "text", text: "Either brand_profile or design_system is required." }], isError: true };
+  }
+
+  // Ensure design layer exists
   const design = incoming.design || {
     hierarchy: "standard",
     rhythm: "balanced",
@@ -889,7 +1032,19 @@ async function handleSaveDesignSystem(hubUserId, args) {
     RETURNING id, status
   `;
   if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
-  return { content: [{ type: "text", text: `Design system saved. Next: ask user to paste content, then call save_module_plan.` }] };
+
+  const source = fromBrand ? "Importerat från varumärkesprofil." : "Manuellt sparat.";
+  const summary = [
+    `Design system sparat. ${source}`,
+    incoming.colors?.primary ? `Primärfärg: ${incoming.colors.primary}` : "",
+    incoming.typography?.heading_family ? `Rubrikfont: ${incoming.typography.heading_family}` : "",
+    incoming.typography?.body_family ? `Brödtextfont: ${incoming.typography.body_family}` : "",
+    incoming.design?.density ? `Layout: ${incoming.design.density}` : "",
+    "",
+    "Nästa steg: Kör preview_design så att användaren kan granska och godkänna designen.",
+  ].filter(Boolean).join("\n");
+
+  return { content: [{ type: "text", text: summary }] };
 }
 
 async function handleSaveModulePlan(hubUserId, args) {
