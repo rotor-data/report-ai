@@ -18,6 +18,7 @@ import { previewKey } from "./preview.js";
 import { renderModule, buildSchemaReference, MODULE_SCHEMAS } from "./module-renderers.js";
 import { convertToIdml } from "./module-idml-converter.js";
 import { convertToDocx } from "./module-docx-converter.js";
+import { convertToPptx } from "./module-pptx-converter.js";
 
 // V4 pipeline imports
 import { analyzeContent } from "./v4/content-analyzer.js";
@@ -241,12 +242,14 @@ After saving all modules, call assemble_document and show preview URL:
 - **Justera en modul** — Beskriv vad du vill ändra
 - **Exportera till InDesign** — Ladda ner IDML-fil
 - **Exportera till Word** — Ladda ner DOCX-fil
+- **Exportera till PowerPoint** — Ladda ner PPTX-fil
 
 ### Step 4: Export
 Based on user's choice:
 - PDF: call export_pdf
 - IDML: call export_idml
 - DOCX: call export_docx
+- PPTX: call export_pptx
 
 Present download link clearly:
 
@@ -254,7 +257,7 @@ Present download link clearly:
 [download URL]
 
 "Vill du göra något mer?"
-- **Ladda ner i annat format** — PDF / InDesign / Word
+- **Ladda ner i annat format** — PDF / InDesign / Word / PowerPoint
 - **Justera och exportera igen** — Gå tillbaka och ändra
 - **Skapa nytt dokument** — Börja om med ny rapport
 
@@ -767,6 +770,15 @@ NEVER use made-up token values — ask user or extract from brand profile.`,
   {
     name: "export_docx",
     description: "Step 4 alt: Export document as Word DOCX file. Converts all module content to a styled Word document with headings, tables, and theme colors. Call assemble_document first (modules must have structured_content).",
+    inputSchema: {
+      type: "object",
+      properties: { document_id: { type: "string" } },
+      required: ["document_id"],
+    },
+  },
+  {
+    name: "export_pptx",
+    description: "Step 4 alt: Export document as PowerPoint PPTX file. Each module becomes a slide. Design system colors and fonts are applied as a PowerPoint theme. Call assemble_document first (modules must have structured_content).",
     inputSchema: {
       type: "object",
       properties: { document_id: { type: "string" } },
@@ -1912,6 +1924,62 @@ async function handleExportDocx(hubUserId, args) {
   }
 }
 
+async function handleExportPptx(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`SELECT id, module_plan, design_system, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const plan = docs[0].module_plan || [];
+  if (plan.length === 0) return { content: [{ type: "text", text: "No modules in plan. Call save_module_plan first." }], isError: true };
+
+  const modules = plan
+    .filter((m) => m.structured_content || m.html_fragment)
+    .map((m) => ({
+      type: m.module_type,
+      id: m.id,
+      content: m.structured_content || {},
+    }));
+
+  if (modules.length === 0) {
+    return { content: [{ type: "text", text: "No module content found. Save module content with save_module_content first." }], isError: true };
+  }
+
+  try {
+    const pptxBuffer = convertToPptx(modules, docs[0].design_system || {});
+    const pptxBase64 = pptxBuffer.toString("base64");
+    const sizeKb = Math.round(pptxBase64.length * 0.75 / 1024);
+
+    try {
+      await sql`UPDATE documents SET updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
+    } catch {}
+
+    const key = previewKey(args.document_id);
+    const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+    const downloadUrl = `${siteUrl}/api/preview?id=${args.document_id}&key=${key}&format=pptx`;
+
+    try {
+      await sql`UPDATE documents SET pptx_output = decode(${pptxBase64}, 'base64'), updated_at = NOW() WHERE id = ${args.document_id}`;
+    } catch {
+      console.warn("[export_pptx] Could not store PPTX in pptx_output column — returning inline");
+    }
+
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: true,
+      pptx_size_kb: sizeKb,
+      download_url: downloadUrl,
+      title: docs[0].title,
+      modules_exported: modules.length,
+      instructions: "Ladda ner .pptx-filen och öppna i Microsoft PowerPoint. Varje modul är en slide med stilar och temafärger — redigera fritt.",
+    }, null, 2) }] };
+  } catch (e) {
+    console.error("[export_pptx] Conversion failed:", e);
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: false,
+      error: `PPTX-export misslyckades: ${e.message}`,
+    }, null, 2) }], isError: true };
+  }
+}
+
 async function handleGetTemplateInfo(hubUserId, args) {
   const sql = getSql();
   const docType = args?.document_type || null;
@@ -2250,6 +2318,7 @@ const HANDLERS = {
   export_pdf:              handleExportPdf,
   export_idml:             handleExportIdml,
   export_docx:             handleExportDocx,
+  export_pptx:             handleExportPptx,
   get_preview_url:         handleGetPreviewUrl,
   extract_brand_from_url:  handleExtractBrandFromUrl,
   // V4 Pipeline
