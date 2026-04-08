@@ -15,6 +15,12 @@ import { getSql } from "./db.js";
 import { getTemplate, mergeMissingStubs, getDefaultStubPlan } from "./document-type-templates.js";
 import { GUARDRAILS_PROMPT, validateHtml } from "./guardrails.js";
 import { previewKey } from "./preview.js";
+import { renderModule, buildSchemaReference, MODULE_SCHEMAS } from "./module-renderers.js";
+
+// V4 pipeline imports
+import { analyzeContent } from "./v4/content-analyzer.js";
+import { validateContentSchema, ManifestInputSchema } from "./v4/content-schema-validator.js";
+import { createPagePlan, generatePage, generateAllPages, assembleFullDocument } from "./v4/page-builder.js";
 
 // ─── JSON-RPC helpers ───────────────────────────────────────────────────────
 
@@ -147,7 +153,12 @@ Call get_template_info (without document_type) to see available types.
 Ask user what they want. If they already specified, skip ahead.
 
 ### Step 1: Theme + Design Extraction
-Ask for: company name, website URL (call extract_brand_from_url), colors, fonts, tone.
+FIRST: Check if the user has a brand profile (via brand__get_visual_profile or brand__get_context).
+If brand data exists: use those colors, fonts, and tone as the foundation for the design system.
+Only ask the user to confirm/adjust — do NOT ask them to re-enter brand info they already onboarded.
+
+If no brand profile: ask for company name, website URL (call extract_brand_from_url), colors, fonts, tone.
+
 Also ask about DESIGN preferences:
 - "Vill du ha en luftig, balanserad eller kompakt layout?" (density)
 - "Ska visuell hierarki vara standard, editorial eller datatung?" (hierarchy)
@@ -179,12 +190,13 @@ DIFF: [list modules added]
 ACTIONS: [generate document] [edit module] [add module]
 NEXT: Generating HTML module by module.
 
-### Step 3: HTML Generation — MODULE BY MODULE
-Call save_module_html ONLY for modules that are missing HTML or have changed content/structure.
-Do NOT regenerate unchanged modules.
-Every fragment MUST use the 4-level margin system.
-Text modules MUST have content-frame wrappers.
-When changed modules are saved: call assemble_document ONCE.
+### Step 3: Module Content — ONE AT A TIME
+Use save_module_content (PREFERRED) — send structured JSON content per module, the server renders HTML.
+Only use save_module_html if you need custom HTML that save_module_content cannot produce.
+
+Do NOT regenerate unchanged modules — only save content for modules that need updates.
+After saving preview URL in browser. Ask user to review. Iterate on specific modules if needed.
+When all modules are done: call assemble_document ONCE.
 
 ### Step 4: PDF Export
 Call export_pdf. Present download link.
@@ -334,7 +346,7 @@ const TABLE_SCHEMA_EXAMPLE = {
 
 // ─── HTML Assembly ──────────────────────────────────────────────────────────
 
-function buildFontFaceCss(customFonts = []) {
+export function buildFontFaceCss(customFonts = []) {
   return customFonts
     .filter((f) => f.blob_key && String(f.blob_key).startsWith("http"))
     .map((f) => `@font-face {
@@ -347,7 +359,7 @@ function buildFontFaceCss(customFonts = []) {
     .join("\n");
 }
 
-function buildDocumentCss(ds, customFonts = []) {
+export function buildDocumentCss(ds, customFonts = []) {
   const c = ds?.colors || {};
   const t = ds?.typography || {};
   const s = ds?.spacing || {};
@@ -488,7 +500,7 @@ figcaption { font-size: 9pt; color: var(--color-text-light); margin-top: 2mm; }
 `;
 }
 
-function assembleHtml(designSystem, modules, customFonts = []) {
+export function assembleHtml(designSystem, modules, customFonts = []) {
   const css = buildDocumentCss(designSystem, customFonts);
   const design = designSystem?.design || {};
   const rhythmClass = `rhythm-${design.rhythm || "balanced"}`;
@@ -640,8 +652,21 @@ const TOOLS = [
     },
   },
   {
+    name: "save_module_content",
+    description: "Step 3 (PREFERRED): Save structured content for ONE module. The server renders it to HTML — you do NOT write HTML. Send the content as a JSON object matching the module type schema. After saving all modules, call assemble_document.\n\nModule schemas:\n" + buildSchemaReference(),
+    inputSchema: {
+      type: "object",
+      properties: {
+        document_id: { type: "string" },
+        module_id: { type: "string", description: "The module ID from the plan" },
+        content: { type: "object", description: "Structured content matching the module type schema. See tool description for per-type fields." },
+      },
+      required: ["document_id", "module_id", "content"],
+    },
+  },
+  {
     name: "save_module_html",
-    description: "Step 3: Save HTML fragment for ONE module. Call this for each module in the plan. The fragment is a single <section class='module module-{type}'> element — do NOT include doctype, head, style, or body tags. Use CSS variables from the design system. For charts use inline SVG (no JS). For fonts use Google Fonts @import (no base64). After saving all modules, call assemble_document.",
+    description: "Step 3 (LEGACY — prefer save_module_content): Save raw HTML fragment for ONE module. Only use this if you need full control over the HTML that save_module_content cannot provide.",
     inputSchema: {
       type: "object",
       properties: {
@@ -672,11 +697,18 @@ const TOOLS = [
   },
   {
     name: "get_preview_url",
-    description: "Get a browser preview URL for the document. User opens in Chrome to inspect the layout before PDF export.",
+    description: "Get a browser preview URL for either a full document (document_id) or a generated v4 page (manifest_id + page_number).",
     inputSchema: {
       type: "object",
-      properties: { document_id: { type: "string" } },
-      required: ["document_id"],
+      properties: {
+        document_id: { type: "string" },
+        manifest_id: { type: "string" },
+        page_number: { type: "integer", minimum: 1 },
+      },
+      oneOf: [
+        { required: ["document_id"] },
+        { required: ["manifest_id", "page_number"] },
+      ],
     },
   },
   {
@@ -686,6 +718,68 @@ const TOOLS = [
       type: "object",
       properties: { url: { type: "string" } },
       required: ["url"],
+    },
+  },
+
+  // ── V4 Pipeline tools ──────────────────────────────────────────────────
+  {
+    name: "extract_content_schema",
+    description: "V4 Pipeline: Extract content-schema from a source PDF. Provide either a URL or base64-encoded PDF. Analyzes the PDF structure and identifies page types, tokens, and design patterns. Returns a manifest_id and the extracted content-schema.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source_url: { type: "string", description: "URL to fetch the source PDF from" },
+        file_base64: { type: "string", description: "Base64-encoded PDF file" },
+        filename: { type: "string", description: "Original filename" },
+      },
+    },
+  },
+  {
+    name: "get_content_schema",
+    description: "V4 Pipeline: Get the content-schema for an existing manifest. Returns page types, token definitions, page type map, and scalability notes.",
+    inputSchema: {
+      type: "object",
+      properties: { manifest_id: { type: "string" } },
+      required: ["manifest_id"],
+    },
+  },
+  {
+    name: "create_page_plan",
+    description: "V4 Pipeline: Create a page plan from the content-schema. Generates N page entries, each with a page type, template HTML skeleton, and token slots. Optionally customize page types and order with page_overrides.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        manifest_id: { type: "string" },
+        page_overrides: { type: "array", items: { type: "object" }, description: "Optional: override page types/order [{page_number, page_type, instance_id}]" },
+      },
+      required: ["manifest_id"],
+    },
+  },
+  {
+    name: "generate_page",
+    description: "V4 Pipeline: Generate HTML for a single page by filling tokens with schema data. Returns the generated HTML and any unfilled tokens.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        page_id: { type: "string", description: "The report_pages.id to generate" },
+        schema_data: { type: "object", description: "Token values: { TOKEN_NAME: value, ... }" },
+        design_tokens: { type: "object", description: "Optional design_system.colors for SVG charts" },
+      },
+      required: ["page_id", "schema_data"],
+    },
+  },
+  {
+    name: "generate_all_pages",
+    description: "V4 Pipeline: Generate HTML for ALL pages in the plan. Processes pages with concurrency. schema_data should have { global: {...}, pages: { instance_id_or_page_type: { TOKEN: value } } }. Returns summary with completion stats.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        manifest_id: { type: "string" },
+        schema_data: { type: "object", description: "{ global: {...}, pages: { cover: {...}, income_statement: {...}, ... } }" },
+        design_tokens: { type: "object", description: "Optional design_system for CSS and SVG colors" },
+        concurrency: { type: "number", description: "Max parallel pages (default 5)" },
+      },
+      required: ["manifest_id", "schema_data"],
     },
   },
 ];
@@ -877,6 +971,55 @@ async function handleSaveModuleHtml(hubUserId, args) {
     ok: true, module: plan[moduleIdx].title, saved_count: saved, total_count: total,
     remaining: remaining.length > 0 ? remaining : null,
     next_step: remaining.length > 0 ? `Save HTML for the next module: ${remaining[0].title} (${remaining[0].id})` : "All modules saved! Call assemble_document to build the complete HTML.",
+  }, null, 2) }] };
+}
+
+async function handleSaveModuleContent(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`SELECT id, module_plan FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const plan = docs[0].module_plan || [];
+  const moduleIdx = plan.findIndex((m) => m.id === args.module_id);
+  if (moduleIdx === -1) return { content: [{ type: "text", text: `Module ${args.module_id} not found in plan` }], isError: true };
+
+  const moduleType = plan[moduleIdx].module_type;
+  const content = args.content || {};
+
+  // Render structured content to HTML via module renderer
+  const result = renderModule(moduleType, content, args.module_id);
+  if (!result.ok) {
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: result.error }, null, 2) }], isError: true };
+  }
+
+  // Check if HTML changed
+  const existingFragment = plan[moduleIdx].html_fragment || "";
+  if (existingFragment === result.html) {
+    const savedCount = plan.filter((m) => m.html_fragment).length;
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: true, module: plan[moduleIdx].title, skipped: true,
+      reason: "Content unchanged — rendered HTML is identical",
+      saved_count: savedCount, total_count: plan.length,
+    }, null, 2) }] };
+  }
+
+  // Store rendered HTML + structured content for future edits
+  plan[moduleIdx].html_fragment = result.html;
+  plan[moduleIdx].structured_content = content;
+
+  await sql`UPDATE documents SET module_plan = ${JSON.stringify(plan)}::jsonb, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
+
+  const saved = plan.filter((m) => m.html_fragment).length;
+  const total = plan.length;
+  const remaining = plan.filter((m) => !m.html_fragment).map((m) => ({ id: m.id, type: m.module_type, title: m.title }));
+
+  return { content: [{ type: "text", text: JSON.stringify({
+    ok: true, module: plan[moduleIdx].title, rendered: true,
+    saved_count: saved, total_count: total,
+    remaining: remaining.length > 0 ? remaining : null,
+    next_step: remaining.length > 0
+      ? `Save content for: ${remaining[0].title} (${remaining[0].id}, type: ${remaining[0].type})`
+      : "All modules saved! Call assemble_document to build the complete HTML.",
   }, null, 2) }] };
 }
 
@@ -1505,16 +1648,46 @@ async function handleGetTemplateInfo(hubUserId, args) {
 
 async function handleGetPreviewUrl(hubUserId, args) {
   const sql = getSql();
-  const rows = await sql`SELECT id, html_output, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
-  if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
-  if (!rows[0].html_output) return { content: [{ type: "text", text: "No HTML yet. Call assemble_document first." }], isError: true };
-
-  const key = previewKey(args.document_id);
   const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
-  return { content: [{ type: "text", text: JSON.stringify({
-    preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
-    title: rows[0].title,
-  }, null, 2) }] };
+
+  if (args.document_id) {
+    const rows = await sql`SELECT id, html_output, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+    if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+    if (!rows[0].html_output) return { content: [{ type: "text", text: "No HTML yet. Call assemble_document first." }], isError: true };
+
+    const key = previewKey(args.document_id);
+    return { content: [{ type: "text", text: JSON.stringify({
+      preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
+      title: rows[0].title,
+    }, null, 2) }] };
+  }
+
+  if (args.manifest_id && args.page_number) {
+    const rows = await sql`
+      SELECT rp.id
+      FROM report_pages rp
+      JOIN report_generated_pages rgp ON rgp.page_id = rp.id
+      JOIN report_manifests rm ON rm.id = rp.manifest_id
+      WHERE rp.manifest_id = ${args.manifest_id}::uuid
+        AND rp.page_number = ${Number(args.page_number)}
+        AND rm.hub_user_id = ${hubUserId}
+      LIMIT 1
+    `;
+    if (!rows[0]) return { content: [{ type: "text", text: "Generated page not found" }], isError: true };
+
+    const subject = `${args.manifest_id}:${args.page_number}`;
+    const key = previewKey(subject);
+    return { content: [{ type: "text", text: JSON.stringify({
+      preview_url: `${siteUrl}/api/preview?manifest_id=${args.manifest_id}&page=${args.page_number}&key=${key}`,
+      manifest_id: args.manifest_id,
+      page_number: Number(args.page_number),
+    }, null, 2) }] };
+  }
+
+  return {
+    content: [{ type: "text", text: "Invalid input. Provide document_id or manifest_id + page_number." }],
+    isError: true,
+  };
 }
 
 async function handleExtractBrandFromUrl(hubUserId, args) {
@@ -1554,6 +1727,221 @@ async function handleExtractBrandFromUrl(hubUserId, args) {
 
 // ─── Tool dispatch ──────────────────────────────────────────────────────────
 
+// ── V4 Pipeline handlers ─────────────────────────────────────────────────
+
+async function handleExtractContentSchema(hubUserId, args) {
+  const parsed = ManifestInputSchema.safeParse(args);
+  if (!parsed.success) {
+    return { content: [{ type: "text", text: `Validation error: ${parsed.error.issues.map((i) => i.message).join(", ")}` }], isError: true };
+  }
+
+  let pdfBuffer;
+  let sourceType;
+  let sourceUrl = null;
+
+  if (parsed.data.source_url) {
+    sourceType = "url";
+    sourceUrl = parsed.data.source_url;
+    const resp = await fetch(sourceUrl);
+    if (!resp.ok) return { content: [{ type: "text", text: `Failed to fetch PDF from URL: ${resp.status}` }], isError: true };
+    pdfBuffer = Buffer.from(await resp.arrayBuffer());
+  } else {
+    sourceType = "upload";
+    pdfBuffer = Buffer.from(parsed.data.file_base64, "base64");
+  }
+
+  const sql = getSql();
+
+  // Store PDF in Netlify Blobs
+  const blobKey = `v4-pdf-${randomUUID()}`;
+  // For now, store reference — actual blob storage can use @netlify/blobs later
+  const filename = parsed.data.filename || "source.pdf";
+
+  // Create manifest
+  const manifestRows = await sql`
+    INSERT INTO report_manifests (hub_user_id, source_type, source_url, blob_key, status)
+    VALUES (${hubUserId}, ${sourceType}, ${sourceUrl}, ${blobKey}, 'extracting')
+    RETURNING id
+  `;
+  const manifestId = manifestRows[0].id;
+
+  try {
+    // Analyze content
+    const analysis = await analyzeContent(pdfBuffer, { filename });
+
+    // Save content-schema
+    await sql`
+      INSERT INTO report_content_schema (manifest_id, content_schema, page_type_map)
+      VALUES (${manifestId}, ${JSON.stringify(analysis.contentSchema)}, ${JSON.stringify(analysis.pageTypeMap)})
+    `;
+
+    // Update manifest with results
+    await sql`
+      UPDATE report_manifests
+      SET status = 'ready',
+          page_count = ${analysis.pageCount},
+          component_inventory = ${JSON.stringify(analysis.componentInventory)},
+          updated_at = NOW()
+      WHERE id = ${manifestId}
+    `;
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          manifest_id: manifestId,
+          page_count: analysis.pageCount,
+          page_types_found: Object.keys(analysis.pageTypeMap),
+          component_inventory: analysis.componentInventory,
+          page_plan_pattern: analysis.pagePlan,
+          content_schema_summary: {
+            global_fields: Object.keys(analysis.contentSchema.global || {}),
+            page_types: Object.keys(analysis.contentSchema.page_types || {}),
+            report_type: analysis.contentSchema.source?.report_type,
+          },
+        }, null, 2),
+      }],
+    };
+  } catch (err) {
+    await sql`UPDATE report_manifests SET status = 'error', updated_at = NOW() WHERE id = ${manifestId}`;
+    return { content: [{ type: "text", text: `Content extraction failed: ${err.message}` }], isError: true };
+  }
+}
+
+async function handleGetContentSchema(hubUserId, args) {
+  const manifestId = args.manifest_id;
+  if (!manifestId) return { content: [{ type: "text", text: "manifest_id is required" }], isError: true };
+
+  const sql = getSql();
+  const rows = await sql`
+    SELECT rcs.content_schema, rcs.page_type_map, rcs.version,
+           rm.page_count, rm.component_inventory, rm.status
+    FROM report_content_schema rcs
+    JOIN report_manifests rm ON rm.id = rcs.manifest_id
+    WHERE rcs.manifest_id = ${manifestId} AND rm.hub_user_id = ${hubUserId}
+    ORDER BY rcs.version DESC LIMIT 1
+  `;
+
+  if (!rows.length) return { content: [{ type: "text", text: "Content schema not found for this manifest" }], isError: true };
+
+  const row = rows[0];
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        manifest_id: manifestId,
+        version: row.version,
+        status: row.status,
+        page_count: row.page_count,
+        content_schema: row.content_schema,
+        page_type_map: row.page_type_map,
+        component_inventory: row.component_inventory,
+      }, null, 2),
+    }],
+  };
+}
+
+async function handleCreatePagePlan(hubUserId, args) {
+  const manifestId = args.manifest_id;
+  if (!manifestId) return { content: [{ type: "text", text: "manifest_id is required" }], isError: true };
+
+  const sql = getSql();
+
+  // Verify ownership
+  const manifestRows = await sql`SELECT id FROM report_manifests WHERE id = ${manifestId} AND hub_user_id = ${hubUserId}`;
+  if (!manifestRows.length) return { content: [{ type: "text", text: "Manifest not found" }], isError: true };
+
+  // Get content-schema
+  const schemaRows = await sql`
+    SELECT content_schema, page_type_map FROM report_content_schema
+    WHERE manifest_id = ${manifestId} ORDER BY version DESC LIMIT 1
+  `;
+  if (!schemaRows.length) return { content: [{ type: "text", text: "No content-schema found. Run extract_content_schema first." }], isError: true };
+
+  const contentSchema = schemaRows[0].content_schema;
+  const result = await createPagePlan(manifestId, contentSchema, args);
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        manifest_id: manifestId,
+        page_count: result.page_count,
+        pages: result.pages.map((p) => ({
+          id: p.id,
+          page_number: p.page_number,
+          page_type: p.page_type,
+          layout_name: p.layout_name,
+          instance_id: p.instance_id,
+        })),
+      }, null, 2),
+    }],
+  };
+}
+
+async function handleGeneratePage(hubUserId, args) {
+  const { page_id, schema_data, design_tokens } = args;
+  if (!page_id) return { content: [{ type: "text", text: "page_id is required" }], isError: true };
+  if (!schema_data) return { content: [{ type: "text", text: "schema_data is required" }], isError: true };
+
+  const result = await generatePage(page_id, schema_data, design_tokens || {});
+
+  // Generate preview URL
+  const subject = `${args.manifest_id || "page"}:${result.page_number}`;
+  const key = previewKey(page_id);
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        page_number: result.page_number,
+        page_type: result.page_type,
+        instance_id: result.instance_id,
+        unfilled_tokens: result.unfilled_tokens,
+        html_length: result.html.length,
+      }, null, 2),
+    }],
+  };
+}
+
+async function handleGenerateAllPages(hubUserId, args) {
+  const { manifest_id, schema_data, design_tokens, concurrency } = args;
+  if (!manifest_id) return { content: [{ type: "text", text: "manifest_id is required" }], isError: true };
+  if (!schema_data) return { content: [{ type: "text", text: "schema_data is required" }], isError: true };
+
+  // Verify ownership
+  const sql = getSql();
+  const manifestRows = await sql`SELECT id FROM report_manifests WHERE id = ${manifest_id} AND hub_user_id = ${hubUserId}`;
+  if (!manifestRows.length) return { content: [{ type: "text", text: "Manifest not found" }], isError: true };
+
+  const result = await generateAllPages(manifest_id, schema_data, design_tokens || {}, { concurrency: concurrency || 5 });
+
+  // Generate preview URL for all pages
+  const subject = `${manifest_id}:all`;
+  const key = previewKey(subject);
+  const baseUrl = process.env.URL || "https://report-ai.netlify.app";
+  const previewUrl = `${baseUrl}/.netlify/functions/preview?manifest_id=${manifest_id}&key=${key}`;
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        manifest_id,
+        total: result.total,
+        succeeded: result.succeeded,
+        failed: result.failed,
+        preview_url: previewUrl,
+        pages: result.pages.map((p) => ({
+          page_number: p.page_number,
+          status: p.status,
+          unfilled_tokens: p.unfilled_tokens || [],
+          error: p.error,
+        })),
+      }, null, 2),
+    }],
+  };
+}
+
 const HANDLERS = {
   get_template_info:       handleGetTemplateInfo,
   list_documents:          handleListDocuments,
@@ -1565,11 +1953,18 @@ const HANDLERS = {
   preview_content:         handlePreviewContent,
   save_module_plan:        handleSaveModulePlan,
   lock_state:              handleLockState,
+  save_module_content:     handleSaveModuleContent,
   save_module_html:        handleSaveModuleHtml,
   assemble_document:       handleAssembleDocument,
   export_pdf:              handleExportPdf,
   get_preview_url:         handleGetPreviewUrl,
   extract_brand_from_url:  handleExtractBrandFromUrl,
+  // V4 Pipeline
+  extract_content_schema:  handleExtractContentSchema,
+  get_content_schema:      handleGetContentSchema,
+  create_page_plan:        handleCreatePagePlan,
+  generate_page:           handleGeneratePage,
+  generate_all_pages:      handleGenerateAllPages,
 };
 
 // ─── Main handler ───────────────────────────────────────────────────────────
