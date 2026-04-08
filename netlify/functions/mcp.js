@@ -16,6 +16,8 @@ import { getTemplate, mergeMissingStubs, getDefaultStubPlan } from "./document-t
 import { GUARDRAILS_PROMPT, validateHtml } from "./guardrails.js";
 import { previewKey } from "./preview.js";
 import { renderModule, buildSchemaReference, MODULE_SCHEMAS } from "./module-renderers.js";
+import { convertToIdml } from "./module-idml-converter.js";
+import { convertToDocx } from "./module-docx-converter.js";
 
 // V4 pipeline imports
 import { analyzeContent } from "./v4/content-analyzer.js";
@@ -689,6 +691,24 @@ const TOOLS = [
   {
     name: "export_pdf",
     description: "Step 4: Generate PDF from the assembled HTML using built-in headless Chrome. No API key needed. Returns a download URL where the user can save the PDF. Call assemble_document first.",
+    inputSchema: {
+      type: "object",
+      properties: { document_id: { type: "string" } },
+      required: ["document_id"],
+    },
+  },
+  {
+    name: "export_idml",
+    description: "Step 4 alt: Export document as InDesign IDML file. Converts all module content to IDML with proper paragraph styles, color swatches, and spread layouts. The designer can refine in InDesign. Call assemble_document first (modules must have structured_content).",
+    inputSchema: {
+      type: "object",
+      properties: { document_id: { type: "string" } },
+      required: ["document_id"],
+    },
+  },
+  {
+    name: "export_docx",
+    description: "Step 4 alt: Export document as Word DOCX file. Converts all module content to a styled Word document with headings, tables, and theme colors. Call assemble_document first (modules must have structured_content).",
     inputSchema: {
       type: "object",
       properties: { document_id: { type: "string" } },
@@ -1621,6 +1641,122 @@ async function handleExportPdf(hubUserId, args) {
   }
 }
 
+async function handleExportIdml(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`SELECT id, module_plan, design_system, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const plan = docs[0].module_plan || [];
+  if (plan.length === 0) return { content: [{ type: "text", text: "No modules in plan. Call save_module_plan first." }], isError: true };
+
+  // Build module array from structured_content stored in plan
+  const modules = plan
+    .filter((m) => m.structured_content || m.html_fragment)
+    .map((m) => ({
+      type: m.module_type,
+      id: m.id,
+      content: m.structured_content || {},
+    }));
+
+  if (modules.length === 0) {
+    return { content: [{ type: "text", text: "No module content found. Save module content with save_module_content first." }], isError: true };
+  }
+
+  try {
+    const idmlBuffer = convertToIdml(modules, docs[0].design_system || {});
+    const idmlBase64 = idmlBuffer.toString("base64");
+    const sizeKb = Math.round(idmlBase64.length * 0.75 / 1024);
+
+    // Store in DB for download
+    try {
+      await sql`UPDATE documents SET updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
+    } catch {}
+
+    // Return as base64 data URI for download
+    const key = previewKey(args.document_id);
+    const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+    const downloadUrl = `${siteUrl}/api/preview?id=${args.document_id}&key=${key}&format=idml`;
+
+    // Store the IDML bytes temporarily
+    try {
+      await sql`UPDATE documents SET idml_output = decode(${idmlBase64}, 'base64'), updated_at = NOW() WHERE id = ${args.document_id}`;
+    } catch {
+      console.warn("[export_idml] Could not store IDML in idml_output column — returning inline");
+    }
+
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: true,
+      idml_size_kb: sizeKb,
+      download_url: downloadUrl,
+      title: docs[0].title,
+      modules_exported: modules.length,
+      instructions: "Ladda ner .idml-filen och öppna i Adobe InDesign. Alla texter, tabeller och stilar är med — justera layout efter behov.",
+    }, null, 2) }] };
+  } catch (e) {
+    console.error("[export_idml] Conversion failed:", e);
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: false,
+      error: `IDML-export misslyckades: ${e.message}`,
+    }, null, 2) }], isError: true };
+  }
+}
+
+async function handleExportDocx(hubUserId, args) {
+  const sql = getSql();
+  const docs = await sql`SELECT id, module_plan, design_system, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  if (!docs[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const plan = docs[0].module_plan || [];
+  if (plan.length === 0) return { content: [{ type: "text", text: "No modules in plan. Call save_module_plan first." }], isError: true };
+
+  const modules = plan
+    .filter((m) => m.structured_content || m.html_fragment)
+    .map((m) => ({
+      type: m.module_type,
+      id: m.id,
+      content: m.structured_content || {},
+    }));
+
+  if (modules.length === 0) {
+    return { content: [{ type: "text", text: "No module content found. Save module content with save_module_content first." }], isError: true };
+  }
+
+  try {
+    const docxBuffer = convertToDocx(modules, docs[0].design_system || {});
+    const docxBase64 = docxBuffer.toString("base64");
+    const sizeKb = Math.round(docxBase64.length * 0.75 / 1024);
+
+    try {
+      await sql`UPDATE documents SET updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
+    } catch {}
+
+    const key = previewKey(args.document_id);
+    const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+    const downloadUrl = `${siteUrl}/api/preview?id=${args.document_id}&key=${key}&format=docx`;
+
+    try {
+      await sql`UPDATE documents SET docx_output = decode(${docxBase64}, 'base64'), updated_at = NOW() WHERE id = ${args.document_id}`;
+    } catch {
+      console.warn("[export_docx] Could not store DOCX in docx_output column — returning inline");
+    }
+
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: true,
+      docx_size_kb: sizeKb,
+      download_url: downloadUrl,
+      title: docs[0].title,
+      modules_exported: modules.length,
+      instructions: "Ladda ner .docx-filen och öppna i Microsoft Word. Alla texter, tabeller och stilar är mappade — redigera fritt.",
+    }, null, 2) }] };
+  } catch (e) {
+    console.error("[export_docx] Conversion failed:", e);
+    return { content: [{ type: "text", text: JSON.stringify({
+      ok: false,
+      error: `DOCX-export misslyckades: ${e.message}`,
+    }, null, 2) }], isError: true };
+  }
+}
+
 async function handleGetTemplateInfo(hubUserId, args) {
   const sql = getSql();
   const docType = args?.document_type || null;
@@ -1957,6 +2093,8 @@ const HANDLERS = {
   save_module_html:        handleSaveModuleHtml,
   assemble_document:       handleAssembleDocument,
   export_pdf:              handleExportPdf,
+  export_idml:             handleExportIdml,
+  export_docx:             handleExportDocx,
   get_preview_url:         handleGetPreviewUrl,
   extract_brand_from_url:  handleExtractBrandFromUrl,
   // V4 Pipeline

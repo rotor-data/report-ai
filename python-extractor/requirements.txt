@@ -1,0 +1,8 @@
+pymupdf>=1.24.0
+Pillow>=10.0.0
+fonttools>=4.50.0
+pdfplumber>=0.11.0
+colorthief>=0.2.1
+webcolors>=24.6.0
+flask>=3.0.0
+gunicorn>=22.0.0
