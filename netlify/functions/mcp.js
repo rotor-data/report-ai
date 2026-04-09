@@ -404,7 +404,7 @@ Step 1: Theme + Design → save_design_system
 Step 1.5: DESIGN PREVIEW → preview_design → user approves look
 Step 2: Module plan → save_module_plan → STRUCTURE PREVIEW → preview_structure → user approves structure
 Step 2.5: CONTENT PREVIEW → preview_content → user approves content mapping
-Step 3: HTML generation (incremental) → save_module_html for changed modules → assemble_document (once)
+Step 3: Content (incremental) → save_module_content for each module (server renders HTML) → assemble_document (once)
 Step 4: export_pdf
 
 Previews are decision tools, not final output.
@@ -1748,7 +1748,7 @@ async function handleAssembleDocument(hubUserId, args) {
       return {
         content: [{
           type: "text",
-          text: `No assembly changes detected, but guardrail issues remain:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_html and call assemble_document again.`,
+          text: `No assembly changes detected, but guardrail issues remain:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_content and call assemble_document again.`,
         }],
       };
     }
@@ -1770,7 +1770,7 @@ async function handleAssembleDocument(hubUserId, args) {
   await sql`UPDATE documents SET html_output = ${html}, status = ${validation.valid ? "ready" : "error"}::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
 
   if (!validation.valid) {
-    return { content: [{ type: "text", text: `Document assembled but has guardrail issues:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_html and call assemble_document again.` }] };
+    return { content: [{ type: "text", text: `Document assembled but has guardrail issues:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_content and call assemble_document again.` }] };
   }
 
   return { content: [{ type: "text", text: JSON.stringify({
