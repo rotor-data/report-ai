@@ -930,11 +930,10 @@ async function handleGetDocument(hubUserId, args) {
   const sql = getSql();
   const rows = await sql`
     SELECT id, title, document_type, status, brand_input, design_system,
-           raw_content, module_plan, created_at, updated_at
+           raw_content, module_plan, html_output, created_at, updated_at
     FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1
   `;
   if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
-  // Don't return html_output (too large) — return module plan with fragment status
   const doc = { ...rows[0] };
   if (doc.module_plan) {
     doc.module_plan = doc.module_plan.map((m) => ({
@@ -1743,30 +1742,23 @@ async function handleAssembleDocument(hubUserId, args) {
   const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
 
   if (previousHtml === html) {
-    if (!validation.valid) {
-      return {
-        content: [{
-          type: "text",
-          text: `No assembly changes detected, but guardrail issues remain:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_content and call assemble_document again.`,
-        }],
-      };
-    }
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          ok: true,
-          skipped: true,
-          reason: "No changes since last assembly",
-          html_size_kb: Math.round(html.length / 1024),
-          preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
-          next_step: "Call export_pdf if you need a new PDF, or update changed modules only.",
-        }, null, 2),
-      }],
+    // Ensure status is 'ready' even on re-assembly (may have been 'error' from old guardrail bug)
+    await sql`UPDATE documents SET status = 'ready'::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL AND status != 'ready'`;
+    const result = {
+      ok: true,
+      skipped: true,
+      reason: "No changes since last assembly",
+      html_size_kb: Math.round(html.length / 1024),
+      preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
+      next_step: "Call export_pdf if you need a new PDF, or update changed modules only.",
     };
+    if (!validation.valid) {
+      result.guardrail_warnings = validation.issues;
+    }
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 
-  await sql`UPDATE documents SET html_output = ${html}, status = ${validation.valid ? "ready" : "error"}::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
+  await sql`UPDATE documents SET html_output = ${html}, status = 'ready'::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
 
   // Always return ok + preview_url. Guardrail issues are warnings, not blockers —
   // the HTML is already saved and the preview works.
