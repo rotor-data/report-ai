@@ -242,8 +242,10 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
   background: #1a1a1a;
   overflow: auto;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
   padding: 40px 20px;
+  gap: 0;
 }
 .canvas-paper {
   background: #fff;
@@ -253,7 +255,37 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
   position: relative;
   transform-origin: top center;
   flex-shrink: 0;
+  overflow: hidden;
 }
+/* Page-break visualization: each module becomes its own "page" */
+.canvas-page {
+  background: #fff;
+  width: 210mm;
+  min-height: 297mm;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  position: relative;
+  transform-origin: top center;
+  flex-shrink: 0;
+  overflow: hidden;
+  margin-bottom: 32px;
+}
+.canvas-page:last-child { margin-bottom: 0; }
+.canvas-page [data-module-id] {
+  position: relative;
+  transition: outline 0.15s;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+.canvas-page [data-module-id]:hover {
+  outline-color: rgba(91, 155, 213, 0.3);
+}
+.canvas-page [data-module-id].mod-selected {
+  outline-color: #5b9bd5;
+}
+.canvas-page [data-module-id].mod-editing {
+  outline-color: #4aa84a;
+}
+/* Legacy single-paper selectors */
 .canvas-paper [data-module-id] {
   position: relative;
   transition: outline 0.15s;
@@ -904,31 +936,63 @@ function renderModuleList() {
 }
 
 function renderCanvas() {
-  const paper = document.getElementById('canvas-paper');
+  const area = document.getElementById('canvas-area');
   const html = state.doc.html_output;
+
+  // Clear previous pages (keep canvas-area intact)
+  area.innerHTML = '';
+
   if (!html) {
-    paper.innerHTML = '<div class="canvas-empty">Dokumentet har ingen HTML än. Generera innehåll via MCP-verktyg först.</div>';
+    const empty = document.createElement('div');
+    empty.className = 'canvas-paper';
+    empty.id = 'canvas-paper';
+    empty.innerHTML = '<div class="canvas-empty">Dokumentet har ingen HTML än. Generera innehåll via MCP-verktyg först.</div>';
+    area.appendChild(empty);
     return;
   }
-  // Extract body content from full HTML document
+
+  // Extract styles and body from full HTML document
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
   const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/gi);
 
   let styles = '';
   if (styleMatch) {
-    styles = styleMatch.map(s => {
-      // Extract content between style tags
-      const inner = s.replace(/<\/?style[^>]*>/gi, '');
-      return inner;
-    }).join('\n');
+    styles = styleMatch.map(s => s.replace(/<\/?style[^>]*>/gi, '')).join('\n');
   }
 
-  // Inject styles into shadow-like scope
   const bodyContent = bodyMatch ? bodyMatch[1] : html;
-  paper.innerHTML = `<style>${scopeStyles(styles)}</style>${bodyContent}`;
+  const scopedCss = scopeStyles(styles);
 
-  // Bind click handlers to module sections
-  paper.querySelectorAll('[data-module-id]').forEach(section => {
+  // Split body into module sections to render as separate pages.
+  // Each <section class="module ..."> gets its own A4 page div.
+  const temp = document.createElement('div');
+  temp.innerHTML = bodyContent;
+  const sections = temp.querySelectorAll('section.module, section[data-module-id]');
+
+  if (sections.length === 0) {
+    // No recognizable sections — render as single page
+    const page = document.createElement('div');
+    page.className = 'canvas-page';
+    page.id = 'canvas-paper';
+    page.innerHTML = `<style>${scopedCss}</style>${bodyContent}`;
+    area.appendChild(page);
+  } else {
+    // Render shared styles once in a global style element
+    const styleEl = document.createElement('style');
+    styleEl.textContent = scopedCss;
+    area.appendChild(styleEl);
+
+    sections.forEach((section, i) => {
+      const page = document.createElement('div');
+      page.className = 'canvas-page';
+      if (i === 0) page.id = 'canvas-paper'; // keep legacy ID on first page
+      page.appendChild(section.cloneNode(true));
+      area.appendChild(page);
+    });
+  }
+
+  // Bind click handlers to module sections across all pages
+  area.querySelectorAll('[data-module-id]').forEach(section => {
     section.addEventListener('click', (e) => {
       e.stopPropagation();
       selectModule(section.dataset.moduleId);
@@ -939,9 +1003,11 @@ function renderCanvas() {
     });
   });
 
-  // Click on paper background deselects
-  paper.addEventListener('click', (e) => {
-    if (e.target === paper) deselectModule();
+  // Click on page background deselects
+  area.querySelectorAll('.canvas-page').forEach(page => {
+    page.addEventListener('click', (e) => {
+      if (e.target === page) deselectModule();
+    });
   });
 
   applyZoom();
@@ -950,7 +1016,7 @@ function renderCanvas() {
 
 function scopeStyles(css) {
   if (!css) return '';
-  // Remove @page rules (they affect print only) and scope selectors to .canvas-paper
+  // Remove @page rules (they affect print only) and scope selectors to .canvas-page
   let scoped = css
     .replace(/@page[^{]*\{[^}]*\}/g, '')
     .replace(/@media\s+print[^{]*\{[^}]*\}/g, '')
@@ -973,13 +1039,13 @@ function scopeStyles(css) {
       if (trimmed === '}') inAtRule = false;
       continue;
     }
-    // Scope CSS selectors
+    // Scope CSS selectors to .canvas-page
     if (trimmed && !trimmed.startsWith('@') && !trimmed.startsWith('}') && !trimmed.startsWith('/*') && trimmed.includes('{')) {
       const parts = trimmed.split('{');
       const selectors = parts[0].split(',').map(s => {
         s = s.trim();
-        if (!s || s === ':root' || s === 'html' || s === 'body') return '#canvas-paper' + (s === ':root' || s === 'html' || s === 'body' ? '' : ' ' + s);
-        return '#canvas-paper ' + s;
+        if (!s || s === ':root' || s === 'html' || s === 'body') return '.canvas-page';
+        return '.canvas-page ' + s;
       }).join(', ');
       result.push(selectors + ' {' + (parts.slice(1).join('{') || ''));
     } else {
@@ -1543,7 +1609,7 @@ function selectModule(id) {
   renderProperties();
   highlightSelectedModule();
   // Scroll canvas to module
-  const section = document.querySelector(`#canvas-paper [data-module-id="${id}"]`);
+  const section = document.querySelector(`#canvas-area [data-module-id="${id}"]`);
   if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
@@ -1556,7 +1622,7 @@ function deselectModule() {
 }
 
 function highlightSelectedModule() {
-  document.querySelectorAll('#canvas-paper [data-module-id]').forEach(el => {
+  document.querySelectorAll('#canvas-area [data-module-id]').forEach(el => {
     el.classList.toggle('mod-selected', el.dataset.moduleId === state.selectedModuleId);
   });
 }
@@ -1894,9 +1960,11 @@ function setZoom(direction) {
 }
 
 function applyZoom() {
-  const paper = document.getElementById('canvas-paper');
   const scale = state.zoom / 100;
-  paper.style.transform = `scale(${scale})`;
+  // Apply zoom to all page elements in the canvas
+  document.querySelectorAll('#canvas-area .canvas-page, #canvas-area .canvas-paper').forEach(page => {
+    page.style.transform = `scale(${scale})`;
+  });
   document.getElementById('zoom-label').textContent = state.zoom + '%';
 }
 
