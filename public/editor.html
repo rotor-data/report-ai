@@ -882,16 +882,16 @@ const SYSTEM_FONTS = [
 ];
 
 const GOOGLE_FONTS = [
-  'Montserrat',
-  'Open Sans',
-  'Roboto',
-  'Lato',
-  'Playfair Display',
-  'Merriweather',
-  'Source Sans Pro',
-  'Raleway',
-  'Poppins',
-  'Inter',
+  'Montserrat, sans-serif',
+  'Open Sans, sans-serif',
+  'Roboto, sans-serif',
+  'Lato, sans-serif',
+  'Playfair Display, serif',
+  'Merriweather, serif',
+  'Source Sans Pro, sans-serif',
+  'Raleway, sans-serif',
+  'Poppins, sans-serif',
+  'Inter, sans-serif',
 ];
 
 const _loadedFontLinks = new Set();
@@ -920,16 +920,43 @@ function ensureGoogleFontLink(family) {
   document.head.appendChild(link);
 }
 
+/** Extract primary font name from a CSS font-family string */
+function primaryFontName(family) {
+  if (!family) return '';
+  return family.split(',')[0].replace(/"/g, '').trim().toLowerCase();
+}
+
+/** Find full font-family value from our font lists by primary name */
+function resolveFullFamily(family) {
+  if (!family) return family;
+  const name = primaryFontName(family);
+  // Already has fallback stack?
+  if (family.includes(',')) return family;
+  // Check Google Fonts list
+  for (const gf of GOOGLE_FONTS) {
+    if (primaryFontName(gf) === name) return gf;
+  }
+  // Check System Fonts list
+  for (const sf of SYSTEM_FONTS) {
+    if (primaryFontName(sf) === name) return sf;
+  }
+  // Unknown font — add generic sans-serif fallback
+  return `${family}, sans-serif`;
+}
+
 function buildFontList() {
   const fonts = [];
   const seen = new Set();
-  const add = (f) => { if (!seen.has(f)) { seen.add(f); fonts.push(f); } };
+  const add = (f) => {
+    const key = primaryFontName(f);
+    if (!seen.has(key)) { seen.add(key); fonts.push(f); }
+  };
 
-  // Document fonts first
+  // Document fonts first (resolve bare names to full stacks)
   if (state.doc && state.doc.design_system && state.doc.design_system.typography) {
     const typo = state.doc.design_system.typography;
-    if (typo.heading_family) add(typo.heading_family);
-    if (typo.body_family) add(typo.body_family);
+    if (typo.heading_family) add(resolveFullFamily(typo.heading_family));
+    if (typo.body_family) add(resolveFullFamily(typo.body_family));
   }
 
   // Google Fonts
@@ -1907,14 +1934,14 @@ function renderDesignPanel() {
     <div class="prop-field">
       <label class="prop-label">Rubrikfont</label>
       <select class="font-select" onchange="updateDesignTypo('heading_family', this.value)">
-        ${FONTS.map(f => fontOption(f, typo.heading_family === f)).join('')}
+        ${FONTS.map(f => fontOption(f, primaryFontName(typo.heading_family) === primaryFontName(f))).join('')}
       </select>
     </div>
 
     <div class="prop-field">
       <label class="prop-label">Brödtextfont</label>
       <select class="font-select" onchange="updateDesignTypo('body_family', this.value)">
-        ${FONTS.map(f => fontOption(f, typo.body_family === f)).join('')}
+        ${FONTS.map(f => fontOption(f, primaryFontName(typo.body_family) === primaryFontName(f))).join('')}
       </select>
     </div>
 
