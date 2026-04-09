@@ -1188,7 +1188,8 @@ async function handleSaveDesignSystem(hubUserId, args) {
   };
   incoming._locks = existingDoc[0]?.design_system?._locks || incoming._locks || { theme: false, template: false, design: false };
 
-  // Auto-persist _custom_fonts to custom_fonts table if they have URLs
+  // Auto-persist _custom_fonts to custom_fonts table
+  // Handles fonts from brand onboarding (data_url base64) and brand profile (URLs)
   const customFonts = incoming._custom_fonts || [];
   let fontsImported = 0;
   if (customFonts.length > 0) {
@@ -1196,20 +1197,45 @@ async function handleSaveDesignSystem(hubUserId, args) {
     for (const cf of customFonts) {
       const familyName = cf.family || cf.family_name || cf.name?.replace(/\.\w+$/, "");
       if (!familyName) continue;
+      // Detect format from name or explicit field
+      const ext = cf.name?.match(/\.(ttf|otf|woff2?|eot)$/i)?.[1]?.toLowerCase();
+      const format = cf.format || ext || "woff2";
       // Check if font already exists for this user
       const existing = await sql`SELECT id FROM custom_fonts WHERE hub_user_id = ${hubUserId} AND LOWER(family_name) = ${familyName.toLowerCase()} LIMIT 1`;
-      if (existing.length > 0) continue;
-      // If font has a URL, store it
+      if (existing.length > 0) { fontsImported++; continue; }
+
+      const id = randomUUID();
+
+      // Case 1: Base64 data (from onboarding portal uploads)
+      const dataUrl = cf.data_url || cf.file_base64;
+      if (dataUrl) {
+        try {
+          const { getStore } = await import("@netlify/blobs");
+          let store;
+          try { store = getStore("report-ai-fonts"); }
+          catch { const s = process.env.NETLIFY_SITE_ID, t = process.env.NETLIFY_API_TOKEN; if (s && t) store = getStore({ name: "report-ai-fonts", siteID: s, token: t }); }
+          if (store) {
+            const key = `${hubUserId}/${id}.${format}`;
+            const clean = dataUrl.includes(",") ? dataUrl.split(",").pop() : dataUrl;
+            const bytes = Buffer.from(clean, "base64");
+            const contentTypes = { woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf", otf: "font/otf" };
+            await store.set(key, bytes, { contentType: contentTypes[format] || "application/octet-stream" });
+            await sql`INSERT INTO custom_fonts (id, hub_user_id, family_name, weight, style, format, blob_key)
+              VALUES (${id}, ${hubUserId}, ${familyName}, ${cf.weight || "400"}, ${cf.style || "normal"}, ${format}, ${key})
+              ON CONFLICT DO NOTHING`;
+            fontsImported++;
+            continue;
+          }
+        } catch (e) { /* fall through to URL attempt */ }
+      }
+
+      // Case 2: URL (from brand profile assets or external CDN)
       const fontUrl = cf.url || cf.file_url || cf.src;
-      if (fontUrl) {
-        const id = randomUUID();
-        const resolvedUrl = fontUrl.startsWith("http") ? fontUrl : null;
-        if (resolvedUrl) {
-          await sql`INSERT INTO custom_fonts (id, hub_user_id, family_name, weight, style, format, blob_key)
-            VALUES (${id}, ${hubUserId}, ${familyName}, ${cf.weight || "400"}, ${cf.style || "normal"}, ${cf.format || "woff2"}, ${resolvedUrl})
-            ON CONFLICT DO NOTHING`;
-          fontsImported++;
-        }
+      if (fontUrl && fontUrl.startsWith("http")) {
+        await sql`INSERT INTO custom_fonts (id, hub_user_id, family_name, weight, style, format, blob_key)
+          VALUES (${id}, ${hubUserId}, ${familyName}, ${cf.weight || "400"}, ${cf.style || "normal"}, ${format}, ${fontUrl})
+          ON CONFLICT DO NOTHING`;
+        fontsImported++;
       }
     }
   }
