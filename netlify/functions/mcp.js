@@ -457,6 +457,39 @@ export function buildFontFaceCss(customFonts = []) {
     .join("\n");
 }
 
+/** System/generic font families that don't need loading */
+const SYSTEM_FONTS = new Set([
+  "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+  "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
+  "georgia", "times new roman", "times", "arial", "helvetica", "verdana",
+  "courier new", "courier", "tahoma", "trebuchet ms", "impact",
+  "comic sans ms", "palatino", "garamond", "bookman", "lucida console",
+]);
+
+/**
+ * Build Google Fonts @import for font families not covered by custom uploads.
+ * Extracts the primary family name (before the comma fallback) and creates a
+ * single @import URL loading all needed families.
+ */
+function buildGoogleFontsImport(typography = {}, customFonts = []) {
+  const customNames = new Set(customFonts.map(f => f.family_name?.toLowerCase()));
+  const families = [];
+
+  for (const family of [typography.heading_family, typography.body_family]) {
+    if (!family) continue;
+    // Take first font in the stack: "Montserrat, sans-serif" → "Montserrat"
+    const primary = family.split(",")[0].trim().replace(/['"]/g, "");
+    if (!primary) continue;
+    if (SYSTEM_FONTS.has(primary.toLowerCase())) continue;
+    if (customNames.has(primary.toLowerCase())) continue;
+    if (!families.includes(primary)) families.push(primary);
+  }
+
+  if (families.length === 0) return "";
+  const params = families.map(f => `family=${encodeURIComponent(f)}:wght@300;400;500;600;700`).join("&");
+  return `@import url('https://fonts.googleapis.com/css2?${params}&display=swap');`;
+}
+
 export function buildDocumentCss(ds, customFonts = []) {
   const c = ds?.colors || {};
   const t = ds?.typography || {};
@@ -464,8 +497,9 @@ export function buildDocumentCss(ds, customFonts = []) {
   const p = ds?.page || {};
 
   const fontFaces = buildFontFaceCss(customFonts);
+  const googleImport = buildGoogleFontsImport(t, customFonts);
 
-  return `${fontFaces ? fontFaces + "\n" : ""}
+  return `${googleImport ? googleImport + "\n" : ""}${fontFaces ? fontFaces + "\n" : ""}
 :root {
   --color-primary: ${c.primary || "#1A2B5C"};
   --color-secondary: ${c.secondary || "#4A7C9E"};

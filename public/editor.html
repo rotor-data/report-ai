@@ -1066,10 +1066,10 @@ function addPageBreakLines() {
 
 function scopeStyles(css) {
   if (!css) return '';
-  // Remove @page rules (they affect print only) and scope selectors to .canvas-page
+  // Remove @page rules (they affect print only, may have nested braces) and scope selectors
   let scoped = css
-    .replace(/@page[^{]*\{[^}]*\}/g, '')
-    .replace(/@media\s+print[^{]*\{[^}]*\}/g, '')
+    .replace(/@page[^{]*\{[^}]*(?:\{[^}]*\}[^}]*)?\}/g, '')
+    .replace(/@media\s+print[^{]*\{[^}]*(?:\{[^}]*\}[^}]*)?\}/g, '')
     .replace(/@font-face/g, '@font-face');
 
   // Simple scoping: prefix selectors (rough but functional for module CSS)
