@@ -11,16 +11,23 @@
  *   - Page type map (page_type → design_component → layout_name → tokens)
  *   - Structural patterns (repeatable sections, KPI formats, table structures)
  */
-// Dynamic import to avoid crashing entire MCP module if pdf-parse unavailable
-let pdf;
-try {
-  pdf = (await import("pdf-parse/lib/pdf-parse.js")).default;
-} catch {
+// Lazy-loaded to avoid crashing entire MCP module if pdf-parse unavailable
+let _pdf = null;
+let _pdfLoaded = false;
+
+async function getPdfParser() {
+  if (_pdfLoaded) return _pdf;
+  _pdfLoaded = true;
   try {
-    pdf = (await import("pdf-parse")).default;
+    _pdf = (await import("pdf-parse/lib/pdf-parse.js")).default;
   } catch {
-    pdf = null;
+    try {
+      _pdf = (await import("pdf-parse")).default;
+    } catch {
+      _pdf = null;
+    }
   }
+  return _pdf;
 }
 
 // ── Page type classifiers ──────────────────────────────────────────────────
@@ -225,6 +232,7 @@ function getTokensForPageType(pageType) {
  */
 export async function analyzeContent(pdfBuffer, options = {}) {
   // Extract text from PDF
+  const pdf = await getPdfParser();
   if (!pdf) throw new Error("pdf-parse not available — install pdf-parse dependency");
   const pdfData = await pdf(pdfBuffer);
   const totalPages = pdfData.numpages || 1;
