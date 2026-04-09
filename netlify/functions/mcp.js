@@ -735,6 +735,15 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "delete_document",
+    description: "Soft-delete a document. It will no longer appear in list_documents.",
+    inputSchema: {
+      type: "object",
+      properties: { document_id: { type: "string" } },
+      required: ["document_id"],
+    },
+  },
+  {
     name: "get_document",
     description: "Get a document with all fields. Use to check current state.",
     inputSchema: {
@@ -1038,6 +1047,17 @@ async function handleListDocuments(hubUserId) {
     ORDER BY updated_at DESC
   `;
   return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
+}
+
+async function handleDeleteDocument(hubUserId, args) {
+  const sql = getSql();
+  const rows = await sql`
+    UPDATE documents SET deleted_at = NOW(), updated_at = NOW()
+    WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL
+    RETURNING id, title
+  `;
+  if (!rows[0]) return { content: [{ type: "text", text: "Document not found or already deleted." }], isError: true };
+  return { content: [{ type: "text", text: `Deleted: "${rows[0].title}" (${rows[0].id})` }] };
 }
 
 async function handleGetDocument(hubUserId, args) {
@@ -2628,6 +2648,7 @@ async function handleGenerateAllPages(hubUserId, args) {
 const HANDLERS = {
   get_template_info:       handleGetTemplateInfo,
   list_documents:          handleListDocuments,
+  delete_document:         handleDeleteDocument,
   get_document:            handleGetDocument,
   create_document:         handleCreateDocument,
   save_design_system:      handleSaveDesignSystem,
