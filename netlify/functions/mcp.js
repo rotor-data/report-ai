@@ -32,7 +32,7 @@ function editorSecret() {
 }
 
 function createEditorToken(hubUserId, documentId) {
-  const expires = Date.now() + 24 * 60 * 60 * 1000; // 24h
+  const expires = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
   const payload = `${hubUserId}:${documentId}:${expires}`;
   const sig = createHmac("sha256", editorSecret()).update(payload).digest("hex").slice(0, 16);
   // Base64-encode for URL safety

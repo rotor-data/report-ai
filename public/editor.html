@@ -602,6 +602,7 @@ textarea.prop-input { min-height: 80px; resize: vertical; font-family: inherit; 
     <p>Ange din token för att öppna editorn.</p>
     <input id="token-input" type="text" placeholder="Bearer token..." />
     <input id="doc-input" type="text" placeholder="Document ID..." />
+    <div id="recent-docs" style="display:none;margin-bottom:12px;text-align:left;"></div>
     <button onclick="doLogin()">Öppna dokument</button>
   </div>
 </div>
@@ -755,6 +756,10 @@ class ReportApi {
         id: Date.now(),
       }),
     });
+    if (res.status === 401) {
+      showSessionExpired();
+      throw new Error('Session expired');
+    }
     const data = await res.json();
     if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
     // MCP returns { result: { content: [{ type: "text", text: "..." }] } }
@@ -798,6 +803,20 @@ function showLogin() {
   const params = new URLSearchParams(location.search);
   if (params.get('token')) document.getElementById('token-input').value = params.get('token');
   if (params.get('doc')) document.getElementById('doc-input').value = params.get('doc');
+  // Show recent documents
+  const recent = getRecentDocs();
+  const recentEl = document.getElementById('recent-docs');
+  if (recent.length && recentEl) {
+    recentEl.innerHTML = '<p style="color:#666;font-size:11px;margin-bottom:8px;">Senaste dokument:</p>' +
+      recent.map(d => {
+        const age = Math.round((Date.now() - d.ts) / 3600000);
+        const timeLabel = age < 1 ? 'nyss' : age < 24 ? `${age}h sedan` : `${Math.round(age/24)}d sedan`;
+        return `<button class="dropdown-item" style="text-align:left;padding:8px 12px;border-radius:4px;margin-bottom:2px;background:#363636;color:#ccc;width:100%;display:flex;justify-content:space-between;" onclick="document.getElementById('doc-input').value='${d.id}'">
+          <span>${esc(d.title)}</span><span style="color:#666;font-size:10px;">${timeLabel}</span>
+        </button>`;
+      }).join('');
+    recentEl.style.display = '';
+  }
 }
 
 function doLogin() {
@@ -825,6 +844,7 @@ async function loadDocument() {
     if (!state.doc || typeof state.doc !== 'object') {
       throw new Error('Ogiltigt dokumentformat');
     }
+    saveRecentDoc(state.docId, state.doc.title);
     hideLoading();
     document.getElementById('editor').style.display = '';
     renderAll();
@@ -2047,6 +2067,46 @@ function toast(msg, isError) {
     clearTimeout(el._timer);
     el._timer = setTimeout(() => el.classList.remove('visible'), 3500);
   });
+}
+
+// ─── Session & Recent Documents ──────────────────────────────────────────
+function showSessionExpired() {
+  hideLoading();
+  document.getElementById('editor').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'none';
+  // Show a message overlay
+  const overlay = document.createElement('div');
+  overlay.className = 'loading-overlay';
+  overlay.innerHTML = `
+    <div style="text-align:center;max-width:400px;">
+      <div style="font-size:24px;margin-bottom:12px;">🔒</div>
+      <div style="font-size:16px;font-weight:600;margin-bottom:8px;">Sessionen har gått ut</div>
+      <div style="color:#999;margin-bottom:20px;">
+        Be Claude om en ny editor-länk:<br>
+        <code style="background:#333;padding:4px 8px;border-radius:4px;margin-top:8px;display:inline-block;">
+          "Ge mig editor-länken för mitt dokument"
+        </code>
+      </div>
+      <div style="color:#666;font-size:11px;">Dina ändringar sparades automatiskt.</div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+function saveRecentDoc(docId, title) {
+  try {
+    const recent = JSON.parse(localStorage.getItem('reportai_recent') || '[]');
+    // Remove existing entry for this doc
+    const filtered = recent.filter(d => d.id !== docId);
+    filtered.unshift({ id: docId, title: title || 'Utan titel', ts: Date.now() });
+    // Keep max 10
+    localStorage.setItem('reportai_recent', JSON.stringify(filtered.slice(0, 10)));
+  } catch {}
+}
+
+function getRecentDocs() {
+  try {
+    return JSON.parse(localStorage.getItem('reportai_recent') || '[]');
+  } catch { return []; }
 }
 
 // ─── Keyboard shortcuts ───────────────────────────────────────────────────
