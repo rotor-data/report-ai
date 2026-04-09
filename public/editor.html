@@ -247,40 +247,28 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
   padding: 40px 20px;
   gap: 32px;
 }
-/* A single page in the canvas (full-page module or flowing group) */
+/* A single page in the canvas — always one A4 page */
 .canvas-page {
   background: #fff;
   width: 210mm;
-  min-height: 297mm;
+  height: 297mm;
   box-shadow: 0 4px 24px rgba(0,0,0,0.5);
   position: relative;
   transform-origin: top center;
   flex-shrink: 0;
   overflow: hidden;
 }
-/* Full-page modules fill exactly one A4 page */
-.canvas-page.full-page {
-  height: 297mm;
-  overflow: hidden;
-}
-/* Visual page-break lines within flowing groups */
-.page-break-line {
+/* Page number label */
+.page-number {
   position: absolute;
-  left: 0;
-  right: 0;
-  height: 0;
-  border-top: 1px dashed rgba(91, 155, 213, 0.5);
-  pointer-events: none;
-  z-index: 10;
-}
-.page-break-label {
-  position: absolute;
-  right: 8px;
-  top: -18px;
-  font-size: 10px;
-  color: rgba(91, 155, 213, 0.7);
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: rgba(0,0,0,0.25);
   font-family: system-ui, sans-serif;
   pointer-events: none;
+  z-index: 5;
 }
 .canvas-page [data-module-id] {
   position: relative;
@@ -1245,33 +1233,93 @@ function renderCanvas() {
     page.innerHTML = bodyContent;
     area.appendChild(page);
   } else {
-    // Group: full-page modules get own page, consecutive flowing modules share a page
-    let currentFlowPage = null;
-    let pageCount = 0;
+    // Phase 1: Collect flowing modules into groups separated by full-page modules
+    const groups = []; // { type: 'full'|'flow', sections: [...] }
+    let currentFlow = [];
 
     sections.forEach((section) => {
       if (isFullPageSection(section)) {
-        // Close any open flow page
-        currentFlowPage = null;
-        // Create dedicated full-page
-        const page = document.createElement('div');
-        page.className = 'canvas-page full-page';
-        if (pageCount === 0) page.id = 'canvas-paper';
-        page.appendChild(section.cloneNode(true));
-        area.appendChild(page);
-        pageCount++;
-      } else {
-        // Flowing module — add to current flow page or start new one
-        if (!currentFlowPage) {
-          currentFlowPage = document.createElement('div');
-          currentFlowPage.className = 'canvas-page';
-          if (pageCount === 0) currentFlowPage.id = 'canvas-paper';
-          area.appendChild(currentFlowPage);
-          pageCount++;
+        if (currentFlow.length) {
+          groups.push({ type: 'flow', sections: currentFlow });
+          currentFlow = [];
         }
-        currentFlowPage.appendChild(section.cloneNode(true));
+        groups.push({ type: 'full', sections: [section] });
+      } else {
+        currentFlow.push(section);
       }
     });
+    if (currentFlow.length) groups.push({ type: 'flow', sections: currentFlow });
+
+    let pageCount = 0;
+
+    // Phase 2: For full-page modules, one page each. For flowing modules,
+    // measure heights to split into A4-sized pages.
+    for (const group of groups) {
+      if (group.type === 'full') {
+        const page = document.createElement('div');
+        page.className = 'canvas-page';
+        if (pageCount === 0) page.id = 'canvas-paper';
+        page.appendChild(group.sections[0].cloneNode(true));
+        pageCount++;
+        const num = document.createElement('div');
+        num.className = 'page-number';
+        num.textContent = pageCount;
+        page.appendChild(num);
+        area.appendChild(page);
+      } else {
+        // Flowing group: measure content by rendering into a hidden measurer
+        const measurer = document.createElement('div');
+        measurer.style.cssText = 'position:absolute;visibility:hidden;width:210mm;';
+        // Copy scoped styles for accurate measurement
+        const measureStyle = document.createElement('style');
+        measureStyle.textContent = scopedCss;
+        measurer.appendChild(measureStyle);
+        const wrapper = document.createElement('div');
+        wrapper.className = 'canvas-page';
+        wrapper.style.cssText = 'height:auto;overflow:visible;box-shadow:none;position:static;';
+        group.sections.forEach(s => wrapper.appendChild(s.cloneNode(true)));
+        measurer.appendChild(wrapper);
+        document.body.appendChild(measurer);
+
+        const pageHeightPx = 297 * 3.7795275591; // mm to px
+        const margins = 40 * 3.7795275591; // ~40mm combined top+bottom margins
+
+        // Measure each section's height and split into pages
+        const sectionEls = wrapper.querySelectorAll(':scope > section, :scope > [data-module-id]');
+        let currentPage = null;
+        let currentHeight = 0;
+        const maxContent = pageHeightPx - margins;
+
+        const startNewPage = () => {
+          currentPage = document.createElement('div');
+          currentPage.className = 'canvas-page';
+          if (pageCount === 0) currentPage.id = 'canvas-paper';
+          pageCount++;
+          const num = document.createElement('div');
+          num.className = 'page-number';
+          num.textContent = pageCount;
+          currentPage.appendChild(num);
+          area.appendChild(currentPage);
+          currentHeight = 0;
+        };
+
+        sectionEls.forEach((sec) => {
+          const h = sec.getBoundingClientRect().height;
+          if (!currentPage || (currentHeight > 0 && currentHeight + h > maxContent)) {
+            startNewPage();
+          }
+          currentPage.appendChild(group.sections.find(
+            s => s.getAttribute('data-module-id') === sec.getAttribute('data-module-id')
+          )?.cloneNode(true) || sec.cloneNode(true));
+          currentHeight += h;
+        });
+
+        // If no sections were processed, ensure at least one empty page
+        if (!currentPage) startNewPage();
+
+        document.body.removeChild(measurer);
+      }
+    }
   }
 
   // Bind click/dblclick on all module sections across pages
@@ -1304,32 +1352,6 @@ function renderCanvas() {
     }
   });
 
-  // Add page-break lines to flowing pages after layout
-  requestAnimationFrame(addPageBreakLines);
-}
-
-/** Draw dashed page-break lines at 297mm intervals inside flowing pages */
-function addPageBreakLines() {
-  const pageHeightPx = 297 * 3.7795275591; // mm to px
-  let globalPage = 0;
-
-  document.querySelectorAll('#canvas-area .canvas-page').forEach(page => {
-    // Remove old lines
-    page.querySelectorAll('.page-break-line').forEach(el => el.remove());
-    globalPage++;
-
-    if (page.classList.contains('full-page')) return; // no break lines needed
-
-    const totalHeight = page.scrollHeight;
-    const pages = Math.floor(totalHeight / pageHeightPx);
-    for (let i = 1; i <= pages; i++) {
-      const line = document.createElement('div');
-      line.className = 'page-break-line';
-      line.style.top = (i * pageHeightPx) + 'px';
-      line.innerHTML = `<span class="page-break-label">sidbrytning</span>`;
-      page.appendChild(line);
-    }
-  });
 }
 
 function scopeStyles(css) {
