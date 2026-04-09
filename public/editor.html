@@ -746,6 +746,87 @@ const MODULE_TYPES = {
   back_cover:         { icon: "\u{1F4D5}", label: "Baksida" },
 };
 
+// ─── Font constants ───────────────────────────────────────────────────────
+const SYSTEM_FONTS = [
+  'Georgia, serif',
+  'system-ui, sans-serif',
+  '"Helvetica Neue", Helvetica, Arial, sans-serif',
+  '"Times New Roman", Times, serif',
+  '"Courier New", Courier, monospace',
+  'Garamond, serif',
+  '"Trebuchet MS", sans-serif',
+  'Verdana, sans-serif',
+  '"Palatino Linotype", Palatino, serif',
+  '"Gill Sans", sans-serif',
+];
+
+const GOOGLE_FONTS = [
+  'Montserrat',
+  'Open Sans',
+  'Roboto',
+  'Lato',
+  'Playfair Display',
+  'Merriweather',
+  'Source Sans Pro',
+  'Raleway',
+  'Poppins',
+  'Inter',
+];
+
+const _loadedFontLinks = new Set();
+
+function isSystemFont(family) {
+  if (!family) return true;
+  const name = family.split(',')[0].replace(/"/g, '').trim().toLowerCase();
+  const systemNames = ['georgia','system-ui','helvetica neue','helvetica','arial',
+    'times new roman','times','courier new','courier','garamond','trebuchet ms',
+    'verdana','palatino linotype','palatino','gill sans','sans-serif','serif','monospace'];
+  return systemNames.includes(name);
+}
+
+function googleFontLinkUrl(family) {
+  return 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(family) + ':wght@300;400;500;600;700&display=swap';
+}
+
+function ensureGoogleFontLink(family) {
+  if (!family || isSystemFont(family)) return;
+  const name = family.split(',')[0].replace(/"/g, '').trim();
+  if (_loadedFontLinks.has(name)) return;
+  _loadedFontLinks.add(name);
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = googleFontLinkUrl(name);
+  document.head.appendChild(link);
+}
+
+function buildFontList() {
+  const fonts = [];
+  const seen = new Set();
+  const add = (f) => { if (!seen.has(f)) { seen.add(f); fonts.push(f); } };
+
+  // Document fonts first
+  if (state.doc && state.doc.design_system && state.doc.design_system.typography) {
+    const typo = state.doc.design_system.typography;
+    if (typo.heading_family) add(typo.heading_family);
+    if (typo.body_family) add(typo.body_family);
+  }
+
+  // Google Fonts
+  GOOGLE_FONTS.forEach(f => add(f));
+
+  // System fonts as fallback
+  SYSTEM_FONTS.forEach(f => add(f));
+
+  return fonts;
+}
+
+function loadDocumentFonts() {
+  if (!state.doc || !state.doc.design_system || !state.doc.design_system.typography) return;
+  const typo = state.doc.design_system.typography;
+  ensureGoogleFontLink(typo.heading_family);
+  ensureGoogleFontLink(typo.body_family);
+}
+
 // ─── State ────────────────────────────────────────────────────────────────
 let state = {
   token: null,
@@ -875,6 +956,7 @@ async function loadDocument() {
     saveRecentDoc(state.docId, state.doc.title);
     hideLoading();
     document.getElementById('editor').style.display = '';
+    loadDocumentFonts();
     renderAll();
   } catch (e) {
     hideLoading();
@@ -965,7 +1047,37 @@ function renderCanvas() {
     styles = styleMatch.map(s => s.replace(/<\/?style[^>]*>/gi, '')).join('\n');
   }
   const bodyContent = bodyMatch ? bodyMatch[1] : html;
-  const scopedCss = scopeStyles(styles);
+
+  // Extract @import urls and @font-face blocks before scoping — they must go in <head>
+  const importRegex = /@import\s+url\(["']?([^"')]+)["']?\)\s*;?/g;
+  let importMatch;
+  while ((importMatch = importRegex.exec(styles)) !== null) {
+    const url = importMatch[1];
+    if (!_loadedFontLinks.has(url)) {
+      _loadedFontLinks.add(url);
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = url;
+      document.head.appendChild(link);
+    }
+  }
+
+  // Extract @font-face blocks and place in a global <head> style
+  const fontFaceRegex = /@font-face\s*\{[^}]*\}/g;
+  const fontFaceBlocks = styles.match(fontFaceRegex);
+  if (fontFaceBlocks && fontFaceBlocks.length) {
+    // Remove old injected font-face style if present
+    const oldFf = document.getElementById('report-font-faces');
+    if (oldFf) oldFf.remove();
+    const ffStyle = document.createElement('style');
+    ffStyle.id = 'report-font-faces';
+    ffStyle.textContent = fontFaceBlocks.join('\n');
+    document.head.appendChild(ffStyle);
+  }
+
+  // Strip @import lines from CSS before scoping (they are now <link> tags)
+  const cleanedStyles = styles.replace(/@import\s+url\(["']?[^"')]+["']?\)\s*;?/g, '');
+  const scopedCss = scopeStyles(cleanedStyles);
 
   // Shared styles element
   const styleEl = document.createElement('style');
@@ -1520,18 +1632,15 @@ function renderDesignPanel() {
     ['surface', 'Yta'],
   ];
 
-  const FONTS = [
-    'Georgia, serif',
-    'system-ui, sans-serif',
-    '"Helvetica Neue", Helvetica, Arial, sans-serif',
-    '"Times New Roman", Times, serif',
-    '"Courier New", Courier, monospace',
-    'Garamond, serif',
-    '"Trebuchet MS", sans-serif',
-    'Verdana, sans-serif',
-    '"Palatino Linotype", Palatino, serif',
-    '"Gill Sans", sans-serif',
-  ];
+  const FONTS = buildFontList();
+  // Ensure Google Fonts in the list are loaded for preview
+  FONTS.forEach(f => ensureGoogleFontLink(f));
+
+  const fontOption = (f, selected) => {
+    const label = f.split(',')[0].replace(/"/g, '');
+    const sel = selected ? ' selected' : '';
+    return `<option value="${f}" style="font-family:${f}"${sel}>${label}</option>`;
+  };
 
   let h = `<div class="prop-section">
     <div class="prop-section-title">Design</div>
@@ -1549,14 +1658,14 @@ function renderDesignPanel() {
     <div class="prop-field">
       <label class="prop-label">Rubrikfont</label>
       <select class="font-select" onchange="updateDesignTypo('heading_family', this.value)">
-        ${FONTS.map(f => `<option value="${f}" ${typo.heading_family === f ? 'selected' : ''}>${f.split(',')[0].replace(/"/g,'')}</option>`).join('')}
+        ${FONTS.map(f => fontOption(f, typo.heading_family === f)).join('')}
       </select>
     </div>
 
     <div class="prop-field">
       <label class="prop-label">Brödtextfont</label>
       <select class="font-select" onchange="updateDesignTypo('body_family', this.value)">
-        ${FONTS.map(f => `<option value="${f}" ${typo.body_family === f ? 'selected' : ''}>${f.split(',')[0].replace(/"/g,'')}</option>`).join('')}
+        ${FONTS.map(f => fontOption(f, typo.body_family === f)).join('')}
       </select>
     </div>
 
