@@ -1295,6 +1295,14 @@ function renderCanvas() {
 
   applyZoom();
   highlightSelectedModule();
+  applyLiveDesign();
+
+  // Apply any pending layout overrides to module sections
+  (state.doc.module_plan || []).forEach(mod => {
+    if (mod.layout_overrides && Object.keys(mod.layout_overrides).length > 0) {
+      applyLiveOverride(mod.id);
+    }
+  });
 
   // Add page-break lines to flowing pages after layout
   requestAnimationFrame(addPageBreakLines);
@@ -1493,6 +1501,7 @@ function updateLayoutOverride(moduleId, key, value) {
     mod.layout_overrides[key] = value;
   }
   markDirty();
+  applyLiveOverride(moduleId);
   renderProperties();
 }
 
@@ -2003,11 +2012,82 @@ function renderDesignPanel() {
     </div>
 
     <div style="margin-top:12px;">
-      <button class="btn btn-primary" style="width:100%;" onclick="saveDesignSystem()">Applicera designändringar</button>
+      <button class="btn btn-primary" style="width:100%;" onclick="saveDesignSystem()">💾 Spara designändringar</button>
+      <p style="font-size:10px;color:#888;margin-top:4px;text-align:center;">Ändringar visas direkt — klicka för att spara permanent</p>
     </div>
   </div>`;
 
   document.getElementById('design-props').innerHTML = h;
+}
+
+// ─── Live design preview ──────────────────────────────────────────────────
+// Maps design_system state → CSS custom properties on canvas pages instantly
+function applyLiveDesign() {
+  const ds = state.doc.design_system || {};
+  const c = ds.colors || {};
+  const t = ds.typography || {};
+  const s = ds.spacing || {};
+
+  const varMap = {
+    '--color-primary':    c.primary,
+    '--color-secondary':  c.secondary,
+    '--color-accent':     c.accent,
+    '--color-text':       c.text,
+    '--color-text-light': c.text_light,
+    '--color-bg':         c.bg,
+    '--color-bg-alt':     c.bg_alt,
+    '--color-surface':    c.surface,
+    '--font-heading':     t.heading_family,
+    '--font-body':        t.body_family,
+    '--heading-weight':   t.heading_weight,
+    '--base-size':        t.base_size_pt ? t.base_size_pt + 'pt' : null,
+    '--line-height':      t.line_height,
+    '--spacing-base':     s.base_mm ? s.base_mm + 'mm' : null,
+    '--spacing-section':  s.section_gap_mm ? s.section_gap_mm + 'mm' : null,
+  };
+
+  // Apply to all canvas pages (CSS variables cascade down)
+  document.querySelectorAll('#canvas-area .canvas-page').forEach(page => {
+    for (const [prop, val] of Object.entries(varMap)) {
+      if (val != null) page.style.setProperty(prop, val);
+    }
+    // Page margins via padding
+    if (s.margin_top != null)    page.style.paddingTop    = s.margin_top + 'mm';
+    if (s.margin_bottom != null) page.style.paddingBottom = s.margin_bottom + 'mm';
+    if (s.margin_left != null)   page.style.paddingLeft   = s.margin_left + 'mm';
+    if (s.margin_right != null)  page.style.paddingRight  = s.margin_right + 'mm';
+  });
+}
+
+// Apply a single module's layout_overrides to its canvas section
+function applyLiveOverride(moduleId) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  const ov = mod.layout_overrides || {};
+  const section = document.querySelector(`#canvas-area [data-module-id="${moduleId}"]`);
+  if (!section) return;
+
+  // Apply overrides as inline styles
+  section.style.backgroundColor = ov.bg_color || '';
+  section.style.paddingTop      = ov.padding_top != null ? ov.padding_top + 'mm' : '';
+  section.style.paddingBottom   = ov.padding_bottom != null ? ov.padding_bottom + 'mm' : '';
+  section.style.paddingLeft     = ov.padding_left != null ? ov.padding_left + 'mm' : '';
+  section.style.paddingRight    = ov.padding_right != null ? ov.padding_right + 'mm' : '';
+  section.style.textAlign       = ov.text_align || '';
+  section.style.marginTop       = ov.margin_top != null ? ov.margin_top + 'mm' : '';
+
+  // Border
+  if (ov.border === 'thin') {
+    section.style.borderLeft = '2px solid var(--color-text-light, #666)';
+  } else if (ov.border === 'accent') {
+    section.style.borderLeft = '4px solid var(--color-accent, #E8A838)';
+  } else {
+    section.style.borderLeft = '';
+  }
+
+  // Variant class
+  section.className = section.className.replace(/\bvariant-\S+/g, '').trim();
+  if (ov.variant) section.classList.add('variant-' + ov.variant);
 }
 
 // ─── Design update helpers ────────────────────────────────────────────────
@@ -2017,7 +2097,7 @@ function updateDesignColor(key, value) {
   if (!state.doc.design_system.colors) state.doc.design_system.colors = {};
   state.doc.design_system.colors[key] = value;
   markDirty();
-  // Update swatch visual immediately
+  applyLiveDesign();
   renderDesignPanel();
 }
 
@@ -2027,6 +2107,7 @@ function updateDesignTypo(key, value) {
   if (!state.doc.design_system.typography) state.doc.design_system.typography = {};
   state.doc.design_system.typography[key] = value;
   markDirty();
+  applyLiveDesign();
 }
 
 function updateDesignSpacing(key, value) {
@@ -2035,6 +2116,7 @@ function updateDesignSpacing(key, value) {
   if (!state.doc.design_system.spacing) state.doc.design_system.spacing = {};
   state.doc.design_system.spacing[key] = value;
   markDirty();
+  applyLiveDesign();
 }
 
 function updateDesignField(key, value) {
@@ -2043,6 +2125,7 @@ function updateDesignField(key, value) {
   if (!state.doc.design_system.design) state.doc.design_system.design = {};
   state.doc.design_system.design[key] = value;
   markDirty();
+  applyLiveDesign();
   renderDesignPanel();
 }
 
