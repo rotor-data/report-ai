@@ -9,7 +9,7 @@
  *   assemble_document → server builds full HTML from fragments + design CSS
  *   export_pdf        → renders assembled HTML to PDF via local headless Chrome
  */
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHmac } from "node:crypto";
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 import { getSql } from "./db.js";
 import { getTemplate, mergeMissingStubs, getDefaultStubPlan } from "./document-type-templates.js";
@@ -24,6 +24,36 @@ import { convertToPptx } from "./module-pptx-converter.js";
 import { analyzeContent } from "./v4/content-analyzer.js";
 import { validateContentSchema, ManifestInputSchema } from "./v4/content-schema-validator.js";
 import { createPagePlan, generatePage, generateAllPages, assembleFullDocument } from "./v4/page-builder.js";
+
+// ─── Editor token (HMAC-based, 24h expiry) ─────────────────────────────────
+
+function editorSecret() {
+  return process.env.PREVIEW_SECRET || process.env.HUB_JWT_PUBLIC_KEY_PEM || "report-ai-editor";
+}
+
+function createEditorToken(hubUserId, documentId) {
+  const expires = Date.now() + 24 * 60 * 60 * 1000; // 24h
+  const payload = `${hubUserId}:${documentId}:${expires}`;
+  const sig = createHmac("sha256", editorSecret()).update(payload).digest("hex").slice(0, 16);
+  // Base64-encode for URL safety
+  return Buffer.from(`${payload}:${sig}`).toString("base64url");
+}
+
+function verifyEditorToken(token) {
+  try {
+    const decoded = Buffer.from(token, "base64url").toString();
+    const parts = decoded.split(":");
+    if (parts.length < 4) return null;
+    const sig = parts.pop();
+    const expires = parseInt(parts.pop(), 10);
+    const documentId = parts.pop();
+    const hubUserId = parts.join(":"); // user ID may contain colons
+    if (Date.now() > expires) return null;
+    const expected = createHmac("sha256", editorSecret()).update(`${hubUserId}:${documentId}:${expires}`).digest("hex").slice(0, 16);
+    if (sig !== expected) return null;
+    return { hubUserId, documentId };
+  } catch { return null; }
+}
 
 // ─── JSON-RPC helpers ───────────────────────────────────────────────────────
 
@@ -799,6 +829,17 @@ NEVER use made-up token values — ask user or extract from brand profile.`,
         { required: ["document_id"] },
         { required: ["manifest_id", "page_number"] },
       ],
+    },
+  },
+  {
+    name: "get_editor_url",
+    description: "Get a browser URL to the visual editor for a document. The editor allows manual adjustments to modules, design, and content — like a lightweight InDesign in the browser.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        document_id: { type: "string", description: "Document ID to open in editor" },
+      },
+      required: ["document_id"],
     },
   },
   {
@@ -2049,6 +2090,23 @@ async function handleGetPreviewUrl(hubUserId, args) {
   };
 }
 
+async function handleGetEditorUrl(hubUserId, args) {
+  const sql = getSql();
+  const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+
+  const rows = await sql`SELECT id, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
+
+  const editorToken = createEditorToken(hubUserId, args.document_id);
+  const editorUrl = `${siteUrl}/editor.html?doc=${args.document_id}&token=${editorToken}`;
+
+  return { content: [{ type: "text", text: JSON.stringify({
+    editor_url: editorUrl,
+    title: rows[0].title,
+    hint: "Öppna länken i webbläsaren för att redigera dokumentet visuellt.",
+  }, null, 2) }] };
+}
+
 async function handleExtractBrandFromUrl(hubUserId, args) {
   if (!args.url) return { content: [{ type: "text", text: "URL is required" }], isError: true };
   try {
@@ -2320,6 +2378,7 @@ const HANDLERS = {
   export_docx:             handleExportDocx,
   export_pptx:             handleExportPptx,
   get_preview_url:         handleGetPreviewUrl,
+  get_editor_url:          handleGetEditorUrl,
   extract_brand_from_url:  handleExtractBrandFromUrl,
   // V4 Pipeline
   extract_content_schema:  handleExtractContentSchema,
@@ -2334,17 +2393,28 @@ const HANDLERS = {
 export const handler = async (event) => {
   if (event.httpMethod !== "POST") return jsonResponse(405, { error: "Method Not Allowed" });
 
-  const publicPem = process.env.HUB_JWT_PUBLIC_KEY_PEM;
-  const issuer = process.env.HUB_JWT_ISSUER ?? "hub.rotor-platform.com";
-  const audience = process.env.MODULE_AUDIENCE ?? "report-ai";
-  if (!publicPem) return jsonResponse(500, { error: "HUB_JWT_PUBLIC_KEY_PEM not configured" });
-
   const token = readBearerToken(event);
-  const auth = verifyHubJwt(token, { publicPem, issuer, audience });
-  if (!auth.ok) return jsonResponse(401, { error: auth.error });
+  let hubUserId;
+  let editorDocScope = null; // if set, editor token limits access to this doc
 
-  const hubUserId = auth.payload.sub ?? auth.payload.user_id ?? auth.payload.tenant_id;
-  if (!hubUserId) return jsonResponse(401, { error: "JWT missing subject" });
+  // Try editor token first (HMAC-based, for visual editor)
+  const editorAuth = verifyEditorToken(token);
+  if (editorAuth) {
+    hubUserId = editorAuth.hubUserId;
+    editorDocScope = editorAuth.documentId;
+  } else {
+    // Fall back to Hub JWT
+    const publicPem = process.env.HUB_JWT_PUBLIC_KEY_PEM;
+    const issuer = process.env.HUB_JWT_ISSUER ?? "hub.rotor-platform.com";
+    const audience = process.env.MODULE_AUDIENCE ?? "report-ai";
+    if (!publicPem) return jsonResponse(500, { error: "HUB_JWT_PUBLIC_KEY_PEM not configured" });
+
+    const auth = verifyHubJwt(token, { publicPem, issuer, audience });
+    if (!auth.ok) return jsonResponse(401, { error: auth.error });
+
+    hubUserId = auth.payload.sub ?? auth.payload.user_id ?? auth.payload.tenant_id;
+    if (!hubUserId) return jsonResponse(401, { error: "JWT missing subject" });
+  }
 
   let rpc;
   try { rpc = JSON.parse(event.body ?? "{}"); } catch { return rpcError(null, -32700, "Parse error"); }
@@ -2362,6 +2432,16 @@ export const handler = async (event) => {
     const toolName = name.startsWith("report__") ? name.slice(8) : name;
     const fn = HANDLERS[toolName];
     if (!fn) return rpcError(id, -32601, `Unknown tool: ${name}`);
+
+    // Editor tokens are scoped to a single document
+    if (editorDocScope) {
+      if (args.document_id && args.document_id !== editorDocScope) {
+        return rpcError(id, -32600, "Editor token is scoped to a different document");
+      }
+      // Auto-fill document_id for editor sessions
+      if (!args.document_id) args.document_id = editorDocScope;
+    }
+
     try {
       return rpcResult(id, await fn(hubUserId, args));
     } catch (e) {
