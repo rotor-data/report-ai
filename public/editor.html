@@ -242,10 +242,8 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
   background: #1a1a1a;
   overflow: auto;
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  justify-content: center;
   padding: 40px 20px;
-  gap: 0;
 }
 .canvas-paper {
   background: #fff;
@@ -255,37 +253,26 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
   position: relative;
   transform-origin: top center;
   flex-shrink: 0;
-  overflow: hidden;
 }
-/* Page-break visualization: each module becomes its own "page" */
-.canvas-page {
-  background: #fff;
-  width: 210mm;
-  min-height: 297mm;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-  position: relative;
-  transform-origin: top center;
-  flex-shrink: 0;
-  overflow: hidden;
-  margin-bottom: 32px;
+/* Visual page-break lines at A4 intervals */
+.page-break-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1px dashed rgba(91, 155, 213, 0.5);
+  pointer-events: none;
+  z-index: 10;
 }
-.canvas-page:last-child { margin-bottom: 0; }
-.canvas-page [data-module-id] {
-  position: relative;
-  transition: outline 0.15s;
-  outline: 2px solid transparent;
-  outline-offset: -2px;
+.page-break-label {
+  position: absolute;
+  right: 8px;
+  top: -18px;
+  font-size: 10px;
+  color: rgba(91, 155, 213, 0.7);
+  font-family: system-ui, sans-serif;
+  pointer-events: none;
 }
-.canvas-page [data-module-id]:hover {
-  outline-color: rgba(91, 155, 213, 0.3);
-}
-.canvas-page [data-module-id].mod-selected {
-  outline-color: #5b9bd5;
-}
-.canvas-page [data-module-id].mod-editing {
-  outline-color: #4aa84a;
-}
-/* Legacy single-paper selectors */
 .canvas-paper [data-module-id] {
   position: relative;
   transition: outline 0.15s;
@@ -936,63 +923,29 @@ function renderModuleList() {
 }
 
 function renderCanvas() {
-  const area = document.getElementById('canvas-area');
+  const paper = document.getElementById('canvas-paper');
   const html = state.doc.html_output;
-
-  // Clear previous pages (keep canvas-area intact)
-  area.innerHTML = '';
-
   if (!html) {
-    const empty = document.createElement('div');
-    empty.className = 'canvas-paper';
-    empty.id = 'canvas-paper';
-    empty.innerHTML = '<div class="canvas-empty">Dokumentet har ingen HTML än. Generera innehåll via MCP-verktyg först.</div>';
-    area.appendChild(empty);
+    paper.innerHTML = '<div class="canvas-empty">Dokumentet har ingen HTML än. Generera innehåll via MCP-verktyg först.</div>';
     return;
   }
-
-  // Extract styles and body from full HTML document
+  // Extract body content from full HTML document
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
   const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/gi);
 
   let styles = '';
   if (styleMatch) {
-    styles = styleMatch.map(s => s.replace(/<\/?style[^>]*>/gi, '')).join('\n');
+    styles = styleMatch.map(s => {
+      const inner = s.replace(/<\/?style[^>]*>/gi, '');
+      return inner;
+    }).join('\n');
   }
 
   const bodyContent = bodyMatch ? bodyMatch[1] : html;
-  const scopedCss = scopeStyles(styles);
+  paper.innerHTML = `<style>${scopeStyles(styles)}</style>${bodyContent}`;
 
-  // Split body into module sections to render as separate pages.
-  // Each <section class="module ..."> gets its own A4 page div.
-  const temp = document.createElement('div');
-  temp.innerHTML = bodyContent;
-  const sections = temp.querySelectorAll('section.module, section[data-module-id]');
-
-  if (sections.length === 0) {
-    // No recognizable sections — render as single page
-    const page = document.createElement('div');
-    page.className = 'canvas-page';
-    page.id = 'canvas-paper';
-    page.innerHTML = `<style>${scopedCss}</style>${bodyContent}`;
-    area.appendChild(page);
-  } else {
-    // Render shared styles once in a global style element
-    const styleEl = document.createElement('style');
-    styleEl.textContent = scopedCss;
-    area.appendChild(styleEl);
-
-    sections.forEach((section, i) => {
-      const page = document.createElement('div');
-      page.className = 'canvas-page';
-      if (i === 0) page.id = 'canvas-paper'; // keep legacy ID on first page
-      page.appendChild(section.cloneNode(true));
-      area.appendChild(page);
-    });
-  }
-
-  // Bind click handlers to module sections across all pages
-  area.querySelectorAll('[data-module-id]').forEach(section => {
+  // Bind click handlers to module sections
+  paper.querySelectorAll('[data-module-id]').forEach(section => {
     section.addEventListener('click', (e) => {
       e.stopPropagation();
       selectModule(section.dataset.moduleId);
@@ -1003,20 +956,38 @@ function renderCanvas() {
     });
   });
 
-  // Click on page background deselects
-  area.querySelectorAll('.canvas-page').forEach(page => {
-    page.addEventListener('click', (e) => {
-      if (e.target === page) deselectModule();
-    });
+  // Click on paper background deselects
+  paper.addEventListener('click', (e) => {
+    if (e.target === paper) deselectModule();
   });
 
   applyZoom();
   highlightSelectedModule();
+  addPageBreakLines();
+}
+
+/** Draw dashed lines at every 297mm (A4 height) to show page boundaries */
+function addPageBreakLines() {
+  const paper = document.getElementById('canvas-paper');
+  // Remove old lines
+  paper.querySelectorAll('.page-break-line').forEach(el => el.remove());
+
+  const pageHeightPx = 297 * 3.7795275591; // mm to px
+  const totalHeight = paper.scrollHeight;
+  const pages = Math.floor(totalHeight / pageHeightPx);
+
+  for (let i = 1; i <= pages; i++) {
+    const line = document.createElement('div');
+    line.className = 'page-break-line';
+    line.style.top = (i * pageHeightPx) + 'px';
+    line.innerHTML = `<span class="page-break-label">sida ${i}/${pages + 1}</span>`;
+    paper.appendChild(line);
+  }
 }
 
 function scopeStyles(css) {
   if (!css) return '';
-  // Remove @page rules (they affect print only) and scope selectors to .canvas-page
+  // Remove @page rules (they affect print only) and scope selectors to #canvas-paper
   let scoped = css
     .replace(/@page[^{]*\{[^}]*\}/g, '')
     .replace(/@media\s+print[^{]*\{[^}]*\}/g, '')
@@ -1044,8 +1015,8 @@ function scopeStyles(css) {
       const parts = trimmed.split('{');
       const selectors = parts[0].split(',').map(s => {
         s = s.trim();
-        if (!s || s === ':root' || s === 'html' || s === 'body') return '.canvas-page';
-        return '.canvas-page ' + s;
+        if (!s || s === ':root' || s === 'html' || s === 'body') return '#canvas-paper';
+        return '#canvas-paper ' + s;
       }).join(', ');
       result.push(selectors + ' {' + (parts.slice(1).join('{') || ''));
     } else {
@@ -1609,7 +1580,7 @@ function selectModule(id) {
   renderProperties();
   highlightSelectedModule();
   // Scroll canvas to module
-  const section = document.querySelector(`#canvas-area [data-module-id="${id}"]`);
+  const section = document.querySelector(`#canvas-paper [data-module-id="${id}"]`);
   if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
@@ -1622,7 +1593,7 @@ function deselectModule() {
 }
 
 function highlightSelectedModule() {
-  document.querySelectorAll('#canvas-area [data-module-id]').forEach(el => {
+  document.querySelectorAll('#canvas-paper [data-module-id]').forEach(el => {
     el.classList.toggle('mod-selected', el.dataset.moduleId === state.selectedModuleId);
   });
 }
@@ -1960,11 +1931,9 @@ function setZoom(direction) {
 }
 
 function applyZoom() {
+  const paper = document.getElementById('canvas-paper');
   const scale = state.zoom / 100;
-  // Apply zoom to all page elements in the canvas
-  document.querySelectorAll('#canvas-area .canvas-page, #canvas-area .canvas-paper').forEach(page => {
-    page.style.transform = `scale(${scale})`;
-  });
+  paper.style.transform = `scale(${scale})`;
   document.getElementById('zoom-label').textContent = state.zoom + '%';
 }
 
@@ -2068,12 +2037,13 @@ async function doExport(format) {
     }
     hideLoading();
     // Result should contain a URL
-    if (typeof result === 'object' && result.url) {
-      window.open(result.url, '_blank');
+    if (typeof result === 'object' && (result.url || result.download_url || result.pdf_url)) {
+      window.open(result.url || result.download_url || result.pdf_url, '_blank');
       toast(`${format.toUpperCase()} exporterad.`);
-    } else if (typeof result === 'object' && result.download_url) {
-      window.open(result.download_url, '_blank');
-      toast(`${format.toUpperCase()} exporterad.`);
+    } else if (typeof result === 'object' && result.preview_url) {
+      // Server-side rendering failed — open preview for manual print
+      window.open(result.preview_url, '_blank');
+      toast('Öppnar förhandsgranskning — använd ⌘P / Ctrl+P för att spara som PDF.');
     } else if (typeof result === 'string' && result.startsWith('http')) {
       window.open(result, '_blank');
       toast(`${format.toUpperCase()} exporterad.`);

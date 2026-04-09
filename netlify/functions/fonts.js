@@ -50,6 +50,40 @@ function buildBlobUrl(key) {
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return noContent(event);
 
+  // Public font-file serving by id (no auth — fonts are embedded in HTML via @font-face)
+  if (event.httpMethod === "GET") {
+    const params = new URLSearchParams(event.rawUrl?.split("?")[1] || "");
+    const fontId = params.get("id");
+    if (fontId) {
+      const sql = getSql();
+      const rows = await sql`
+        SELECT id, blob_key, format
+        FROM custom_fonts
+        WHERE id = ${fontId}
+        LIMIT 1
+      `;
+      if (!rows[0]) return json(event, 404, { error: "Font not found" });
+      const blobKey = rows[0].blob_key;
+      if (blobKey.startsWith("http")) {
+        return { statusCode: 302, headers: { Location: blobKey, "Access-Control-Allow-Origin": "*" } };
+      }
+      const store = createStore(event);
+      if (!store) return json(event, 500, { error: "Blob store unavailable" });
+      const data = await store.get(blobKey, { type: "arrayBuffer" });
+      if (!data) return json(event, 404, { error: "Font file not found in store" });
+      return {
+        statusCode: 200,
+        headers: {
+          "Content-Type": getBlobContentType(rows[0].format),
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "Access-Control-Allow-Origin": "*",
+        },
+        body: Buffer.from(data).toString("base64"),
+        isBase64Encoded: true,
+      };
+    }
+  }
+
   const auth = requireHubAuth(event);
   if (!auth.ok) return json(event, auth.status, { error: auth.error });
 

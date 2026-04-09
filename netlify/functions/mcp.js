@@ -432,15 +432,28 @@ const TABLE_SCHEMA_EXAMPLE = {
 // ─── HTML Assembly ──────────────────────────────────────────────────────────
 
 export function buildFontFaceCss(customFonts = []) {
+  const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
   return customFonts
-    .filter((f) => f.blob_key && String(f.blob_key).startsWith("http"))
-    .map((f) => `@font-face {
+    .filter((f) => f.blob_key || f.id)
+    .map((f) => {
+      // Use blob_key URL if it's already an http URL, otherwise serve via /api/fonts?id=
+      let fontUrl;
+      if (f.blob_key && String(f.blob_key).startsWith("http")) {
+        fontUrl = f.blob_key;
+      } else if (f.id) {
+        fontUrl = `${siteUrl}/api/fonts?id=${f.id}`;
+      } else {
+        return '';
+      }
+      return `@font-face {
   font-family: '${f.family_name}';
-  src: url('${f.blob_key}') format('${f.format || "woff2"}');
+  src: url('${fontUrl}') format('${f.format || "woff2"}');
   font-weight: ${f.weight || "400"};
   font-style: ${f.style || "normal"};
   font-display: swap;
-}`)
+}`;
+    })
+    .filter(Boolean)
     .join("\n");
 }
 
@@ -1732,7 +1745,7 @@ async function handleAssembleDocument(hubUserId, args) {
 
   let fonts = [];
   try {
-    fonts = await sql`SELECT family_name, weight, style, format, blob_key FROM custom_fonts WHERE hub_user_id = ${hubUserId} ORDER BY created_at DESC`;
+    fonts = await sql`SELECT id, family_name, weight, style, format, blob_key FROM custom_fonts WHERE hub_user_id = ${hubUserId} ORDER BY created_at DESC`;
   } catch {}
 
   const html = assembleHtml(docs[0].design_system || {}, plan, fonts);
@@ -2019,7 +2032,7 @@ async function handleGetTemplateInfo(hubUserId, args) {
   const docType = args?.document_type || null;
   const template = docType ? await getTemplate(docType) : null;
   let fonts = [];
-  try { fonts = await sql`SELECT family_name, weight, style, format, blob_key FROM custom_fonts WHERE hub_user_id = ${hubUserId} ORDER BY created_at DESC`; } catch {}
+  try { fonts = await sql`SELECT id, family_name, weight, style, format, blob_key FROM custom_fonts WHERE hub_user_id = ${hubUserId} ORDER BY created_at DESC`; } catch {}
 
   const result = {
     workflow_prompt: WORKFLOW_PROMPT,
