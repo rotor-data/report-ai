@@ -631,6 +631,30 @@ figcaption { font-size: 9pt; color: var(--color-text-light); margin-top: 2mm; }
 `;
 }
 
+/** Build inline style string from module layout_overrides */
+function buildOverrideStyle(overrides = {}) {
+  const parts = [];
+  if (overrides.bg_color) parts.push(`background-color:${overrides.bg_color}`);
+  if (overrides.padding_top != null) parts.push(`padding-top:${overrides.padding_top}mm`);
+  if (overrides.padding_bottom != null) parts.push(`padding-bottom:${overrides.padding_bottom}mm`);
+  if (overrides.padding_left != null) parts.push(`padding-left:${overrides.padding_left}mm`);
+  if (overrides.padding_right != null) parts.push(`padding-right:${overrides.padding_right}mm`);
+  if (overrides.text_align) parts.push(`text-align:${overrides.text_align}`);
+  if (overrides.margin_top) parts.push(`margin-top:${overrides.margin_top}mm`);
+  if (overrides.border === 'thin') parts.push('border:1px solid currentColor');
+  if (overrides.border === 'accent') parts.push('border-left:4px solid var(--color-accent, #5b9bd5)');
+  return parts.join(';');
+}
+
+/** Inject layout override styles into a module HTML fragment */
+function applyLayoutOverrides(html, overrides) {
+  if (!overrides || Object.keys(overrides).length === 0) return html;
+  const style = buildOverrideStyle(overrides);
+  if (!style) return html;
+  // Inject style attribute into the first <section> tag
+  return html.replace(/<section(\s)/, `<section style="${style}"$1`);
+}
+
 export function assembleHtml(designSystem, modules, customFonts = []) {
   const css = buildDocumentCss(designSystem, customFonts);
   const design = designSystem?.design || {};
@@ -638,7 +662,16 @@ export function assembleHtml(designSystem, modules, customFonts = []) {
   const densityClass = `density-${design.density || "balanced"}`;
   const fragments = modules
     .sort((a, b) => (a.order ?? 999) - (b.order ?? 999))
-    .map((m) => m.html_fragment || `<section class="module module-${m.module_type}"><div class="content-frame"><p>[${m.title}]</p></div></section>`)
+    .map((m) => {
+      let frag = m.html_fragment || `<section class="module module-${m.module_type}"><div class="content-frame"><p>[${m.title}]</p></div></section>`;
+      // Apply variant class if set
+      if (m.layout_overrides?.variant) {
+        frag = frag.replace(/<section(\s+class="[^"]*)"/, `<section$1 variant-${m.layout_overrides.variant}"`);
+      }
+      // Apply inline style overrides
+      frag = applyLayoutOverrides(frag, m.layout_overrides);
+      return frag;
+    })
     .join("\n\n");
 
   return `<!DOCTYPE html>

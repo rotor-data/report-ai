@@ -471,9 +471,68 @@ textarea.prop-input { min-height: 80px; resize: vertical; font-family: inherit; 
   padding: 4px;
   z-index: 300;
   gap: 2px;
+  flex-wrap: wrap;
+  max-width: 360px;
 }
 .text-toolbar.visible { display: flex; }
 .text-toolbar .btn { font-size: 13px; padding: 4px 8px; }
+.text-toolbar .tb-divider { width: 1px; height: 20px; background: #555; margin: 0 2px; align-self: center; }
+.text-toolbar select {
+  background: #333; border: 1px solid #444; border-radius: 3px;
+  color: #ddd; font-size: 11px; padding: 2px 4px; height: 24px;
+}
+
+/* Collapsible section in properties */
+.prop-section-header {
+  display: flex; align-items: center; justify-content: space-between; cursor: pointer;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: #888; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #3a3a3a;
+  user-select: none;
+}
+.prop-section-header:hover { color: #bbb; }
+.prop-section-header .chevron { transition: transform 0.2s; font-size: 10px; }
+.prop-section-header.collapsed .chevron { transform: rotate(-90deg); }
+.prop-section-body { overflow: hidden; transition: max-height 0.2s; }
+.prop-section-body.collapsed { max-height: 0 !important; padding: 0; margin: 0; overflow: hidden; }
+
+/* Layout overrides panel */
+.layout-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+.layout-grid .prop-field { margin-bottom: 0; }
+.layout-mini-input {
+  width: 100%; padding: 4px 6px; background: #333; border: 1px solid #444;
+  border-radius: 4px; color: #ddd; font-size: 11px;
+}
+.layout-mini-input:focus { border-color: #5b9bd5; outline: none; }
+
+/* Alignment buttons */
+.align-group { display: flex; border-radius: 4px; overflow: hidden; border: 1px solid #444; }
+.align-btn {
+  flex: 1; padding: 4px; text-align: center; background: #333; color: #999;
+  font-size: 12px; transition: background 0.15s, color 0.15s; border-right: 1px solid #444;
+}
+.align-btn:last-child { border-right: none; }
+.align-btn:hover { background: #3a3a3a; }
+.align-btn.active { background: #2d6bc4; color: #fff; }
+
+/* Image upload area */
+.image-upload-area {
+  border: 2px dashed #444; border-radius: 8px; padding: 16px; text-align: center;
+  color: #777; font-size: 11px; cursor: pointer; transition: border-color 0.2s, background 0.2s;
+  margin-bottom: 8px;
+}
+.image-upload-area:hover { border-color: #5b9bd5; background: rgba(91,155,213,0.05); }
+.image-upload-area img { max-width: 100%; max-height: 120px; border-radius: 4px; margin-bottom: 6px; display: block; margin: 0 auto 6px; }
+
+/* Layout variant selector */
+.variant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; }
+.variant-card {
+  padding: 8px; border: 1px solid #444; border-radius: 6px; cursor: pointer;
+  text-align: center; font-size: 10px; color: #999; background: #333;
+  transition: border-color 0.15s, background 0.15s;
+}
+.variant-card:hover { border-color: #666; background: #3a3a3a; }
+.variant-card.active { border-color: #5b9bd5; background: #2a3548; color: #ddd; }
+.variant-card .variant-icon { font-size: 18px; margin-bottom: 2px; }
 
 /* KPI card editor */
 .kpi-card-editor {
@@ -721,8 +780,29 @@ textarea.prop-input { min-height: 80px; resize: vertical; font-family: inherit; 
 <div id="text-toolbar" class="text-toolbar">
   <button class="btn btn-icon" onclick="execFormat('bold')" title="Fetstil (Ctrl+B)"><b>B</b></button>
   <button class="btn btn-icon" onclick="execFormat('italic')" title="Kursiv (Ctrl+I)"><i>I</i></button>
+  <button class="btn btn-icon" onclick="execFormat('underline')" title="Understruken (Ctrl+U)" style="text-decoration:underline">U</button>
+  <button class="btn btn-icon" onclick="execFormat('strikethrough')" title="Genomstruken" style="text-decoration:line-through">S</button>
+  <div class="tb-divider"></div>
   <button class="btn btn-icon" onclick="execFormat('h2')" title="Rubrik">H2</button>
   <button class="btn btn-icon" onclick="execFormat('h3')" title="Underrubrik">H3</button>
+  <button class="btn btn-icon" onclick="execFormat('p')" title="Brödtext">P</button>
+  <div class="tb-divider"></div>
+  <button class="btn btn-icon" onclick="execFormat('ul')" title="Punktlista">&#8226;</button>
+  <button class="btn btn-icon" onclick="execFormat('ol')" title="Numrerad lista">1.</button>
+  <div class="tb-divider"></div>
+  <button class="btn btn-icon" onclick="execFormat('alignLeft')" title="Vänsterjustera">&#8676;</button>
+  <button class="btn btn-icon" onclick="execFormat('alignCenter')" title="Centrera">&#8596;</button>
+  <button class="btn btn-icon" onclick="execFormat('alignRight')" title="Högerjustera">&#8677;</button>
+  <div class="tb-divider"></div>
+  <button class="btn btn-icon" onclick="execFormat('link')" title="Infoga länk">&#128279;</button>
+  <select onchange="execFormat('fontSize', this.value); this.selectedIndex=0" title="Textstorlek">
+    <option value="">Storlek</option>
+    <option value="1">Liten</option>
+    <option value="3">Normal</option>
+    <option value="5">Stor</option>
+    <option value="7">Mycket stor</option>
+  </select>
+  <input type="color" id="tb-text-color" value="#000000" onchange="execFormat('color', this.value)" title="Textfärg" style="width:24px;height:24px;border:none;cursor:pointer;background:transparent;padding:0;">
 </div>
 
 <script>
@@ -744,6 +824,47 @@ const MODULE_TYPES = {
   two_col_text:       { icon: "\u{1F4F0}", label: "Tvåspaltstext" },
   financial_summary:  { icon: "\u{1F4B0}", label: "Finansiellt" },
   back_cover:         { icon: "\u{1F4D5}", label: "Baksida" },
+};
+
+// ─── Layout variants per module type ──────────────────────────────────────
+const LAYOUT_VARIANTS = {
+  text_spread: [
+    { id: 'full', icon: '▬', label: 'Full bredd' },
+    { id: 'narrow', icon: '▭', label: 'Smal centrerad' },
+    { id: 'sidebar', icon: '▮▯', label: 'Med sidofält' },
+  ],
+  two_col_text: [
+    { id: 'equal', icon: '▮▮', label: 'Lika kolumner' },
+    { id: 'wide-left', icon: '▮▯', label: 'Bred vänster' },
+    { id: 'wide-right', icon: '▯▮', label: 'Bred höger' },
+  ],
+  image_text: [
+    { id: 'left', icon: '🖼▬', label: 'Bild vänster' },
+    { id: 'right', icon: '▬🖼', label: 'Bild höger' },
+    { id: 'top', icon: '🖼\n▬', label: 'Bild ovanför' },
+    { id: 'background', icon: '🖼', label: 'Helbildsbakgrund' },
+  ],
+  kpi_grid: [
+    { id: '2col', icon: '▮▮', label: '2 kolumner' },
+    { id: '3col', icon: '▮▮▮', label: '3 kolumner' },
+    { id: '4col', icon: '▮▮▮▮', label: '4 kolumner' },
+  ],
+  cover: [
+    { id: 'centered', icon: '◎', label: 'Centrerad' },
+    { id: 'left-aligned', icon: '◧', label: 'Vänsterställd' },
+    { id: 'bottom', icon: '◨', label: 'Nederkant' },
+    { id: 'split', icon: '◫', label: 'Delad bild' },
+  ],
+  quote_callout: [
+    { id: 'centered', icon: '❝', label: 'Centrerat' },
+    { id: 'large', icon: '❝❝', label: 'Stort citat' },
+    { id: 'sidebar', icon: '▮❝', label: 'Sidofält' },
+  ],
+  data_chart: [
+    { id: 'full', icon: '📊', label: 'Full bredd' },
+    { id: 'side-legend', icon: '📊▮', label: 'Med teckenförklaring' },
+    { id: 'compact', icon: '📉', label: 'Kompakt' },
+  ],
 };
 
 // ─── Font constants ───────────────────────────────────────────────────────
@@ -1258,9 +1379,136 @@ function renderProperties() {
   modProps.innerHTML = html;
 }
 
+/** Render layout variant picker for the module */
+function renderVariantPicker(mod) {
+  const variants = LAYOUT_VARIANTS[mod.module_type];
+  if (!variants) return '';
+  const overrides = mod.layout_overrides || {};
+  const current = overrides.variant || variants[0].id;
+  let h = `<div class="prop-section">
+    <div class="prop-section-title">Layoutvariant</div>
+    <div class="variant-grid">`;
+  variants.forEach(v => {
+    h += `<div class="variant-card ${current === v.id ? 'active' : ''}" onclick="updateLayoutOverride('${mod.id}','variant','${v.id}')">
+      <div class="variant-icon">${v.icon}</div>${v.label}
+    </div>`;
+  });
+  h += `</div></div>`;
+  return h;
+}
+
+/** Render per-module layout overrides (padding, background, alignment, border) */
+function renderLayoutOverrides(mod) {
+  const ov = mod.layout_overrides || {};
+  let h = `<div class="prop-section">
+    <div class="prop-section-header" onclick="this.classList.toggle('collapsed');this.nextElementSibling.classList.toggle('collapsed')">
+      Layoutjusteringar <span class="chevron">▾</span>
+    </div>
+    <div class="prop-section-body">`;
+
+  // Background color
+  h += `<div class="prop-field"><label class="prop-label">Bakgrundsfärg</label>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <input type="color" value="${ov.bg_color || '#ffffff'}" onchange="updateLayoutOverride('${mod.id}','bg_color',this.value);this.nextElementSibling.value=this.value" style="width:32px;height:28px;border:none;cursor:pointer;" />
+      <input class="layout-mini-input" style="flex:1" value="${ov.bg_color || ''}" placeholder="auto" onchange="updateLayoutOverride('${mod.id}','bg_color',this.value)" />
+      ${ov.bg_color ? `<button class="btn btn-icon" onclick="updateLayoutOverride('${mod.id}','bg_color',null)" title="Återställ" style="font-size:10px;">✕</button>` : ''}
+    </div></div>`;
+
+  // Padding
+  h += `<div class="prop-field"><label class="prop-label">Utfyllnad (mm)</label>
+    <div class="layout-grid">
+      <div class="prop-field"><label class="prop-label" style="font-size:9px">Topp</label>
+        <input class="layout-mini-input" type="number" min="0" max="60" step="1" value="${ov.padding_top ?? ''}" placeholder="auto" onchange="updateLayoutOverride('${mod.id}','padding_top',this.value?parseFloat(this.value):null)" /></div>
+      <div class="prop-field"><label class="prop-label" style="font-size:9px">Botten</label>
+        <input class="layout-mini-input" type="number" min="0" max="60" step="1" value="${ov.padding_bottom ?? ''}" placeholder="auto" onchange="updateLayoutOverride('${mod.id}','padding_bottom',this.value?parseFloat(this.value):null)" /></div>
+      <div class="prop-field"><label class="prop-label" style="font-size:9px">Vänster</label>
+        <input class="layout-mini-input" type="number" min="0" max="60" step="1" value="${ov.padding_left ?? ''}" placeholder="auto" onchange="updateLayoutOverride('${mod.id}','padding_left',this.value?parseFloat(this.value):null)" /></div>
+      <div class="prop-field"><label class="prop-label" style="font-size:9px">Höger</label>
+        <input class="layout-mini-input" type="number" min="0" max="60" step="1" value="${ov.padding_right ?? ''}" placeholder="auto" onchange="updateLayoutOverride('${mod.id}','padding_right',this.value?parseFloat(this.value):null)" /></div>
+    </div></div>`;
+
+  // Text alignment
+  h += `<div class="prop-field"><label class="prop-label">Textjustering</label>
+    <div class="align-group">
+      <button class="align-btn ${(ov.text_align || '') === 'left' ? 'active' : ''}" onclick="updateLayoutOverride('${mod.id}','text_align','left')">&#8676; V</button>
+      <button class="align-btn ${(ov.text_align || '') === 'center' ? 'active' : ''}" onclick="updateLayoutOverride('${mod.id}','text_align','center')">&#8596; C</button>
+      <button class="align-btn ${(ov.text_align || '') === 'right' ? 'active' : ''}" onclick="updateLayoutOverride('${mod.id}','text_align','right')">&#8677; H</button>
+      <button class="align-btn ${!ov.text_align ? 'active' : ''}" onclick="updateLayoutOverride('${mod.id}','text_align',null)">Auto</button>
+    </div></div>`;
+
+  // Border
+  h += `<div class="prop-field"><label class="prop-label">Ram</label>
+    <div class="toggle-group">
+      <button class="toggle-btn ${!ov.border ? 'active' : ''}" onclick="updateLayoutOverride('${mod.id}','border',null);renderProperties()">Ingen</button>
+      <button class="toggle-btn ${ov.border === 'thin' ? 'active' : ''}" onclick="updateLayoutOverride('${mod.id}','border','thin');renderProperties()">Tunn</button>
+      <button class="toggle-btn ${ov.border === 'accent' ? 'active' : ''}" onclick="updateLayoutOverride('${mod.id}','border','accent');renderProperties()">Accent</button>
+    </div></div>`;
+
+  // Module spacing (gap before this module)
+  h += `<div class="prop-field"><label class="prop-label">Avstånd före (mm)</label>
+    <div class="prop-slider-wrap">
+      <input type="range" class="prop-slider" min="0" max="30" step="1" value="${ov.margin_top ?? 0}" oninput="updateLayoutOverride('${mod.id}','margin_top',parseFloat(this.value));this.nextElementSibling.textContent=this.value+'mm'" />
+      <span class="prop-slider-value">${ov.margin_top ?? 0}mm</span>
+    </div></div>`;
+
+  h += `</div></div>`;
+  return h;
+}
+
+function updateLayoutOverride(moduleId, key, value) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  pushUndo();
+  if (!mod.layout_overrides) mod.layout_overrides = {};
+  if (value === null || value === undefined || value === '') {
+    delete mod.layout_overrides[key];
+  } else {
+    mod.layout_overrides[key] = value;
+  }
+  markDirty();
+  renderProperties();
+}
+
+/** Render image upload/URL field */
+function renderImageField(mod) {
+  const content = mod.structured_content || mod.content || {};
+  const imgUrl = content.image_url || content.image || '';
+  let h = `<div class="prop-field"><label class="prop-label">Bild</label>`;
+  if (imgUrl) {
+    h += `<div class="image-upload-area" onclick="document.getElementById('img-upload-${mod.id}').click()">
+      <img src="${esc(imgUrl)}" alt="Modulbild" onerror="this.style.display='none'" />
+      <div style="font-size:10px;color:#888;">Klicka för att byta bild</div>
+    </div>`;
+  } else {
+    h += `<div class="image-upload-area" onclick="document.getElementById('img-upload-${mod.id}').click()">
+      <div style="font-size:24px;margin-bottom:4px;">🖼</div>
+      <div>Klicka för att välja bild</div>
+    </div>`;
+  }
+  h += `<input type="file" id="img-upload-${mod.id}" style="display:none" accept="image/*" onchange="handleImageUpload('${mod.id}', this)" />`;
+  h += `<input class="prop-input" placeholder="Eller klistra in bild-URL..." value="${esc(imgUrl)}" onchange="updateContent('${mod.id}','image_url',this.value)" style="margin-top:4px;" />`;
+  h += `</div>`;
+  return h;
+}
+
+function handleImageUpload(moduleId, input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    updateContent(moduleId, 'image_url', e.target.result);
+    renderProperties();
+  };
+  reader.readAsDataURL(file);
+}
+
 function renderTypeProps(mod, content) {
   const type = mod.module_type;
-  let h = '<div class="prop-section"><div class="prop-section-title">Innehåll</div>';
+
+  // Layout variant picker (if applicable)
+  let h = renderVariantPicker(mod);
+
+  h += '<div class="prop-section"><div class="prop-section-title">Innehåll</div>';
 
   switch (type) {
     case 'cover':
@@ -1269,6 +1517,7 @@ function renderTypeProps(mod, content) {
       h += propInput('Datum', content.date, v => updateContent(mod.id, 'date', v));
       h += propInput('Författare', content.author, v => updateContent(mod.id, 'author', v));
       h += propColor('Bakgrund', content.background_color, v => updateContent(mod.id, 'background_color', v));
+      h += renderImageField(mod);
       break;
 
     case 'chapter_break':
@@ -1307,12 +1556,8 @@ function renderTypeProps(mod, content) {
     case 'image_text':
       h += propInput('Rubrik', content.heading, v => updateContent(mod.id, 'heading', v));
       h += propTextarea('Brödtext', content.body, v => updateContent(mod.id, 'body', v));
-      h += propInput('Bildbeskrivning', content.image_alt, v => updateContent(mod.id, 'image_alt', v));
-      h += `<div class="prop-field"><label class="prop-label">Bildposition</label>
-        <div class="toggle-group">
-          <button class="toggle-btn ${(!content.image_position || content.image_position === 'left') ? 'active' : ''}" onclick="updateContent('${mod.id}','image_position','left');renderProperties()">Vänster</button>
-          <button class="toggle-btn ${content.image_position === 'right' ? 'active' : ''}" onclick="updateContent('${mod.id}','image_position','right');renderProperties()">Höger</button>
-        </div></div>`;
+      h += renderImageField(mod);
+      h += propInput('Bildbeskrivning (alt)', content.image_alt, v => updateContent(mod.id, 'image_alt', v));
       break;
 
     case 'data_chart':
@@ -1348,8 +1593,12 @@ function renderTypeProps(mod, content) {
       h += '<p style="color:#666;font-size:11px;">Ingen specifik editor för denna modultyp.</p>';
   }
 
-  h += `</div>
-    <div class="prop-section">
+  h += `</div>`;
+
+  // Layout overrides section (per-module styling)
+  h += renderLayoutOverrides(mod);
+
+  h += `<div class="prop-section">
       <button class="btn btn-primary" style="width:100%;margin-top:4px;" onclick="saveAndRerender('${mod.id}')">Spara &amp; förhandsvisa</button>
     </div>`;
   return h;
@@ -1694,6 +1943,38 @@ function renderDesignPanel() {
       </div>
     </div>
 
+    <div class="prop-field">
+      <label class="prop-label">Sidmarginaler (mm)</label>
+      <div class="layout-grid">
+        <div class="prop-field"><label class="prop-label" style="font-size:9px">Topp</label>
+          <input class="layout-mini-input" type="number" min="5" max="40" step="1" value="${spacing.margin_top ?? 20}" onchange="updateDesignSpacing('margin_top', parseFloat(this.value))" /></div>
+        <div class="prop-field"><label class="prop-label" style="font-size:9px">Botten</label>
+          <input class="layout-mini-input" type="number" min="5" max="40" step="1" value="${spacing.margin_bottom ?? 20}" onchange="updateDesignSpacing('margin_bottom', parseFloat(this.value))" /></div>
+        <div class="prop-field"><label class="prop-label" style="font-size:9px">Vänster</label>
+          <input class="layout-mini-input" type="number" min="5" max="40" step="1" value="${spacing.margin_left ?? 25}" onchange="updateDesignSpacing('margin_left', parseFloat(this.value))" /></div>
+        <div class="prop-field"><label class="prop-label" style="font-size:9px">Höger</label>
+          <input class="layout-mini-input" type="number" min="5" max="40" step="1" value="${spacing.margin_right ?? 25}" onchange="updateDesignSpacing('margin_right', parseFloat(this.value))" /></div>
+      </div>
+    </div>
+
+    <div class="prop-field">
+      <label class="prop-label">Radavstånd</label>
+      <div class="prop-slider-wrap">
+        <input type="range" class="prop-slider" min="1.2" max="2.2" step="0.1" value="${typo.line_height || 1.6}" oninput="updateDesignTypo('line_height', parseFloat(this.value)); this.nextElementSibling.textContent=this.value" />
+        <span class="prop-slider-value">${typo.line_height || 1.6}</span>
+      </div>
+    </div>
+
+    <div class="prop-field">
+      <label class="prop-label">Hörnradie</label>
+      <div class="toggle-group">
+        <button class="toggle-btn ${(design.border_radius || 'none') === 'none' ? 'active' : ''}" onclick="updateDesignField('border_radius','none')">Inga</button>
+        <button class="toggle-btn ${(design.border_radius || 'none') === 'small' ? 'active' : ''}" onclick="updateDesignField('border_radius','small')">Små</button>
+        <button class="toggle-btn ${(design.border_radius || 'none') === 'medium' ? 'active' : ''}" onclick="updateDesignField('border_radius','medium')">Medium</button>
+        <button class="toggle-btn ${(design.border_radius || 'none') === 'large' ? 'active' : ''}" onclick="updateDesignField('border_radius','large')">Stora</button>
+      </div>
+    </div>
+
     <div style="margin-top:12px;">
       <button class="btn btn-primary" style="width:100%;" onclick="saveDesignSystem()">Applicera designändringar</button>
     </div>
@@ -1822,6 +2103,9 @@ async function saveAndRerender(moduleId) {
 
   showLoading('Sparar modul...');
   try {
+    // Save module plan (includes layout_overrides, variant, title)
+    await api.saveModulePlan(state.doc.module_plan);
+    // Save structured content for this module
     await api.saveModuleContent(moduleId, content);
     await api.assembleDocument();
     const data = await api.getDocument();
@@ -2100,12 +2384,29 @@ function exitInlineEdit() {
   document.getElementById('text-toolbar').classList.remove('visible');
 }
 
-function execFormat(cmd) {
+function execFormat(cmd, value) {
   if (!state.editingElement) return;
-  if (cmd === 'bold') document.execCommand('bold');
-  else if (cmd === 'italic') document.execCommand('italic');
-  else if (cmd === 'h2') document.execCommand('formatBlock', false, 'h2');
-  else if (cmd === 'h3') document.execCommand('formatBlock', false, 'h3');
+  switch (cmd) {
+    case 'bold': document.execCommand('bold'); break;
+    case 'italic': document.execCommand('italic'); break;
+    case 'underline': document.execCommand('underline'); break;
+    case 'strikethrough': document.execCommand('strikeThrough'); break;
+    case 'h2': document.execCommand('formatBlock', false, 'h2'); break;
+    case 'h3': document.execCommand('formatBlock', false, 'h3'); break;
+    case 'p': document.execCommand('formatBlock', false, 'p'); break;
+    case 'ul': document.execCommand('insertUnorderedList'); break;
+    case 'ol': document.execCommand('insertOrderedList'); break;
+    case 'alignLeft': document.execCommand('justifyLeft'); break;
+    case 'alignCenter': document.execCommand('justifyCenter'); break;
+    case 'alignRight': document.execCommand('justifyRight'); break;
+    case 'fontSize': document.execCommand('fontSize', false, value); break;
+    case 'color': document.execCommand('foreColor', false, value); break;
+    case 'link': {
+      const url = prompt('Ange URL:');
+      if (url) document.execCommand('createLink', false, url);
+      break;
+    }
+  }
 }
 
 // ─── Zoom ─────────────────────────────────────────────────────────────────
@@ -2361,10 +2662,11 @@ document.addEventListener('keydown', (e) => {
     if (!state.editingElement) { e.preventDefault(); redo(); }
   }
 
-  // Bold/Italic during inline edit
+  // Bold/Italic/Underline during inline edit
   if (state.editingElement && (e.ctrlKey || e.metaKey)) {
     if (e.key === 'b') { e.preventDefault(); execFormat('bold'); }
     if (e.key === 'i') { e.preventDefault(); execFormat('italic'); }
+    if (e.key === 'u') { e.preventDefault(); execFormat('underline'); }
   }
 
   // Delete module
