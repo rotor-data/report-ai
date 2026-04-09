@@ -656,7 +656,25 @@ function applyLayoutOverrides(html, overrides) {
 }
 
 export function assembleHtml(designSystem, modules, customFonts = []) {
-  const css = buildDocumentCss(designSystem, customFonts);
+  // Merge DB fonts with _custom_fonts from design system (brand profile fonts)
+  const dsCustom = designSystem?._custom_fonts || [];
+  const dbNames = new Set(customFonts.map(f => f.family_name?.toLowerCase()));
+  const mergedFonts = [...customFonts];
+  for (const cf of dsCustom) {
+    const name = cf.family || cf.family_name || cf.name?.replace(/\.\w+$/, "");
+    if (!name || dbNames.has(name.toLowerCase())) continue;
+    const url = cf.url || cf.file_url || cf.src;
+    if (url && url.startsWith("http")) {
+      mergedFonts.push({
+        family_name: name,
+        blob_key: url,
+        format: cf.format || "woff2",
+        weight: cf.weight || "400",
+        style: cf.style || "normal",
+      });
+    }
+  }
+  const css = buildDocumentCss(designSystem, mergedFonts);
   const design = designSystem?.design || {};
   const rhythmClass = `rhythm-${design.rhythm || "balanced"}`;
   const densityClass = `density-${design.density || "balanced"}`;
@@ -922,8 +940,24 @@ NEVER use made-up token values — ask user or extract from brand profile.`,
     },
   },
   {
+    name: "upload_font",
+    description: "Upload a custom font to Report AI. Accepts base64 file data or a public URL. The font will be stored and available for @font-face in assembled documents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        family_name: { type: "string", description: "CSS font-family name, e.g. 'Acumin Pro'" },
+        weight: { type: "string", description: "Font weight (400, 700, etc)", default: "400" },
+        style: { type: "string", description: "Font style (normal, italic)", default: "normal" },
+        format: { type: "string", enum: ["woff2", "woff", "ttf", "otf"], description: "Font file format" },
+        file_base64: { type: "string", description: "Base64-encoded font file data" },
+        file_url: { type: "string", description: "Public URL to download the font file from" },
+      },
+      required: ["family_name", "format"],
+    },
+  },
+  {
     name: "extract_brand_from_url",
-    description: "Extract brand design info from a website URL. Scrapes colors, fonts, CSS tokens. Use when user provides their company website.",
+    description: "Extract brand design info from a website URL. Scrapes colors, fonts, CSS tokens, and @font-face URLs. Use when user provides their company website.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string" } },
@@ -1154,6 +1188,32 @@ async function handleSaveDesignSystem(hubUserId, args) {
   };
   incoming._locks = existingDoc[0]?.design_system?._locks || incoming._locks || { theme: false, template: false, design: false };
 
+  // Auto-persist _custom_fonts to custom_fonts table if they have URLs
+  const customFonts = incoming._custom_fonts || [];
+  let fontsImported = 0;
+  if (customFonts.length > 0) {
+    const { randomUUID } = await import("node:crypto");
+    for (const cf of customFonts) {
+      const familyName = cf.family || cf.family_name || cf.name?.replace(/\.\w+$/, "");
+      if (!familyName) continue;
+      // Check if font already exists for this user
+      const existing = await sql`SELECT id FROM custom_fonts WHERE hub_user_id = ${hubUserId} AND LOWER(family_name) = ${familyName.toLowerCase()} LIMIT 1`;
+      if (existing.length > 0) continue;
+      // If font has a URL, store it
+      const fontUrl = cf.url || cf.file_url || cf.src;
+      if (fontUrl) {
+        const id = randomUUID();
+        const resolvedUrl = fontUrl.startsWith("http") ? fontUrl : null;
+        if (resolvedUrl) {
+          await sql`INSERT INTO custom_fonts (id, hub_user_id, family_name, weight, style, format, blob_key)
+            VALUES (${id}, ${hubUserId}, ${familyName}, ${cf.weight || "400"}, ${cf.style || "normal"}, ${cf.format || "woff2"}, ${resolvedUrl})
+            ON CONFLICT DO NOTHING`;
+          fontsImported++;
+        }
+      }
+    }
+  }
+
   const rows = await sql`
     UPDATE documents SET
       brand_input = ${JSON.stringify(args.brand_input ?? {})}::jsonb,
@@ -1165,12 +1225,29 @@ async function handleSaveDesignSystem(hubUserId, args) {
   if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
 
   const source = fromBrand ? "Importerat från varumärkesprofil." : "Manuellt sparat.";
+  // Warn about missing custom fonts
+  const headingPrimary = incoming.typography?.heading_family?.split(",")?.[0]?.replace(/['"]/g, "").trim();
+  const bodyPrimary = incoming.typography?.body_family?.split(",")?.[0]?.replace(/['"]/g, "").trim();
+  const dbFonts = await sql`SELECT LOWER(family_name) AS name FROM custom_fonts WHERE hub_user_id = ${hubUserId}`;
+  const dbFontNames = new Set(dbFonts.map(f => f.name));
+  const sysNames = new Set(["georgia","system-ui","helvetica neue","helvetica","arial","times new roman","verdana","courier new","garamond","trebuchet ms","palatino","gill sans"]);
+  const missingFonts = [];
+  for (const name of [headingPrimary, bodyPrimary]) {
+    if (!name) continue;
+    const lower = name.toLowerCase();
+    if (sysNames.has(lower)) continue;
+    if (dbFontNames.has(lower)) continue;
+    missingFonts.push(name);
+  }
+
   const summary = [
     `Design system sparat. ${source}`,
     incoming.colors?.primary ? `Primärfärg: ${incoming.colors.primary}` : "",
     incoming.typography?.heading_family ? `Rubrikfont: ${incoming.typography.heading_family}` : "",
     incoming.typography?.body_family ? `Brödtextfont: ${incoming.typography.body_family}` : "",
     incoming.design?.density ? `Layout: ${incoming.design.density}` : "",
+    fontsImported > 0 ? `✅ ${fontsImported} font(er) importerade automatiskt.` : "",
+    missingFonts.length > 0 ? `⚠️ Fontfiler saknas för: ${missingFonts.join(", ")}. Ladda upp med upload_font (base64 eller URL) så att de renderas korrekt.` : "",
     "",
     "Nästa steg: Kör preview_design så att användaren kan granska och godkänna designen.",
   ].filter(Boolean).join("\n");
@@ -2184,9 +2261,64 @@ async function handleGetEditorUrl(hubUserId, args) {
   }, null, 2) }] };
 }
 
+async function handleUploadFont(hubUserId, args) {
+  const sql = getSql();
+  const { randomUUID } = await import("node:crypto");
+
+  if (!args.family_name) return { content: [{ type: "text", text: "family_name is required" }], isError: true };
+  if (!args.file_base64 && !args.file_url) return { content: [{ type: "text", text: "Either file_base64 or file_url is required" }], isError: true };
+
+  const id = randomUUID();
+  const format = args.format || "woff2";
+  const weight = args.weight || "400";
+  const style = args.style || "normal";
+  let blobKey;
+
+  if (args.file_url) {
+    // Store URL directly as blob_key — fonts endpoint will redirect
+    blobKey = args.file_url;
+  } else {
+    // Store base64 data in blob store
+    try {
+      const { connectLambda, getStore } = await import("@netlify/blobs");
+      let store;
+      try {
+        // In lambda context, connectLambda provides credentials
+        store = getStore("report-ai-fonts");
+      } catch {
+        const siteID = process.env.NETLIFY_SITE_ID;
+        const token = process.env.NETLIFY_API_TOKEN;
+        if (siteID && token) store = getStore({ name: "report-ai-fonts", siteID, token });
+      }
+      if (!store) return { content: [{ type: "text", text: "Blob store not available" }], isError: true };
+
+      const key = `${hubUserId}/${id}.${format}`;
+      const clean = args.file_base64.includes(",") ? args.file_base64.split(",").pop() : args.file_base64;
+      const bytes = Buffer.from(clean, "base64");
+      const contentTypes = { woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf", otf: "font/otf" };
+      await store.set(key, bytes, { contentType: contentTypes[format] || "font/woff2" });
+      blobKey = key;
+    } catch (e) {
+      return { content: [{ type: "text", text: `Failed to store font: ${e.message}` }], isError: true };
+    }
+  }
+
+  await sql`
+    INSERT INTO custom_fonts (id, hub_user_id, family_name, weight, style, format, blob_key)
+    VALUES (${id}, ${hubUserId}, ${args.family_name}, ${weight}, ${style}, ${format}, ${blobKey})
+    ON CONFLICT DO NOTHING
+  `;
+
+  return { content: [{ type: "text", text: JSON.stringify({
+    ok: true, font_id: id, family_name: args.family_name, weight, style, format,
+    message: `Font "${args.family_name}" (${weight} ${style}) uploaded. It will be included in @font-face when assembling documents.`,
+  }, null, 2) }] };
+}
+
 async function handleExtractBrandFromUrl(hubUserId, args) {
   if (!args.url) return { content: [{ type: "text", text: "URL is required" }], isError: true };
   try {
+    const baseUrl = new URL(args.url);
     const response = await fetch(args.url, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; ReportAI/1.0)", "Accept": "text/html" },
       signal: AbortSignal.timeout(15000),
@@ -2199,6 +2331,29 @@ async function handleExtractBrandFromUrl(hubUserId, args) {
     const fontFamilies = [...new Set(fontMatches)].slice(0, 10);
     const googleFonts = [...html.matchAll(/fonts\.googleapis\.com\/css2?\?family=([^"&']+)/gi)]
       .map((m) => decodeURIComponent(m[1]).replace(/\+/g, " ").split("|").map((f) => f.split(":")[0].trim())).flat();
+
+    // Extract @font-face src URLs for custom font downloads
+    const fontFaceUrls = [];
+    for (const m of html.matchAll(/@font-face\s*\{([^}]*)\}/gi)) {
+      const block = m[1];
+      const familyMatch = block.match(/font-family\s*:\s*['"]?([^;'"]+)/i);
+      const srcMatch = block.match(/src\s*:[^;]*url\s*\(\s*['"]?([^'")\s]+)/i);
+      const weightMatch = block.match(/font-weight\s*:\s*([^;}\s]+)/i);
+      const formatMatch = block.match(/format\s*\(\s*['"]?([^'")\s]+)/i);
+      if (familyMatch && srcMatch) {
+        let fontUrl = srcMatch[1].trim();
+        // Resolve relative URLs
+        if (fontUrl.startsWith("/")) fontUrl = `${baseUrl.origin}${fontUrl}`;
+        else if (!fontUrl.startsWith("http")) fontUrl = new URL(fontUrl, args.url).href;
+        fontFaceUrls.push({
+          family: familyMatch[1].trim(),
+          url: fontUrl,
+          weight: weightMatch?.[1]?.trim() || "400",
+          format: formatMatch?.[1]?.trim() || (fontUrl.includes(".woff2") ? "woff2" : fontUrl.includes(".woff") ? "woff" : "ttf"),
+        });
+      }
+    }
+
     const cssVars = {};
     for (const m of html.matchAll(/--([a-zA-Z0-9_-]+)\s*:\s*([^;}"]+)/g)) cssVars[m[1].trim()] = m[2].trim();
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
@@ -2206,14 +2361,22 @@ async function handleExtractBrandFromUrl(hubUserId, args) {
     const skip = new Set(["#fff", "#ffffff", "#000", "#000000", "#333", "#666", "#999", "#ccc", "#eee", "#f5f5f5"]);
     const brandColors = hexColors.filter((c) => !skip.has(c.toLowerCase())).slice(0, 15);
 
-    return { content: [{ type: "text", text: JSON.stringify({
+    const result = {
       source_url: args.url,
       page_title: titleMatch?.[1]?.trim() || null,
       colors: { hex: brandColors, suggestion: brandColors.length >= 3 ? `primary=${brandColors[0]}, secondary=${brandColors[1]}, accent=${brandColors[2]}` : "Ask user" },
       typography: { families: fontFamilies, google_fonts: [...new Set(googleFonts)] },
       css_tokens: Object.keys(cssVars).length > 0 ? cssVars : null,
-      instructions: "Present findings to user. Ask to confirm before using. Supplement sparse data with tasteful defaults.",
-    }, null, 2) }] };
+    };
+
+    if (fontFaceUrls.length > 0) {
+      result.font_files = fontFaceUrls;
+      result.instructions = "Found downloadable font files! Upload them with upload_font (file_url) before saving design system. Present findings to user for confirmation.";
+    } else {
+      result.instructions = "Present findings to user. Ask to confirm before using. If custom fonts were found but no downloadable URLs, ask user to upload font files via upload_font.";
+    }
+
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (e) {
     return { content: [{ type: "text", text: `Could not extract from ${args.url}: ${e.message}. Ask for brand details manually.` }], isError: true };
   }
@@ -2456,6 +2619,7 @@ const HANDLERS = {
   export_pptx:             handleExportPptx,
   get_preview_url:         handleGetPreviewUrl,
   get_editor_url:          handleGetEditorUrl,
+  upload_font:             handleUploadFont,
   extract_brand_from_url:  handleExtractBrandFromUrl,
   // V4 Pipeline
   extract_content_schema:  handleExtractContentSchema,
