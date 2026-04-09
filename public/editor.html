@@ -1,0 +1,2090 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Report AI — Editor</title>
+<style>
+/* ─── Reset & Base ──────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; font-size: 13px; color: #ccc; background: #1e1e1e; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #2d2d2d; }
+::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #777; }
+input, select, textarea, button { font-family: inherit; font-size: inherit; }
+button { cursor: pointer; border: none; background: none; color: inherit; }
+
+/* ─── Layout ────────────────────────────────────────────────────────────── */
+.editor {
+  display: grid;
+  grid-template-rows: 48px 1fr;
+  grid-template-columns: 240px 1fr 280px;
+  grid-template-areas:
+    "toolbar toolbar toolbar"
+    "modules canvas properties";
+  height: 100vh;
+}
+.editor.modules-collapsed {
+  grid-template-columns: 0px 1fr 280px;
+}
+.editor.properties-collapsed {
+  grid-template-columns: 240px 1fr 0px;
+}
+.editor.modules-collapsed.properties-collapsed {
+  grid-template-columns: 0px 1fr 0px;
+}
+
+/* ─── Toolbar ───────────────────────────────────────────────────────────── */
+.toolbar {
+  grid-area: toolbar;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: #2d2d2d;
+  border-bottom: 1px solid #3a3a3a;
+  z-index: 100;
+}
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 24px;
+  background: #444;
+  margin: 0 6px;
+}
+.toolbar-title {
+  flex: 1;
+  min-width: 0;
+}
+.toolbar-title input {
+  width: 100%;
+  max-width: 400px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #eee;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: border-color 0.15s;
+}
+.toolbar-title input:hover { border-color: #555; }
+.toolbar-title input:focus { border-color: #5b9bd5; outline: none; background: #363636; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.btn:hover { background: #404040; }
+.btn:active { background: #505050; }
+.btn-icon {
+  padding: 5px 7px;
+  font-size: 15px;
+  line-height: 1;
+}
+.btn-primary { background: #2d6bc4; color: #fff; }
+.btn-primary:hover { background: #3578d8; }
+.btn-disabled { opacity: 0.35; pointer-events: none; }
+
+.save-status {
+  font-size: 11px;
+  color: #888;
+  margin-left: 4px;
+  min-width: 80px;
+}
+.save-status.saving { color: #d4a846; }
+.save-status.unsaved { color: #c44; }
+
+/* ─── Dropdown ──────────────────────────────────────────────────────────── */
+.dropdown-wrap { position: relative; }
+.dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 200px;
+  background: #363636;
+  border: 1px solid #4a4a4a;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  z-index: 200;
+  overflow: hidden;
+  display: none;
+}
+.dropdown.open { display: block; }
+.dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: #ccc;
+  transition: background 0.1s;
+}
+.dropdown-item:hover { background: #404040; }
+.dropdown-item .badge { float: right; font-size: 10px; color: #888; }
+
+/* ─── Left Panel: Module List ───────────────────────────────────────────── */
+.modules-panel {
+  grid-area: modules;
+  background: #262626;
+  border-right: 1px solid #3a3a3a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.2s;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #999;
+  border-bottom: 1px solid #3a3a3a;
+  flex-shrink: 0;
+}
+.module-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+.module-card {
+  padding: 10px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  position: relative;
+}
+.module-card:hover { background: #333; }
+.module-card.selected { border-color: #5b9bd5; background: #2a3548; }
+.module-card.drag-over { border-color: #5b9bd5; border-style: dashed; }
+.module-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.module-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+  background: #3a3a3a;
+}
+.module-card-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 500;
+  color: #ddd;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.module-type-badge {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #3a3a3a;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+.module-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: #666;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+.module-card:hover .module-delete { opacity: 1; }
+.module-delete:hover { color: #e55; background: #3a2020; }
+.drag-indicator {
+  height: 2px;
+  background: #5b9bd5;
+  border-radius: 1px;
+  margin: 2px 0;
+  display: none;
+}
+.drag-indicator.visible { display: block; }
+
+/* ─── Canvas ────────────────────────────────────────────────────────────── */
+.canvas-area {
+  grid-area: canvas;
+  background: #1a1a1a;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  padding: 40px 20px;
+}
+.canvas-paper {
+  background: #fff;
+  width: 210mm;
+  min-height: 297mm;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  position: relative;
+  transform-origin: top center;
+  flex-shrink: 0;
+}
+.canvas-paper [data-module-id] {
+  position: relative;
+  transition: outline 0.15s;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+.canvas-paper [data-module-id]:hover {
+  outline-color: rgba(91, 155, 213, 0.3);
+}
+.canvas-paper [data-module-id].mod-selected {
+  outline-color: #5b9bd5;
+}
+.canvas-paper [data-module-id].mod-editing {
+  outline-color: #4aa84a;
+}
+.canvas-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 297mm;
+  color: #888;
+  font-size: 14px;
+}
+
+/* ─── Right Panel: Properties ───────────────────────────────────────────── */
+.properties-panel {
+  grid-area: properties;
+  background: #262626;
+  border-left: 1px solid #3a3a3a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.properties-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+.prop-section {
+  margin-bottom: 16px;
+}
+.prop-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #3a3a3a;
+}
+.prop-field {
+  margin-bottom: 10px;
+}
+.prop-label {
+  display: block;
+  font-size: 11px;
+  color: #999;
+  margin-bottom: 3px;
+}
+.prop-input {
+  width: 100%;
+  padding: 6px 8px;
+  background: #333;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #ddd;
+  font-size: 12px;
+  transition: border-color 0.15s;
+}
+.prop-input:focus { border-color: #5b9bd5; outline: none; }
+.prop-input:disabled { opacity: 0.5; }
+textarea.prop-input { min-height: 80px; resize: vertical; font-family: inherit; }
+
+.prop-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.prop-row .prop-field { flex: 1; margin-bottom: 0; }
+
+/* Color swatches */
+.color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.color-swatch {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 2px solid #444;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.color-swatch:hover { border-color: #888; transform: scale(1.1); }
+.color-swatch-label {
+  position: absolute;
+  bottom: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 8px;
+  color: #777;
+  white-space: nowrap;
+}
+.color-swatch input[type="color"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
+}
+
+/* Font select */
+.font-select {
+  width: 100%;
+  padding: 6px 8px;
+  background: #333;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #ddd;
+  font-size: 12px;
+}
+.font-select:focus { border-color: #5b9bd5; outline: none; }
+
+/* Slider */
+.prop-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.prop-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  height: 4px;
+  background: #444;
+  border-radius: 2px;
+  outline: none;
+}
+.prop-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #5b9bd5;
+  cursor: pointer;
+}
+.prop-slider-value {
+  font-size: 11px;
+  color: #999;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  min-width: 36px;
+  text-align: right;
+}
+
+/* Toggle group */
+.toggle-group {
+  display: flex;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid #444;
+}
+.toggle-btn {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 11px;
+  text-align: center;
+  background: #333;
+  color: #999;
+  transition: background 0.15s, color 0.15s;
+  border-right: 1px solid #444;
+}
+.toggle-btn:last-child { border-right: none; }
+.toggle-btn:hover { background: #3a3a3a; }
+.toggle-btn.active { background: #2d6bc4; color: #fff; }
+
+/* Inline text toolbar */
+.text-toolbar {
+  position: fixed;
+  display: none;
+  background: #363636;
+  border: 1px solid #4a4a4a;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  padding: 4px;
+  z-index: 300;
+  gap: 2px;
+}
+.text-toolbar.visible { display: flex; }
+.text-toolbar .btn { font-size: 13px; padding: 4px 8px; }
+
+/* KPI card editor */
+.kpi-card-editor {
+  background: #333;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+  position: relative;
+}
+.kpi-card-editor .remove-btn {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 14px;
+  color: #666;
+}
+.kpi-card-editor .remove-btn:hover { color: #e55; }
+
+/* Table editor */
+.table-editor {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 8px;
+}
+.table-editor th, .table-editor td {
+  border: 1px solid #444;
+  padding: 0;
+}
+.table-editor input {
+  width: 100%;
+  padding: 4px 6px;
+  background: transparent;
+  border: none;
+  color: #ddd;
+  font-size: 11px;
+}
+.table-editor input:focus { background: #3a3a3a; outline: none; }
+.table-editor th { background: #3a3a3a; }
+
+/* Chart editor */
+.chart-series-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.chart-series-row input { flex: 1; }
+
+/* No selection state */
+.no-selection {
+  padding: 20px;
+  text-align: center;
+  color: #666;
+  font-size: 12px;
+}
+
+/* ─── Login Screen ──────────────────────────────────────────────────────── */
+.login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: #1e1e1e;
+}
+.login-box {
+  background: #2d2d2d;
+  border: 1px solid #3a3a3a;
+  border-radius: 12px;
+  padding: 40px;
+  width: 400px;
+  text-align: center;
+}
+.login-box h1 {
+  font-size: 20px;
+  color: #eee;
+  margin-bottom: 8px;
+}
+.login-box p {
+  color: #888;
+  font-size: 13px;
+  margin-bottom: 24px;
+}
+.login-box input {
+  width: 100%;
+  padding: 10px 14px;
+  background: #363636;
+  border: 1px solid #444;
+  border-radius: 6px;
+  color: #ddd;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.login-box input:focus { border-color: #5b9bd5; outline: none; }
+.login-box button {
+  width: 100%;
+  padding: 10px;
+  background: #2d6bc4;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.login-box button:hover { background: #3578d8; }
+
+/* ─── Loading / Error ───────────────────────────────────────────────────── */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(30,30,30,0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  color: #ccc;
+  font-size: 14px;
+}
+.spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #444;
+  border-top-color: #5b9bd5;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  margin-right: 10px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: #363636;
+  border: 1px solid #4a4a4a;
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: #ddd;
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  z-index: 400;
+  transform: translateY(80px);
+  opacity: 0;
+  transition: transform 0.3s, opacity 0.3s;
+}
+.toast.visible { transform: translateY(0); opacity: 1; }
+.toast.error { border-color: #c44; }
+</style>
+</head>
+<body>
+
+<!-- Login screen -->
+<div id="login-screen" class="login-screen" style="display:none;">
+  <div class="login-box">
+    <h1>Report AI Editor</h1>
+    <p>Ange din token för att öppna editorn.</p>
+    <input id="token-input" type="text" placeholder="Bearer token..." />
+    <input id="doc-input" type="text" placeholder="Document ID..." />
+    <button onclick="doLogin()">Öppna dokument</button>
+  </div>
+</div>
+
+<!-- Loading overlay -->
+<div id="loading" class="loading-overlay" style="display:none;">
+  <div><span class="spinner"></span><span id="loading-text">Laddar dokument...</span></div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<!-- Main Editor -->
+<div id="editor" class="editor" style="display:none;">
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <button class="btn btn-icon" onclick="togglePanel('modules')" title="Modulpanel">&#9776;</button>
+    <div class="toolbar-title">
+      <input id="doc-title" type="text" value="" placeholder="Dokumenttitel..." />
+    </div>
+    <div class="toolbar-divider"></div>
+
+    <!-- Zoom -->
+    <div class="toolbar-group">
+      <button class="btn btn-icon" onclick="setZoom(-1)" title="Zooma ut">&#8722;</button>
+      <span id="zoom-label" style="font-size:11px;min-width:36px;text-align:center;font-family:monospace;">100%</span>
+      <button class="btn btn-icon" onclick="setZoom(1)" title="Zooma in">&#43;</button>
+    </div>
+    <div class="toolbar-divider"></div>
+
+    <!-- Add module -->
+    <div class="dropdown-wrap">
+      <button class="btn" onclick="toggleDropdown('add-module-dd')">&#43; Modul</button>
+      <div id="add-module-dd" class="dropdown"></div>
+    </div>
+    <div class="toolbar-divider"></div>
+
+    <!-- Undo/Redo -->
+    <button id="undo-btn" class="btn btn-icon btn-disabled" onclick="undo()" title="Ångra (Ctrl+Z)">&#8630;</button>
+    <button id="redo-btn" class="btn btn-icon btn-disabled" onclick="redo()" title="Gör om (Ctrl+Y)">&#8631;</button>
+    <div class="toolbar-divider"></div>
+
+    <!-- Export -->
+    <div class="dropdown-wrap">
+      <button class="btn" onclick="toggleDropdown('export-dd')">&#8615; Exportera</button>
+      <div id="export-dd" class="dropdown">
+        <button class="dropdown-item" onclick="doExport('pdf')">PDF <span class="badge">.pdf</span></button>
+        <button class="dropdown-item" onclick="doExport('pptx')">PowerPoint <span class="badge">.pptx</span></button>
+        <button class="dropdown-item" onclick="doExport('idml')">InDesign <span class="badge">.idml</span></button>
+        <button class="dropdown-item" onclick="doExport('docx')">Word <span class="badge">.docx</span></button>
+      </div>
+    </div>
+
+    <span id="save-status" class="save-status">Sparad</span>
+
+    <button class="btn btn-icon" onclick="togglePanel('properties')" title="Egenskapspanel">&#9881;</button>
+  </div>
+
+  <!-- Left Panel -->
+  <div class="modules-panel" id="modules-panel">
+    <div class="panel-header">
+      <span>Moduler</span>
+      <span id="module-count" style="font-weight:400;color:#666;"></span>
+    </div>
+    <div class="module-list" id="module-list"></div>
+  </div>
+
+  <!-- Canvas -->
+  <div class="canvas-area" id="canvas-area">
+    <div class="canvas-paper" id="canvas-paper">
+      <div class="canvas-empty">Laddar dokument...</div>
+    </div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="properties-panel" id="properties-panel">
+    <div class="panel-header"><span>Egenskaper</span></div>
+    <div class="properties-scroll" id="properties-scroll">
+      <div class="no-selection" id="no-selection">Klicka på en modul för att redigera dess egenskaper.</div>
+      <div id="module-props" style="display:none;"></div>
+      <div id="design-props"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Floating text toolbar for inline editing -->
+<div id="text-toolbar" class="text-toolbar">
+  <button class="btn btn-icon" onclick="execFormat('bold')" title="Fetstil (Ctrl+B)"><b>B</b></button>
+  <button class="btn btn-icon" onclick="execFormat('italic')" title="Kursiv (Ctrl+I)"><i>I</i></button>
+  <button class="btn btn-icon" onclick="execFormat('h2')" title="Rubrik">H2</button>
+  <button class="btn btn-icon" onclick="execFormat('h3')" title="Underrubrik">H3</button>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════════
+   Report AI — Visual Document Editor
+   Self-contained SPA. No build step. No framework.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// ─── Module type metadata ──────────────────────────────────────────────────
+const MODULE_TYPES = {
+  cover:              { icon: "\u{1F4D8}", label: "Omslag" },
+  chapter_break:      { icon: "\u{1F4D1}", label: "Kapitelbrytning" },
+  text_spread:        { icon: "\u{1F4DD}", label: "Text" },
+  kpi_grid:           { icon: "\u{1F4CA}", label: "Nyckeltal" },
+  table:              { icon: "\u{1F5C2}", label: "Tabell" },
+  quote_callout:      { icon: "\u{275D}", label: "Citat" },
+  image_text:         { icon: "\u{1F5BC}", label: "Bild + Text" },
+  data_chart:         { icon: "\u{1F4C8}", label: "Diagram" },
+  two_col_text:       { icon: "\u{1F4F0}", label: "Tvåspaltstext" },
+  financial_summary:  { icon: "\u{1F4B0}", label: "Finansiellt" },
+  back_cover:         { icon: "\u{1F4D5}", label: "Baksida" },
+};
+
+// ─── State ────────────────────────────────────────────────────────────────
+let state = {
+  token: null,
+  docId: null,
+  doc: null,           // full document from API
+  selectedModuleId: null,
+  editingElement: null,
+  zoom: 100,
+  undoStack: [],
+  redoStack: [],
+  saveTimer: null,
+  saving: false,
+  dirty: false,
+};
+
+const ZOOM_LEVELS = [50, 75, 100, 150];
+
+// ─── API Client ───────────────────────────────────────────────────────────
+class ReportApi {
+  constructor(docId, token) {
+    this.docId = docId;
+    this.token = token;
+  }
+
+  async rpc(toolName, args = {}) {
+    const res = await fetch('/.netlify/functions/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: toolName, arguments: { document_id: this.docId, ...args } },
+        id: Date.now(),
+      }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+    // MCP returns { result: { content: [{ type: "text", text: "..." }] } }
+    const content = data.result?.content?.[0]?.text;
+    if (content) {
+      try { return JSON.parse(content); } catch { return content; }
+    }
+    return data.result;
+  }
+
+  getDocument()            { return this.rpc('get_document'); }
+  saveModuleContent(moduleId, content) { return this.rpc('save_module_content', { module_id: moduleId, content }); }
+  saveModulePlan(plan)     { return this.rpc('save_module_plan', { module_plan: plan }); }
+  saveDesignSystem(ds)     { return this.rpc('save_design_system', { design_system: ds }); }
+  assembleDocument()       { return this.rpc('assemble_document'); }
+  exportPdf()              { return this.rpc('export_pdf'); }
+  exportIdml()             { return this.rpc('export_idml'); }
+  exportDocx()             { return this.rpc('export_docx'); }
+  exportPptx()             { return this.rpc('export_pptx'); }
+}
+
+let api = null;
+
+// ─── Init ─────────────────────────────────────────────────────────────────
+(function init() {
+  const params = new URLSearchParams(location.search);
+  state.token = params.get('token');
+  state.docId = params.get('doc');
+
+  if (!state.token || !state.docId) {
+    showLogin();
+    return;
+  }
+  loadDocument();
+})();
+
+function showLogin() {
+  document.getElementById('login-screen').style.display = '';
+  document.getElementById('editor').style.display = 'none';
+  // Pre-fill from URL
+  const params = new URLSearchParams(location.search);
+  if (params.get('token')) document.getElementById('token-input').value = params.get('token');
+  if (params.get('doc')) document.getElementById('doc-input').value = params.get('doc');
+}
+
+function doLogin() {
+  const token = document.getElementById('token-input').value.trim();
+  const doc = document.getElementById('doc-input').value.trim();
+  if (!token || !doc) return toast('Ange både token och dokument-ID.', true);
+  state.token = token;
+  state.docId = doc;
+  // Update URL without reload
+  const url = new URL(location);
+  url.searchParams.set('token', token);
+  url.searchParams.set('doc', doc);
+  history.replaceState(null, '', url);
+  document.getElementById('login-screen').style.display = 'none';
+  loadDocument();
+}
+
+async function loadDocument() {
+  showLoading('Laddar dokument...');
+  try {
+    api = new ReportApi(state.docId, state.token);
+    const data = await api.getDocument();
+    // MCP get_document returns the document object directly (or wrapped in .item)
+    state.doc = data.item || data;
+    if (!state.doc || typeof state.doc !== 'object') {
+      throw new Error('Ogiltigt dokumentformat');
+    }
+    hideLoading();
+    document.getElementById('editor').style.display = '';
+    renderAll();
+  } catch (e) {
+    hideLoading();
+    toast('Kunde inte ladda dokument: ' + e.message, true);
+    showLogin();
+  }
+}
+
+// ─── Rendering ────────────────────────────────────────────────────────────
+function renderAll() {
+  renderToolbar();
+  renderModuleList();
+  renderCanvas();
+  renderProperties();
+  renderDesignPanel();
+  buildAddModuleDropdown();
+}
+
+function renderToolbar() {
+  const titleInput = document.getElementById('doc-title');
+  titleInput.value = state.doc.title || '';
+  titleInput.onchange = () => {
+    pushUndo();
+    state.doc.title = titleInput.value;
+    scheduleSave('title');
+  };
+  updateUndoRedoButtons();
+}
+
+function renderModuleList() {
+  const list = document.getElementById('module-list');
+  const modules = state.doc.module_plan || [];
+  document.getElementById('module-count').textContent = modules.length;
+
+  list.innerHTML = modules.map((m, i) => {
+    const mt = MODULE_TYPES[m.module_type] || { icon: '?', label: m.module_type };
+    const sel = m.id === state.selectedModuleId ? ' selected' : '';
+    return `
+      <div class="module-card${sel}" data-idx="${i}" data-id="${m.id}"
+           draggable="true"
+           onclick="selectModule('${m.id}')"
+           ondragstart="onDragStart(event, ${i})"
+           ondragover="onDragOver(event, ${i})"
+           ondragleave="onDragLeave(event)"
+           ondrop="onDrop(event, ${i})"
+           ondragend="onDragEnd(event)">
+        <div class="module-card-header">
+          <div class="module-icon">${mt.icon}</div>
+          <div class="module-card-title">${esc(m.title || mt.label)}</div>
+          <span class="module-type-badge">${mt.label}</span>
+        </div>
+        <button class="module-delete" onclick="event.stopPropagation(); deleteModule('${m.id}')" title="Ta bort">&times;</button>
+      </div>`;
+  }).join('');
+}
+
+function renderCanvas() {
+  const paper = document.getElementById('canvas-paper');
+  const html = state.doc.html_output;
+  if (!html) {
+    paper.innerHTML = '<div class="canvas-empty">Dokumentet har ingen HTML än. Generera innehåll via MCP-verktyg först.</div>';
+    return;
+  }
+  // Extract body content from full HTML document
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/gi);
+
+  let styles = '';
+  if (styleMatch) {
+    styles = styleMatch.map(s => {
+      // Extract content between style tags
+      const inner = s.replace(/<\/?style[^>]*>/gi, '');
+      return inner;
+    }).join('\n');
+  }
+
+  // Inject styles into shadow-like scope
+  const bodyContent = bodyMatch ? bodyMatch[1] : html;
+  paper.innerHTML = `<style>${scopeStyles(styles)}</style>${bodyContent}`;
+
+  // Bind click handlers to module sections
+  paper.querySelectorAll('[data-module-id]').forEach(section => {
+    section.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectModule(section.dataset.moduleId);
+    });
+    section.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      enterInlineEdit(section, e.target);
+    });
+  });
+
+  // Click on paper background deselects
+  paper.addEventListener('click', (e) => {
+    if (e.target === paper) deselectModule();
+  });
+
+  applyZoom();
+  highlightSelectedModule();
+}
+
+function scopeStyles(css) {
+  if (!css) return '';
+  // Remove @page rules (they affect print only) and scope selectors to .canvas-paper
+  let scoped = css
+    .replace(/@page[^{]*\{[^}]*\}/g, '')
+    .replace(/@media\s+print[^{]*\{[^}]*\}/g, '')
+    .replace(/@font-face/g, '@font-face');
+
+  // Simple scoping: prefix selectors (rough but functional for module CSS)
+  // Don't scope @font-face or @keyframes
+  const lines = scoped.split('\n');
+  const result = [];
+  let inAtRule = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('@font-face') || trimmed.startsWith('@keyframes') || trimmed.startsWith('@import')) {
+      inAtRule = true;
+      result.push(line);
+      continue;
+    }
+    if (inAtRule) {
+      result.push(line);
+      if (trimmed === '}') inAtRule = false;
+      continue;
+    }
+    // Scope CSS selectors
+    if (trimmed && !trimmed.startsWith('@') && !trimmed.startsWith('}') && !trimmed.startsWith('/*') && trimmed.includes('{')) {
+      const parts = trimmed.split('{');
+      const selectors = parts[0].split(',').map(s => {
+        s = s.trim();
+        if (!s || s === ':root' || s === 'html' || s === 'body') return '#canvas-paper' + (s === ':root' || s === 'html' || s === 'body' ? '' : ' ' + s);
+        return '#canvas-paper ' + s;
+      }).join(', ');
+      result.push(selectors + ' {' + (parts.slice(1).join('{') || ''));
+    } else {
+      result.push(line);
+    }
+  }
+  return result.join('\n');
+}
+
+function renderProperties() {
+  const noSel = document.getElementById('no-selection');
+  const modProps = document.getElementById('module-props');
+
+  if (!state.selectedModuleId) {
+    noSel.style.display = '';
+    modProps.style.display = 'none';
+    return;
+  }
+
+  const mod = getModule(state.selectedModuleId);
+  if (!mod) {
+    noSel.style.display = '';
+    modProps.style.display = 'none';
+    return;
+  }
+
+  noSel.style.display = 'none';
+  modProps.style.display = '';
+
+  const mt = MODULE_TYPES[mod.module_type] || { icon: '?', label: mod.module_type };
+  const content = mod.structured_content || mod.content || {};
+
+  let html = `
+    <div class="prop-section">
+      <div class="prop-section-title">Modul</div>
+      <div class="prop-field">
+        <span class="module-type-badge" style="display:inline-block;margin-bottom:6px;">${mt.icon} ${mt.label}</span>
+      </div>
+      <div class="prop-field">
+        <label class="prop-label">Titel</label>
+        <input class="prop-input" value="${esc(mod.title || '')}" onchange="updateModuleTitle('${mod.id}', this.value)" />
+      </div>
+    </div>`;
+
+  // Type-specific property editors
+  html += renderTypeProps(mod, content);
+
+  modProps.innerHTML = html;
+}
+
+function renderTypeProps(mod, content) {
+  const type = mod.module_type;
+  let h = '<div class="prop-section"><div class="prop-section-title">Innehåll</div>';
+
+  switch (type) {
+    case 'cover':
+      h += propInput('Titel', content.title, v => updateContent(mod.id, 'title', v));
+      h += propInput('Undertitel', content.subtitle, v => updateContent(mod.id, 'subtitle', v));
+      h += propInput('Datum', content.date, v => updateContent(mod.id, 'date', v));
+      h += propInput('Författare', content.author, v => updateContent(mod.id, 'author', v));
+      h += propColor('Bakgrund', content.background_color, v => updateContent(mod.id, 'background_color', v));
+      break;
+
+    case 'chapter_break':
+      h += propInput('Kapitel nr', content.chapter_number, v => updateContent(mod.id, 'chapter_number', v), 'number');
+      h += propInput('Titel', content.title, v => updateContent(mod.id, 'title', v));
+      h += propInput('Undertitel', content.subtitle, v => updateContent(mod.id, 'subtitle', v));
+      break;
+
+    case 'text_spread':
+      h += propInput('Rubrik', content.heading, v => updateContent(mod.id, 'heading', v));
+      h += propTextarea('Brödtext', content.body, v => updateContent(mod.id, 'body', v));
+      break;
+
+    case 'two_col_text':
+      h += propInput('Rubrik', content.heading, v => updateContent(mod.id, 'heading', v));
+      h += propTextarea('Brödtext', content.body, v => updateContent(mod.id, 'body', v));
+      break;
+
+    case 'kpi_grid':
+      h += propInput('Rubrik', content.heading, v => updateContent(mod.id, 'heading', v));
+      h += renderKpiEditor(mod.id, content.kpis || []);
+      break;
+
+    case 'table':
+      h += propInput('Rubrik', content.heading, v => updateContent(mod.id, 'heading', v));
+      h += propInput('Bildtext', content.caption, v => updateContent(mod.id, 'caption', v));
+      h += renderTableEditor(mod.id, content);
+      break;
+
+    case 'quote_callout':
+      h += propTextarea('Citat', content.quote, v => updateContent(mod.id, 'quote', v));
+      h += propInput('Upphovsperson', content.attribution, v => updateContent(mod.id, 'attribution', v));
+      h += propInput('Roll', content.role, v => updateContent(mod.id, 'role', v));
+      break;
+
+    case 'image_text':
+      h += propInput('Rubrik', content.heading, v => updateContent(mod.id, 'heading', v));
+      h += propTextarea('Brödtext', content.body, v => updateContent(mod.id, 'body', v));
+      h += propInput('Bildbeskrivning', content.image_alt, v => updateContent(mod.id, 'image_alt', v));
+      h += `<div class="prop-field"><label class="prop-label">Bildposition</label>
+        <div class="toggle-group">
+          <button class="toggle-btn ${(!content.image_position || content.image_position === 'left') ? 'active' : ''}" onclick="updateContent('${mod.id}','image_position','left');renderProperties()">Vänster</button>
+          <button class="toggle-btn ${content.image_position === 'right' ? 'active' : ''}" onclick="updateContent('${mod.id}','image_position','right');renderProperties()">Höger</button>
+        </div></div>`;
+      break;
+
+    case 'data_chart':
+      h += propInput('Titel', content.title, v => updateContent(mod.id, 'title', v));
+      h += propInput('Bildtext', content.caption, v => updateContent(mod.id, 'caption', v));
+      h += `<div class="prop-field"><label class="prop-label">Diagramtyp</label>
+        <div class="toggle-group">
+          <button class="toggle-btn ${content.chart_type === 'bar' ? 'active' : ''}" onclick="updateContent('${mod.id}','chart_type','bar');renderProperties()">Stapel</button>
+          <button class="toggle-btn ${content.chart_type === 'line' ? 'active' : ''}" onclick="updateContent('${mod.id}','chart_type','line');renderProperties()">Linje</button>
+          <button class="toggle-btn ${content.chart_type === 'pie' ? 'active' : ''}" onclick="updateContent('${mod.id}','chart_type','pie');renderProperties()">Cirkel</button>
+        </div></div>`;
+      h += renderChartSeriesEditor(mod.id, content.series || []);
+      h += propInput('X-etikett', content.x_label, v => updateContent(mod.id, 'x_label', v));
+      h += propInput('Y-etikett', content.y_label, v => updateContent(mod.id, 'y_label', v));
+      break;
+
+    case 'financial_summary':
+      h += propInput('Rubrik', content.heading, v => updateContent(mod.id, 'heading', v));
+      h += renderHeroNumbersEditor(mod.id, content.hero_numbers || []);
+      break;
+
+    case 'back_cover':
+      h += propInput('Företagsnamn', content.company_name, v => updateContent(mod.id, 'company_name', v));
+      h += propInput('Tagline', content.tagline, v => updateContent(mod.id, 'tagline', v));
+      h += propInput('Adress', content.address, v => updateContent(mod.id, 'address', v));
+      h += propInput('Telefon', content.phone, v => updateContent(mod.id, 'phone', v));
+      h += propInput('E-post', content.email, v => updateContent(mod.id, 'email', v));
+      h += propInput('Webb', content.website, v => updateContent(mod.id, 'website', v));
+      h += propTextarea('Disclaimer', content.disclaimer, v => updateContent(mod.id, 'disclaimer', v));
+      break;
+
+    default:
+      h += '<p style="color:#666;font-size:11px;">Ingen specifik editor för denna modultyp.</p>';
+  }
+
+  h += `</div>
+    <div class="prop-section">
+      <button class="btn btn-primary" style="width:100%;margin-top:4px;" onclick="saveAndRerender('${mod.id}')">Spara &amp; förhandsvisa</button>
+    </div>`;
+  return h;
+}
+
+// ─── Property field helpers ───────────────────────────────────────────────
+function propInput(label, value, onChange, type = 'text') {
+  const id = 'pi_' + Math.random().toString(36).slice(2, 8);
+  window['_pi_' + id] = onChange;
+  return `<div class="prop-field"><label class="prop-label">${label}</label>
+    <input class="prop-input" type="${type}" value="${esc(value || '')}" onchange="window['_pi_${id}'](this.value)" /></div>`;
+}
+
+function propTextarea(label, value, onChange) {
+  const id = 'pt_' + Math.random().toString(36).slice(2, 8);
+  window['_pi_' + id] = onChange;
+  return `<div class="prop-field"><label class="prop-label">${label}</label>
+    <textarea class="prop-input" onchange="window['_pi_${id}'](this.value)">${esc(value || '')}</textarea></div>`;
+}
+
+function propColor(label, value, onChange) {
+  const id = 'pc_' + Math.random().toString(36).slice(2, 8);
+  window['_pi_' + id] = onChange;
+  return `<div class="prop-field"><label class="prop-label">${label}</label>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <input type="color" value="${value || '#1A2B5C'}" onchange="window['_pi_${id}'](this.value);this.nextElementSibling.value=this.value" style="width:32px;height:28px;border:none;cursor:pointer;" />
+      <input class="prop-input" style="flex:1" value="${esc(value || '')}" onchange="window['_pi_${id}'](this.value)" />
+    </div></div>`;
+}
+
+// ─── KPI Editor ───────────────────────────────────────────────────────────
+function renderKpiEditor(moduleId, kpis) {
+  let h = '';
+  kpis.forEach((kpi, i) => {
+    h += `<div class="kpi-card-editor">
+      <button class="remove-btn" onclick="removeKpi('${moduleId}', ${i})">&times;</button>
+      <div class="prop-row">
+        <div class="prop-field"><label class="prop-label">Etikett</label>
+          <input class="prop-input" value="${esc(kpi.label || '')}" onchange="updateKpi('${moduleId}',${i},'label',this.value)" /></div>
+        <div class="prop-field"><label class="prop-label">Värde</label>
+          <input class="prop-input" value="${esc(kpi.value || '')}" onchange="updateKpi('${moduleId}',${i},'value',this.value)" /></div>
+      </div>
+      <div class="prop-row">
+        <div class="prop-field"><label class="prop-label">Enhet</label>
+          <input class="prop-input" value="${esc(kpi.unit || '')}" onchange="updateKpi('${moduleId}',${i},'unit',this.value)" /></div>
+        <div class="prop-field"><label class="prop-label">Förändring</label>
+          <input class="prop-input" value="${esc(kpi.change || '')}" onchange="updateKpi('${moduleId}',${i},'change',this.value)" /></div>
+      </div>
+    </div>`;
+  });
+  h += `<button class="btn" style="width:100%;margin-top:4px;" onclick="addKpi('${moduleId}')">+ Lägg till KPI</button>`;
+  return h;
+}
+
+function updateKpi(moduleId, idx, field, value) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  const content = mod.structured_content || mod.content || {};
+  if (!content.kpis) content.kpis = [];
+  if (!content.kpis[idx]) content.kpis[idx] = {};
+  pushUndo();
+  content.kpis[idx][field] = value;
+  setContent(moduleId, content);
+}
+
+function addKpi(moduleId) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  const content = mod.structured_content || mod.content || {};
+  if (!content.kpis) content.kpis = [];
+  pushUndo();
+  content.kpis.push({ label: '', value: '', unit: '', change: '' });
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+function removeKpi(moduleId, idx) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  const content = mod.structured_content || mod.content || {};
+  if (!content.kpis) return;
+  pushUndo();
+  content.kpis.splice(idx, 1);
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+// ─── Table Editor ─────────────────────────────────────────────────────────
+function renderTableEditor(moduleId, content) {
+  const cols = content.columns || [];
+  const rows = content.rows || [];
+  if (!cols.length) return '<p style="color:#666;font-size:11px;">Ingen tabelldata. Lägg till kolumner nedan.</p>' +
+    `<button class="btn" style="margin-top:4px" onclick="initTable('${moduleId}')">Skapa tabell (3x3)</button>`;
+
+  let h = '<div style="overflow-x:auto;"><table class="table-editor"><thead><tr>';
+  cols.forEach((c, ci) => {
+    h += `<th><input value="${esc(c.header || '')}" onchange="updateTableCol('${moduleId}',${ci},this.value)" placeholder="Kolumn ${ci+1}" /></th>`;
+  });
+  h += `<th style="width:24px;"><button class="btn btn-icon" onclick="addTableCol('${moduleId}')" title="Lägg till kolumn">+</button></th>`;
+  h += '</tr></thead><tbody>';
+  rows.forEach((row, ri) => {
+    h += '<tr>';
+    cols.forEach((_, ci) => {
+      h += `<td><input value="${esc((row && row[ci]) || '')}" onchange="updateTableCell('${moduleId}',${ri},${ci},this.value)" /></td>`;
+    });
+    h += `<td><button class="btn btn-icon" onclick="removeTableRow('${moduleId}',${ri})" title="Ta bort rad">&times;</button></td>`;
+    h += '</tr>';
+  });
+  h += '</tbody></table></div>';
+  h += `<button class="btn" style="margin-top:4px" onclick="addTableRow('${moduleId}')">+ Lägg till rad</button>`;
+  return h;
+}
+
+function initTable(moduleId) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  pushUndo();
+  const content = mod.structured_content || mod.content || {};
+  content.columns = [{header:'Kolumn 1'},{header:'Kolumn 2'},{header:'Kolumn 3'}];
+  content.rows = [['','',''],['','',''],['','','']];
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+function updateTableCol(moduleId, ci, value) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  pushUndo();
+  content.columns[ci].header = value;
+  setContent(moduleId, content);
+}
+
+function updateTableCell(moduleId, ri, ci, value) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  pushUndo();
+  if (!content.rows[ri]) content.rows[ri] = [];
+  content.rows[ri][ci] = value;
+  setContent(moduleId, content);
+}
+
+function addTableRow(moduleId) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  pushUndo();
+  const cols = content.columns || [];
+  content.rows = content.rows || [];
+  content.rows.push(cols.map(() => ''));
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+function addTableCol(moduleId) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  pushUndo();
+  content.columns = content.columns || [];
+  content.columns.push({ header: `Kolumn ${content.columns.length + 1}` });
+  (content.rows || []).forEach(row => row.push(''));
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+function removeTableRow(moduleId, ri) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  pushUndo();
+  content.rows.splice(ri, 1);
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+// ─── Chart Series Editor ──────────────────────────────────────────────────
+function renderChartSeriesEditor(moduleId, series) {
+  let h = '<div class="prop-field"><label class="prop-label">Dataserier</label>';
+  series.forEach((s, i) => {
+    h += `<div class="chart-series-row">
+      <input class="prop-input" value="${esc(s.label || '')}" placeholder="Etikett" onchange="updateChartSeries('${moduleId}',${i},'label',this.value)" />
+      <input class="prop-input" type="number" value="${s.value || 0}" placeholder="Värde" style="width:80px;flex:none;" onchange="updateChartSeries('${moduleId}',${i},'value',parseFloat(this.value))" />
+      <button class="btn btn-icon" onclick="removeChartSeries('${moduleId}',${i})">&times;</button>
+    </div>`;
+  });
+  h += `<button class="btn" onclick="addChartSeries('${moduleId}')">+ Datapunkt</button></div>`;
+  return h;
+}
+
+function updateChartSeries(moduleId, idx, field, value) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  if (!content.series) content.series = [];
+  pushUndo();
+  if (!content.series[idx]) content.series[idx] = {};
+  content.series[idx][field] = value;
+  setContent(moduleId, content);
+}
+
+function addChartSeries(moduleId) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  pushUndo();
+  if (!content.series) content.series = [];
+  content.series.push({ label: '', value: 0 });
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+function removeChartSeries(moduleId, idx) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  if (!content.series) return;
+  pushUndo();
+  content.series.splice(idx, 1);
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+// ─── Hero Numbers Editor (financial_summary) ──────────────────────────────
+function renderHeroNumbersEditor(moduleId, heroes) {
+  let h = '<div class="prop-field"><label class="prop-label">Nyckeltal (stort)</label>';
+  heroes.forEach((hero, i) => {
+    h += `<div class="kpi-card-editor">
+      <button class="remove-btn" onclick="removeHero('${moduleId}',${i})">&times;</button>
+      <div class="prop-row">
+        <div class="prop-field"><label class="prop-label">Etikett</label>
+          <input class="prop-input" value="${esc(hero.label || '')}" onchange="updateHero('${moduleId}',${i},'label',this.value)" /></div>
+        <div class="prop-field"><label class="prop-label">Värde</label>
+          <input class="prop-input" value="${esc(hero.value || '')}" onchange="updateHero('${moduleId}',${i},'value',this.value)" /></div>
+        <div class="prop-field"><label class="prop-label">Enhet</label>
+          <input class="prop-input" value="${esc(hero.unit || '')}" onchange="updateHero('${moduleId}',${i},'unit',this.value)" /></div>
+      </div></div>`;
+  });
+  h += `<button class="btn" onclick="addHero('${moduleId}')">+ Lägg till</button></div>`;
+  return h;
+}
+
+function updateHero(moduleId, idx, field, value) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  if (!content.hero_numbers) content.hero_numbers = [];
+  pushUndo();
+  content.hero_numbers[idx][field] = value;
+  setContent(moduleId, content);
+}
+
+function addHero(moduleId) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  pushUndo();
+  if (!content.hero_numbers) content.hero_numbers = [];
+  content.hero_numbers.push({ label: '', value: '', unit: '' });
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+function removeHero(moduleId, idx) {
+  const mod = getModule(moduleId);
+  const content = mod.structured_content || mod.content || {};
+  pushUndo();
+  content.hero_numbers.splice(idx, 1);
+  setContent(moduleId, content);
+  renderProperties();
+}
+
+// ─── Design Panel ─────────────────────────────────────────────────────────
+function renderDesignPanel() {
+  const ds = state.doc.design_system || {};
+  const colors = ds.colors || {};
+  const typo = ds.typography || {};
+  const spacing = ds.spacing || {};
+  const design = ds.design || {};
+
+  const colorKeys = [
+    ['primary', 'Primär'],
+    ['secondary', 'Sekundär'],
+    ['accent', 'Accent'],
+    ['text', 'Text'],
+    ['text_light', 'Text ljus'],
+    ['bg', 'Bakgrund'],
+    ['bg_alt', 'Bakgrund alt'],
+    ['surface', 'Yta'],
+  ];
+
+  const FONTS = [
+    'Georgia, serif',
+    'system-ui, sans-serif',
+    '"Helvetica Neue", Helvetica, Arial, sans-serif',
+    '"Times New Roman", Times, serif',
+    '"Courier New", Courier, monospace',
+    'Garamond, serif',
+    '"Trebuchet MS", sans-serif',
+    'Verdana, sans-serif',
+    '"Palatino Linotype", Palatino, serif',
+    '"Gill Sans", sans-serif',
+  ];
+
+  let h = `<div class="prop-section">
+    <div class="prop-section-title">Design</div>
+    <div class="prop-field">
+      <label class="prop-label">Färger</label>
+      <div class="color-swatches" style="margin-bottom:20px;">
+        ${colorKeys.map(([key, label]) => `
+          <div class="color-swatch" style="background:${colors[key] || '#ccc'};" title="${label}">
+            <input type="color" value="${colors[key] || '#cccccc'}" onchange="updateDesignColor('${key}', this.value)" />
+            <span class="color-swatch-label">${label}</span>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="prop-field">
+      <label class="prop-label">Rubrikfont</label>
+      <select class="font-select" onchange="updateDesignTypo('heading_family', this.value)">
+        ${FONTS.map(f => `<option value="${f}" ${typo.heading_family === f ? 'selected' : ''}>${f.split(',')[0].replace(/"/g,'')}</option>`).join('')}
+      </select>
+    </div>
+
+    <div class="prop-field">
+      <label class="prop-label">Brödtextfont</label>
+      <select class="font-select" onchange="updateDesignTypo('body_family', this.value)">
+        ${FONTS.map(f => `<option value="${f}" ${typo.body_family === f ? 'selected' : ''}>${f.split(',')[0].replace(/"/g,'')}</option>`).join('')}
+      </select>
+    </div>
+
+    <div class="prop-field">
+      <label class="prop-label">Teckenstorlek (pt)</label>
+      <div class="prop-slider-wrap">
+        <input type="range" class="prop-slider" min="8" max="14" step="0.5" value="${typo.base_size_pt || 10.5}" oninput="updateDesignTypo('base_size_pt', parseFloat(this.value)); this.nextElementSibling.textContent=this.value+'pt'" />
+        <span class="prop-slider-value">${typo.base_size_pt || 10.5}pt</span>
+      </div>
+    </div>
+
+    <div class="prop-field">
+      <label class="prop-label">Layout-täthet</label>
+      <div class="toggle-group">
+        <button class="toggle-btn ${(design.density || 'balanced') === 'airy' ? 'active' : ''}" onclick="updateDesignField('density','airy')">Luftig</button>
+        <button class="toggle-btn ${(design.density || 'balanced') === 'balanced' ? 'active' : ''}" onclick="updateDesignField('density','balanced')">Balanserad</button>
+        <button class="toggle-btn ${(design.density || 'balanced') === 'compact' ? 'active' : ''}" onclick="updateDesignField('density','compact')">Kompakt</button>
+      </div>
+    </div>
+
+    <div class="prop-field">
+      <label class="prop-label">Basavstånd (mm)</label>
+      <div class="prop-slider-wrap">
+        <input type="range" class="prop-slider" min="3" max="10" step="0.5" value="${spacing.base_mm || 5}" oninput="updateDesignSpacing('base_mm', parseFloat(this.value)); this.nextElementSibling.textContent=this.value+'mm'" />
+        <span class="prop-slider-value">${spacing.base_mm || 5}mm</span>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;">
+      <button class="btn btn-primary" style="width:100%;" onclick="saveDesignSystem()">Applicera designändringar</button>
+    </div>
+  </div>`;
+
+  document.getElementById('design-props').innerHTML = h;
+}
+
+// ─── Design update helpers ────────────────────────────────────────────────
+function updateDesignColor(key, value) {
+  pushUndo();
+  if (!state.doc.design_system) state.doc.design_system = {};
+  if (!state.doc.design_system.colors) state.doc.design_system.colors = {};
+  state.doc.design_system.colors[key] = value;
+  markDirty();
+  // Update swatch visual immediately
+  renderDesignPanel();
+}
+
+function updateDesignTypo(key, value) {
+  pushUndo();
+  if (!state.doc.design_system) state.doc.design_system = {};
+  if (!state.doc.design_system.typography) state.doc.design_system.typography = {};
+  state.doc.design_system.typography[key] = value;
+  markDirty();
+}
+
+function updateDesignSpacing(key, value) {
+  pushUndo();
+  if (!state.doc.design_system) state.doc.design_system = {};
+  if (!state.doc.design_system.spacing) state.doc.design_system.spacing = {};
+  state.doc.design_system.spacing[key] = value;
+  markDirty();
+}
+
+function updateDesignField(key, value) {
+  pushUndo();
+  if (!state.doc.design_system) state.doc.design_system = {};
+  if (!state.doc.design_system.design) state.doc.design_system.design = {};
+  state.doc.design_system.design[key] = value;
+  markDirty();
+  renderDesignPanel();
+}
+
+async function saveDesignSystem() {
+  showLoading('Sparar design...');
+  try {
+    await api.saveDesignSystem(state.doc.design_system);
+    setSaveStatus('saving');
+    await api.assembleDocument();
+    // Reload document to get new html_output
+    const data = await api.getDocument();
+    state.doc = data.item || data;
+    renderCanvas();
+    setSaveStatus('saved');
+    toast('Design uppdaterad.');
+  } catch (e) {
+    toast('Kunde inte spara design: ' + e.message, true);
+    setSaveStatus('unsaved');
+  }
+  hideLoading();
+}
+
+// ─── Module operations ────────────────────────────────────────────────────
+function getModule(id) {
+  return (state.doc.module_plan || []).find(m => m.id === id);
+}
+
+function selectModule(id) {
+  state.selectedModuleId = id;
+  renderModuleList();
+  renderProperties();
+  highlightSelectedModule();
+  // Scroll canvas to module
+  const section = document.querySelector(`#canvas-paper [data-module-id="${id}"]`);
+  if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function deselectModule() {
+  state.selectedModuleId = null;
+  exitInlineEdit();
+  renderModuleList();
+  renderProperties();
+  highlightSelectedModule();
+}
+
+function highlightSelectedModule() {
+  document.querySelectorAll('#canvas-paper [data-module-id]').forEach(el => {
+    el.classList.toggle('mod-selected', el.dataset.moduleId === state.selectedModuleId);
+  });
+}
+
+function updateModuleTitle(id, title) {
+  const mod = getModule(id);
+  if (!mod) return;
+  pushUndo();
+  mod.title = title;
+  markDirty();
+  scheduleSave('plan');
+  renderModuleList();
+}
+
+function updateContent(moduleId, field, value) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  pushUndo();
+  if (!mod.structured_content) mod.structured_content = mod.content || {};
+  mod.structured_content[field] = value;
+  if (mod.content) mod.content[field] = value;
+  markDirty();
+}
+
+function setContent(moduleId, content) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  mod.structured_content = { ...content };
+  mod.content = { ...content };
+  markDirty();
+}
+
+async function saveAndRerender(moduleId) {
+  const mod = getModule(moduleId);
+  if (!mod) return;
+  const content = mod.structured_content || mod.content;
+  if (!content) return toast('Inget innehåll att spara.', true);
+
+  showLoading('Sparar modul...');
+  try {
+    await api.saveModuleContent(moduleId, content);
+    await api.assembleDocument();
+    const data = await api.getDocument();
+    state.doc = data.item || data;
+    renderCanvas();
+    renderProperties();
+    setSaveStatus('saved');
+    toast('Modul sparad och förhandsvisad.');
+  } catch (e) {
+    toast('Kunde inte spara: ' + e.message, true);
+    setSaveStatus('unsaved');
+  }
+  hideLoading();
+}
+
+async function deleteModule(id) {
+  const mod = getModule(id);
+  if (!mod) return;
+  const mt = MODULE_TYPES[mod.module_type] || { label: mod.module_type };
+  if (!confirm(`Ta bort modulen "${mod.title || mt.label}"?`)) return;
+
+  pushUndo();
+  state.doc.module_plan = (state.doc.module_plan || []).filter(m => m.id !== id);
+  if (state.selectedModuleId === id) state.selectedModuleId = null;
+
+  showLoading('Tar bort modul...');
+  try {
+    await api.saveModulePlan(state.doc.module_plan);
+    await api.assembleDocument();
+    const data = await api.getDocument();
+    state.doc = data.item || data;
+    renderAll();
+    setSaveStatus('saved');
+  } catch (e) {
+    toast('Kunde inte ta bort: ' + e.message, true);
+  }
+  hideLoading();
+}
+
+async function addModule(type) {
+  closeAllDropdowns();
+  pushUndo();
+  const mt = MODULE_TYPES[type] || { label: type };
+  const newMod = {
+    id: crypto.randomUUID ? crypto.randomUUID() : 'mod_' + Date.now(),
+    module_type: type,
+    title: mt.label,
+    structured_content: {},
+  };
+
+  const plan = state.doc.module_plan || [];
+  // Insert after selected module, or at end
+  const selIdx = plan.findIndex(m => m.id === state.selectedModuleId);
+  if (selIdx >= 0) {
+    plan.splice(selIdx + 1, 0, newMod);
+  } else {
+    plan.push(newMod);
+  }
+  state.doc.module_plan = plan;
+  state.selectedModuleId = newMod.id;
+
+  showLoading('Lägger till modul...');
+  try {
+    await api.saveModulePlan(plan);
+    renderModuleList();
+    renderProperties();
+    setSaveStatus('saved');
+    toast(`${mt.label} tillagd.`);
+  } catch (e) {
+    toast('Kunde inte lägga till: ' + e.message, true);
+  }
+  hideLoading();
+}
+
+// ─── Drag & Drop ──────────────────────────────────────────────────────────
+let dragIdx = null;
+
+function onDragStart(e, idx) {
+  dragIdx = idx;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', idx);
+  e.target.style.opacity = '0.4';
+}
+
+function onDragOver(e, idx) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  // Visual feedback
+  document.querySelectorAll('.module-card').forEach(c => c.classList.remove('drag-over'));
+  e.currentTarget.classList.add('drag-over');
+}
+
+function onDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+async function onDrop(e, targetIdx) {
+  e.preventDefault();
+  document.querySelectorAll('.module-card').forEach(c => c.classList.remove('drag-over'));
+  if (dragIdx === null || dragIdx === targetIdx) return;
+
+  pushUndo();
+  const plan = state.doc.module_plan || [];
+  const [moved] = plan.splice(dragIdx, 1);
+  plan.splice(targetIdx, 0, moved);
+  state.doc.module_plan = plan;
+
+  renderModuleList();
+
+  showLoading('Sparar ordning...');
+  try {
+    await api.saveModulePlan(plan);
+    await api.assembleDocument();
+    const data = await api.getDocument();
+    state.doc = data.item || data;
+    renderCanvas();
+    setSaveStatus('saved');
+  } catch (e) {
+    toast('Kunde inte ändra ordning: ' + e.message, true);
+  }
+  hideLoading();
+}
+
+function onDragEnd(e) {
+  e.target.style.opacity = '';
+  dragIdx = null;
+}
+
+// ─── Inline Text Editing ──────────────────────────────────────────────────
+function enterInlineEdit(sectionEl, targetEl) {
+  exitInlineEdit();
+
+  // Find the closest text-containing element
+  let el = targetEl;
+  while (el && el !== sectionEl) {
+    const tag = el.tagName?.toLowerCase();
+    if (['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'blockquote', 'span'].includes(tag)) break;
+    el = el.parentElement;
+  }
+  if (!el || el === sectionEl) el = targetEl;
+
+  el.contentEditable = 'true';
+  el.focus();
+  el.classList.add('mod-editing');
+  state.editingElement = el;
+
+  // Show text toolbar near element
+  const rect = el.getBoundingClientRect();
+  const toolbar = document.getElementById('text-toolbar');
+  toolbar.style.left = rect.left + 'px';
+  toolbar.style.top = (rect.top - 40) + 'px';
+  toolbar.classList.add('visible');
+
+  // On blur, save changes
+  el.addEventListener('blur', onInlineEditBlur, { once: true });
+
+  // Select module too
+  const moduleId = sectionEl.dataset.moduleId;
+  if (moduleId) {
+    state.selectedModuleId = moduleId;
+    renderModuleList();
+    renderProperties();
+    highlightSelectedModule();
+    sectionEl.classList.add('mod-selected');
+  }
+}
+
+function onInlineEditBlur(e) {
+  const el = e.target;
+  el.contentEditable = 'false';
+  el.classList.remove('mod-editing');
+  document.getElementById('text-toolbar').classList.remove('visible');
+
+  // Extract changed text and sync back to structured_content
+  const section = el.closest('[data-module-id]');
+  if (section) {
+    syncInlineEdits(section);
+  }
+  state.editingElement = null;
+}
+
+function syncInlineEdits(sectionEl) {
+  const moduleId = sectionEl.dataset.moduleId;
+  const mod = getModule(moduleId);
+  if (!mod) return;
+
+  const content = mod.structured_content || mod.content || {};
+  const type = mod.module_type;
+
+  // Extract text from the rendered section based on module type
+  // This is a simplified extraction — maps common elements back to fields
+  const getText = (sel) => {
+    const el = sectionEl.querySelector(sel);
+    return el ? el.innerHTML.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '') : null;
+  };
+
+  const getHtml = (sel) => {
+    const el = sectionEl.querySelector(sel);
+    return el ? el.innerHTML : null;
+  };
+
+  let changed = false;
+
+  // Helper: sync a field if the selector matches and text differs
+  const syncField = (selector, field) => {
+    const val = getText(selector);
+    if (val !== null && val !== content[field]) { content[field] = val; changed = true; }
+  };
+
+  // Helper: collect all paragraphs as body text
+  const syncBody = (selector) => {
+    const ps = sectionEl.querySelectorAll(selector || 'p');
+    if (ps.length) {
+      const body = Array.from(ps).map(p => p.textContent).join('\n\n');
+      if (body !== content.body) { content.body = body; changed = true; }
+    }
+  };
+
+  switch (type) {
+    case 'cover':
+      syncField('h1', 'title');
+      syncField('.subtitle, h2', 'subtitle');
+      break;
+
+    case 'text_spread':
+    case 'two_col_text':
+    case 'image_text':
+      syncField('h2', 'heading');
+      syncBody('.content-frame p, .body p, section > p');
+      break;
+
+    case 'chapter_break':
+      syncField('h1, h2, .chapter-title', 'title');
+      syncField('.subtitle, h3', 'subtitle');
+      break;
+
+    case 'quote_callout':
+      syncField('blockquote, .quote-text, .quote', 'quote');
+      syncField('.attribution, cite', 'attribution');
+      break;
+
+    case 'kpi_grid':
+      syncField('h2, h3', 'heading');
+      break;
+
+    case 'table':
+    case 'financial_summary':
+      syncField('h2, h3, .heading', 'heading');
+      break;
+
+    case 'data_chart':
+      syncField('h2, h3, .chart-title', 'title');
+      break;
+
+    case 'back_cover':
+      syncField('h1, .company-name', 'company_name');
+      syncField('.tagline', 'tagline');
+      break;
+  }
+
+  if (changed) {
+    pushUndo();
+    mod.structured_content = content;
+    if (mod.content) mod.content = content;
+    markDirty();
+    renderProperties();
+  }
+}
+
+function exitInlineEdit() {
+  if (state.editingElement) {
+    state.editingElement.contentEditable = 'false';
+    state.editingElement.classList.remove('mod-editing');
+    state.editingElement = null;
+  }
+  document.getElementById('text-toolbar').classList.remove('visible');
+}
+
+function execFormat(cmd) {
+  if (!state.editingElement) return;
+  if (cmd === 'bold') document.execCommand('bold');
+  else if (cmd === 'italic') document.execCommand('italic');
+  else if (cmd === 'h2') document.execCommand('formatBlock', false, 'h2');
+  else if (cmd === 'h3') document.execCommand('formatBlock', false, 'h3');
+}
+
+// ─── Zoom ─────────────────────────────────────────────────────────────────
+function setZoom(direction) {
+  const curIdx = ZOOM_LEVELS.indexOf(state.zoom);
+  let newIdx;
+  if (direction > 0) newIdx = Math.min(curIdx + 1, ZOOM_LEVELS.length - 1);
+  else newIdx = Math.max(curIdx - 1, 0);
+  state.zoom = ZOOM_LEVELS[newIdx];
+  applyZoom();
+}
+
+function applyZoom() {
+  const paper = document.getElementById('canvas-paper');
+  const scale = state.zoom / 100;
+  paper.style.transform = `scale(${scale})`;
+  document.getElementById('zoom-label').textContent = state.zoom + '%';
+}
+
+// ─── Undo/Redo ────────────────────────────────────────────────────────────
+function pushUndo() {
+  // Deep clone relevant state
+  state.undoStack.push(JSON.stringify({
+    module_plan: state.doc.module_plan,
+    design_system: state.doc.design_system,
+    title: state.doc.title,
+  }));
+  state.redoStack = [];
+  if (state.undoStack.length > 50) state.undoStack.shift();
+  updateUndoRedoButtons();
+}
+
+function undo() {
+  if (!state.undoStack.length) return;
+  // Save current to redo
+  state.redoStack.push(JSON.stringify({
+    module_plan: state.doc.module_plan,
+    design_system: state.doc.design_system,
+    title: state.doc.title,
+  }));
+  const prev = JSON.parse(state.undoStack.pop());
+  state.doc.module_plan = prev.module_plan;
+  state.doc.design_system = prev.design_system;
+  state.doc.title = prev.title;
+  markDirty();
+  renderAll();
+}
+
+function redo() {
+  if (!state.redoStack.length) return;
+  state.undoStack.push(JSON.stringify({
+    module_plan: state.doc.module_plan,
+    design_system: state.doc.design_system,
+    title: state.doc.title,
+  }));
+  const next = JSON.parse(state.redoStack.pop());
+  state.doc.module_plan = next.module_plan;
+  state.doc.design_system = next.design_system;
+  state.doc.title = next.title;
+  markDirty();
+  renderAll();
+}
+
+function updateUndoRedoButtons() {
+  document.getElementById('undo-btn').classList.toggle('btn-disabled', !state.undoStack.length);
+  document.getElementById('redo-btn').classList.toggle('btn-disabled', !state.redoStack.length);
+}
+
+// ─── Save ─────────────────────────────────────────────────────────────────
+function markDirty() {
+  state.dirty = true;
+  setSaveStatus('unsaved');
+}
+
+function scheduleSave(type) {
+  markDirty();
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => autoSave(type), 500);
+}
+
+async function autoSave(type) {
+  if (!state.dirty) return;
+  setSaveStatus('saving');
+  try {
+    // Both title and plan changes are persisted via save_module_plan
+    // which saves the full module_plan array (title is part of the document metadata)
+    if (type === 'title' || type === 'plan') {
+      await api.saveModulePlan(state.doc.module_plan);
+    }
+    state.dirty = false;
+    setSaveStatus('saved');
+  } catch (e) {
+    setSaveStatus('unsaved');
+    console.error('Auto-save failed:', e);
+  }
+}
+
+function setSaveStatus(status) {
+  const el = document.getElementById('save-status');
+  el.className = 'save-status';
+  if (status === 'saved') { el.textContent = 'Sparad'; }
+  else if (status === 'saving') { el.textContent = 'Sparar...'; el.classList.add('saving'); }
+  else { el.textContent = 'Osparad ändring'; el.classList.add('unsaved'); }
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────
+async function doExport(format) {
+  closeAllDropdowns();
+  showLoading(`Exporterar ${format.toUpperCase()}...`);
+  try {
+    let result;
+    switch (format) {
+      case 'pdf': result = await api.exportPdf(); break;
+      case 'pptx': result = await api.exportPptx(); break;
+      case 'idml': result = await api.exportIdml(); break;
+      case 'docx': result = await api.exportDocx(); break;
+    }
+    hideLoading();
+    // Result should contain a URL
+    if (typeof result === 'object' && result.url) {
+      window.open(result.url, '_blank');
+      toast(`${format.toUpperCase()} exporterad.`);
+    } else if (typeof result === 'object' && result.download_url) {
+      window.open(result.download_url, '_blank');
+      toast(`${format.toUpperCase()} exporterad.`);
+    } else if (typeof result === 'string' && result.startsWith('http')) {
+      window.open(result, '_blank');
+      toast(`${format.toUpperCase()} exporterad.`);
+    } else {
+      toast(`Export klar. Resultat: ${JSON.stringify(result).slice(0, 200)}`);
+    }
+  } catch (e) {
+    hideLoading();
+    toast('Export misslyckades: ' + e.message, true);
+  }
+}
+
+// ─── Dropdowns ────────────────────────────────────────────────────────────
+function buildAddModuleDropdown() {
+  const dd = document.getElementById('add-module-dd');
+  dd.innerHTML = Object.entries(MODULE_TYPES).map(([type, meta]) =>
+    `<button class="dropdown-item" onclick="addModule('${type}')">${meta.icon} ${meta.label} <span class="badge">${type}</span></button>`
+  ).join('');
+}
+
+function toggleDropdown(id) {
+  const dd = document.getElementById(id);
+  const isOpen = dd.classList.contains('open');
+  closeAllDropdowns();
+  if (!isOpen) dd.classList.add('open');
+}
+
+function closeAllDropdowns() {
+  document.querySelectorAll('.dropdown.open').forEach(d => d.classList.remove('open'));
+}
+
+// ─── Panel Toggle ─────────────────────────────────────────────────────────
+function togglePanel(name) {
+  const editor = document.getElementById('editor');
+  editor.classList.toggle(name + '-collapsed');
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────
+function esc(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function showLoading(text) {
+  document.getElementById('loading-text').textContent = text || 'Laddar...';
+  document.getElementById('loading').style.display = '';
+}
+function hideLoading() {
+  document.getElementById('loading').style.display = 'none';
+}
+
+function toast(msg, isError) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast' + (isError ? ' error' : '');
+  // Trigger animation
+  requestAnimationFrame(() => {
+    el.classList.add('visible');
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => el.classList.remove('visible'), 3500);
+  });
+}
+
+// ─── Keyboard shortcuts ───────────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  // Close dropdowns on Escape
+  if (e.key === 'Escape') {
+    closeAllDropdowns();
+    exitInlineEdit();
+    deselectModule();
+  }
+
+  // Ctrl+Z / Ctrl+Y
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+    if (!state.editingElement) { e.preventDefault(); undo(); }
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+    if (!state.editingElement) { e.preventDefault(); redo(); }
+  }
+
+  // Bold/Italic during inline edit
+  if (state.editingElement && (e.ctrlKey || e.metaKey)) {
+    if (e.key === 'b') { e.preventDefault(); execFormat('bold'); }
+    if (e.key === 'i') { e.preventDefault(); execFormat('italic'); }
+  }
+
+  // Delete module
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (state.selectedModuleId && !state.editingElement && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      deleteModule(state.selectedModuleId);
+    }
+  }
+});
+
+// Close dropdowns on outside click
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.dropdown-wrap')) closeAllDropdowns();
+});
+</script>
+</body>
+</html>

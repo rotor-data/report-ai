@@ -75,8 +75,16 @@ class XmlNode {
   constructor(tag, attrs = {}) {
     this.tag = tag;
     this.attrs = attrs;
-    this.children = [];
-    this.text = "";
+    this.children = [];  // XmlNode elements + XmlText nodes interleaved
+    this.text = "";       // convenience: first text segment (for simple elements)
+  }
+}
+
+/** Represents a text segment between/around child elements */
+class XmlText {
+  constructor(text) {
+    this.text = text;
+    this.tag = null; // distinguishes from XmlNode
   }
 }
 
@@ -189,10 +197,11 @@ function parseXmlString(xml) {
     pos++; // skip >
 
     const node = new XmlNode(tag, attrs);
+    let isFirstText = true;
 
-    // Parse children and text
+    // Parse children and text — preserve interleaving order
     while (pos < str.length) {
-      skipWhitespace();
+      // DON'T skip whitespace here — it may be significant text content
       if (pos >= str.length) break;
 
       // Check for closing tag
@@ -224,7 +233,13 @@ function parseXmlString(xml) {
             text += str[pos++];
           }
         }
-        node.text += text;
+        // Store first text in node.text for backward compat (simple elements)
+        if (isFirstText) {
+          node.text += text;
+          isFirstText = false;
+        }
+        // Always push as XmlText to preserve interleaving order
+        node.children.push(new XmlText(text));
       }
     }
 
@@ -246,27 +261,36 @@ function findAll(node, tag) {
 
 function getTextContent(node) {
   if (!node) return "";
-  let text = node.text || "";
+  // XmlText nodes just have .text
+  if (node instanceof XmlText) return node.text || "";
+  // For element nodes, concatenate all children (text + elements) in order
+  let text = "";
   for (const child of node.children || []) {
     text += getTextContent(child);
   }
+  // If no children, fall back to node.text
+  if (!text && node.text) text = node.text;
   return text.trim();
 }
 
 /**
  * Get inner content of a node as raw XML string (for inline markup like <p>text <strong>bold</strong></p>).
- * Reconstructs children as XML strings.
+ * Preserves text/element interleaving via XmlText children.
  */
 function getInnerContent(node) {
   if (!node) return "";
-  let result = node.text || "";
+  let result = "";
   for (const child of node.children || []) {
-    if (child.tag === "strong" || child.tag === "em") {
+    if (child instanceof XmlText) {
+      result += child.text;
+    } else if (child.tag === "strong" || child.tag === "em") {
       result += `<${child.tag}>${getTextContent(child)}</${child.tag}>`;
     } else {
       result += getTextContent(child);
     }
   }
+  // Fallback for nodes with no children but direct text
+  if (!result && node.text) result = node.text;
   return result.trim();
 }
 
@@ -811,5 +835,4 @@ export function serializeDocumentXml(modules) {
   return lines.join("\n");
 }
 
-// Re-export the internal parser for use by converters
 export { parseXmlString, findChild, findAll, getTextContent, escXml, escAttr, VALID_MODULE_TYPES };
