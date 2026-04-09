@@ -15,6 +15,8 @@
     "@neondatabase/serverless": "^0.9.5",
     "@netlify/blobs": "^10.7.4",
     "@sparticuz/chromium": "^143.0.4",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^2.4.5",
     "puppeteer-core": "^24.40.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
