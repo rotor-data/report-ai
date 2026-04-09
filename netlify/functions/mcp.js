@@ -1838,8 +1838,9 @@ async function handleExportPdf(hubUserId, args) {
       ok: true,
       pdf_size_kb: pdfSizeKb,
       download_url: downloadUrl,
+      data_uri: `data:application/pdf;base64,${pdfBase64}`,
+      filename: (docs[0].title || "document").replace(/[^a-zA-Z0-9åäöÅÄÖ _-]/g, "") + ".pdf",
       title: docs[0].title,
-      instructions: "Klicka på länken för att ladda ner PDF:en. Alternativt kan du öppna preview-länken i Chrome och skriva ut till PDF med ⌘P.",
     }, null, 2) }] };
   } catch (e) {
     console.error("[export_pdf] Chrome rendering failed:", e);
@@ -1902,9 +1903,10 @@ async function handleExportIdml(hubUserId, args) {
       ok: true,
       idml_size_kb: sizeKb,
       download_url: downloadUrl,
+      data_uri: `data:application/octet-stream;base64,${idmlBase64}`,
+      filename: (docs[0].title || "document").replace(/[^a-zA-Z0-9åäöÅÄÖ _-]/g, "") + ".idml",
       title: docs[0].title,
       modules_exported: modules.length,
-      instructions: "Ladda ner .idml-filen och öppna i Adobe InDesign. Alla texter, tabeller och stilar är med — justera layout efter behov.",
     }, null, 2) }] };
   } catch (e) {
     console.error("[export_idml] Conversion failed:", e);
@@ -1958,9 +1960,10 @@ async function handleExportDocx(hubUserId, args) {
       ok: true,
       docx_size_kb: sizeKb,
       download_url: downloadUrl,
+      data_uri: `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${docxBase64}`,
+      filename: (docs[0].title || "document").replace(/[^a-zA-Z0-9åäöÅÄÖ _-]/g, "") + ".docx",
       title: docs[0].title,
       modules_exported: modules.length,
-      instructions: "Ladda ner .docx-filen och öppna i Microsoft Word. Alla texter, tabeller och stilar är mappade — redigera fritt.",
     }, null, 2) }] };
   } catch (e) {
     console.error("[export_docx] Conversion failed:", e);
@@ -2014,9 +2017,10 @@ async function handleExportPptx(hubUserId, args) {
       ok: true,
       pptx_size_kb: sizeKb,
       download_url: downloadUrl,
+      data_uri: `data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,${pptxBase64}`,
+      filename: (docs[0].title || "document").replace(/[^a-zA-Z0-9åäöÅÄÖ _-]/g, "") + ".pptx",
       title: docs[0].title,
       modules_exported: modules.length,
-      instructions: "Ladda ner .pptx-filen och öppna i Microsoft PowerPoint. Varje modul är en slide med stilar och temafärger — redigera fritt.",
     }, null, 2) }] };
   } catch (e) {
     console.error("[export_pptx] Conversion failed:", e);
