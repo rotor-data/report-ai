@@ -27,7 +27,7 @@ export function validateHtml(html = "") {
     issues.push("Full-page background is marked but does not cover the entire page");
   }
   if (!/class=["'][^"']*cover/i.test(html)) issues.push("cover module missing");
-  if (!/class=["'][^"']*back_cover/i.test(html)) issues.push("back_cover module missing");
+  if (!/class=["'][^"']*(back_cover|back-cover)/i.test(html)) issues.push("back_cover module missing");
 
   // ── Layout validation ──
   // Check text modules have content-frame
@@ -43,10 +43,10 @@ export function validateHtml(html = "") {
   }
 
   // Check full-bleed not applied to text modules
-  if (/module-text[_-]spread[^"]*full-bleed/i.test(html)) {
+  if (/module[_-]text[_-]spread[^"]*full[_-]bleed/i.test(html)) {
     issues.push("Layout: full-bleed incorrectly applied to text_spread module");
   }
-  if (/module-two[_-]col[_-]text[^"]*full-bleed/i.test(html)) {
+  if (/module[_-]two[_-]col[_-]text[^"]*full[_-]bleed/i.test(html)) {
     issues.push("Layout: full-bleed incorrectly applied to two_col_text module");
   }
 

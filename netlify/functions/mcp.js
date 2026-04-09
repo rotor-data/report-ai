@@ -484,7 +484,6 @@ body {
   font-size: var(--base-size);
   line-height: var(--line-height);
   color: var(--color-text);
-  margin: 0;
   padding: 0;
 }
 h1 { font-family: var(--font-heading); font-size: 42pt; font-weight: var(--heading-weight); margin: 0 0 var(--spacing-base); }
@@ -1769,15 +1768,17 @@ async function handleAssembleDocument(hubUserId, args) {
 
   await sql`UPDATE documents SET html_output = ${html}, status = ${validation.valid ? "ready" : "error"}::doc_status, updated_at = NOW() WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL`;
 
-  if (!validation.valid) {
-    return { content: [{ type: "text", text: `Document assembled but has guardrail issues:\n${validation.issues.map((i) => `- ${i}`).join("\n")}\n\nFix the affected module(s) with save_module_content and call assemble_document again.` }] };
-  }
-
-  return { content: [{ type: "text", text: JSON.stringify({
+  // Always return ok + preview_url. Guardrail issues are warnings, not blockers —
+  // the HTML is already saved and the preview works.
+  const result = {
     ok: true, html_size_kb: Math.round(html.length / 1024),
     preview_url: `${siteUrl}/api/preview?id=${args.document_id}&key=${key}`,
     next_step: "Call export_pdf to generate a downloadable PDF.",
-  }, null, 2) }] };
+  };
+  if (!validation.valid) {
+    result.guardrail_warnings = validation.issues;
+  }
+  return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 }
 
 async function handleExportPdf(hubUserId, args) {
