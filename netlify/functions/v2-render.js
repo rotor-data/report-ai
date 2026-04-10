@@ -137,7 +137,7 @@ export const handler = async (event) => {
     await store.set(blobKey, pdfBuffer, { contentType: "application/pdf" });
 
     const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-    const pdfUrl = `${siteUrl}/.netlify/blobs/report-ai-pdfs/${blobKey}`;
+    const pdfUrl = `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(blobKey)}`;
 
     return json(event, 200, {
       pdf_url: pdfUrl,
