@@ -50,9 +50,10 @@ async function callRenderService(path, body, tenantId) {
   return res.json();
 }
 
-async function getBlobStore(storeName) {
-  const { getStore } = await import("@netlify/blobs");
+async function getBlobStore(storeName, event) {
+  const { connectLambda, getStore } = await import("@netlify/blobs");
   try {
+    if (event) connectLambda(event);
     return getStore(storeName);
   } catch {
     const siteID = process.env.NETLIFY_SITE_ID;
@@ -125,7 +126,7 @@ export const handler = async (event) => {
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const blobKey = `tenants/${report.tenant_id}/reports/${report_id}/${mode}-${timestamp}.pdf`;
-    const store = await getBlobStore("report-ai-pdfs");
+    const store = await getBlobStore("report-ai-pdfs", event);
     // smyra-render returns raw PDF bytes via callRenderService; legacy support
     // for pdf_base64 JSON shape is kept for local/dev mocks.
     const pdfBuffer = pdfResult.pdf_bytes
