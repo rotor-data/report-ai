@@ -8,10 +8,11 @@
  *   Modular report builder with column-based layouts,
  *   Python render service for HTML→PDF, and Netlify Blobs for storage.
  */
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 import { getSql } from "./db.js";
 import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
+import { createEditorToken } from "./editor-token.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -26,19 +27,6 @@ const VALID_CATEGORIES = ["text", "data", "media"];
 const DEFAULT_HEIGHT_BUDGET_MM = 240;
 
 const FULL_BLEED_TYPES = new Set(["cover", "chapter_break", "back_cover"]);
-
-// ─── Editor token (HMAC-based, 7d expiry) ──────────────────────────────────
-
-function editorSecret() {
-  return process.env.PREVIEW_SECRET || process.env.HUB_JWT_PUBLIC_KEY_PEM || "report-ai-editor";
-}
-
-function createEditorToken(hubUserId, reportId) {
-  const expires = Date.now() + 7 * 24 * 60 * 60 * 1000;
-  const payload = `${hubUserId}:${reportId}:${expires}`;
-  const sig = createHmac("sha256", editorSecret()).update(payload).digest("hex").slice(0, 16);
-  return Buffer.from(`${payload}:${sig}`).toString("base64url");
-}
 
 // ─── JSON-RPC helpers ───────────────────────────────────────────────────────
 

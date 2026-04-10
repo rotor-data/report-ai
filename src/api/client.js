@@ -1,12 +1,13 @@
 import { useUiStore } from "../stores/uiStore";
 
 async function request(path, options = {}) {
-  const token = useUiStore.getState().hubToken;
+  const { hubToken, editorToken } = useUiStore.getState();
   const headers = {
     "Content-Type": "application/json",
     ...(options.headers || {}),
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (editorToken) headers["X-Editor-Token"] = editorToken;
+  else if (hubToken) headers.Authorization = `Bearer ${hubToken}`;
 
   const res = await fetch(`/api${path}`, {
     ...options,

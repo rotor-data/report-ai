@@ -8,7 +8,7 @@
  */
 import { z } from "zod";
 import { json, noContent } from "./cors.js";
-import { requireHubAuth } from "./auth-middleware.js";
+import { requireHubOrEditorAuth, editorScopeMismatch } from "./auth-middleware.js";
 import { getSql } from "./db.js";
 import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
 
@@ -76,7 +76,7 @@ export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return noContent(event);
   if (event.httpMethod !== "POST") return json(event, 405, { error: "Method Not Allowed" });
 
-  const auth = requireHubAuth(event);
+  const auth = requireHubOrEditorAuth(event);
   if (!auth.ok) return json(event, auth.status, { error: auth.error });
 
   const body = parseBody(event);
@@ -85,6 +85,15 @@ export const handler = async (event) => {
   if (!parsed.success) return json(event, 400, { error: "Invalid payload", issues: parsed.error.issues });
 
   const { report_id, mode } = parsed.data;
+
+  if (editorScopeMismatch(auth, report_id)) {
+    return json(event, 403, { error: "Editor token does not match report" });
+  }
+  // Editor token only allows draft renders
+  if (auth.editorScope && mode !== "draft") {
+    return json(event, 403, { error: "Editor token only allows draft renders" });
+  }
+
   const sql = getSql();
 
   try {

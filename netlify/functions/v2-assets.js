@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { json, noContent } from "./cors.js";
-import { requireHubAuth } from "./auth-middleware.js";
+import { requireHubOrEditorAuth } from "./auth-middleware.js";
 import { getSql } from "./db.js";
 
 const uploadSchema = z.object({
@@ -49,15 +49,31 @@ function classifyAsset(mimeType, dataBase64) {
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return noContent(event);
 
-  const auth = requireHubAuth(event);
+  const auth = requireHubOrEditorAuth(event);
   if (!auth.ok) return json(event, auth.status, { error: auth.error });
 
   const sql = getSql();
+
+  // Editor tokens only allow access to the tenant that owns the scoped report.
+  async function editorAllowedTenantId() {
+    if (!auth.editorScope) return null;
+    const rows = await sql`
+      SELECT tenant_id FROM v2_reports WHERE id = ${auth.editorScope.reportId} LIMIT 1
+    `;
+    return rows[0]?.tenant_id ?? null;
+  }
 
   try {
     if (event.httpMethod === "GET") {
       const tenantId = event.queryStringParameters?.tenant_id;
       if (!tenantId) return json(event, 400, { error: "tenant_id query param required" });
+
+      if (auth.editorScope) {
+        const allowed = await editorAllowedTenantId();
+        if (allowed !== tenantId) {
+          return json(event, 403, { error: "Editor token does not match tenant" });
+        }
+      }
 
       const rows = await sql`
         SELECT id, tenant_id, filename, mime_type, storage_url, size_bytes, asset_class,
@@ -84,6 +100,13 @@ export const handler = async (event) => {
       if (!parsed.success) return json(event, 400, { error: "Invalid payload", issues: parsed.error.issues });
 
       const { tenant_id, filename, mime_type, data_base64 } = parsed.data;
+
+      if (auth.editorScope) {
+        const allowed = await editorAllowedTenantId();
+        if (allowed !== tenant_id) {
+          return json(event, 403, { error: "Editor token does not match tenant" });
+        }
+      }
 
       const assetId = randomUUID();
       const ext = (filename.split(".").pop() || "bin").toLowerCase();

@@ -7,8 +7,12 @@ import FontManager from "./pages/FontManager";
 import V2Dashboard from "./pages/V2Dashboard";
 import V2ReportEditor from "./pages/V2ReportEditor";
 import V2AssetLibrary from "./pages/V2AssetLibrary";
+import EditorV2 from "./pages/EditorV2";
 
 export const router = createBrowserRouter([
+  // Scoped token-authenticated editor — rendered OUTSIDE the App layout
+  // so no SPA chrome leaks into the standalone editor surface.
+  { path: "/editor/v2", element: <EditorV2 /> },
   {
     path: "/",
     element: <App />,

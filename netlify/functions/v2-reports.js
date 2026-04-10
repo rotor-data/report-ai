@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { json, noContent } from "./cors.js";
-import { requireHubAuth } from "./auth-middleware.js";
+import { requireHubOrEditorAuth, editorScopeMismatch } from "./auth-middleware.js";
 import { getSql } from "./db.js";
 
 const createSchema = z.object({
@@ -51,11 +51,22 @@ function getQuery(event) {
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return noContent(event);
 
-  const auth = requireHubAuth(event);
+  const auth = requireHubOrEditorAuth(event);
   if (!auth.ok) return json(event, auth.status, { error: auth.error });
 
   const sql = getSql();
   const reportId = getIdFromPath(event.path);
+
+  // Editor tokens are scoped to one report — forbid list/create + cross-report access.
+  if (auth.editorScope) {
+    if (!reportId) return json(event, 403, { error: "Editor token scoped to single report" });
+    if (editorScopeMismatch(auth, reportId)) {
+      return json(event, 403, { error: "Editor token does not match report" });
+    }
+    if (event.httpMethod === "DELETE") {
+      return json(event, 403, { error: "Delete not allowed with editor token" });
+    }
+  }
 
   try {
     if (event.httpMethod === "GET" && !reportId) {

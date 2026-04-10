@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { json, noContent } from "./cors.js";
-import { requireHubAuth } from "./auth-middleware.js";
+import { requireHubOrEditorAuth, editorScopeMismatch } from "./auth-middleware.js";
 import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
 import { getSql } from "./db.js";
 
@@ -98,11 +98,20 @@ function validateLayoutContent(content) {
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return noContent(event);
 
-  const auth = requireHubAuth(event);
+  const auth = requireHubOrEditorAuth(event);
   if (!auth.ok) return json(event, auth.status, { error: auth.error });
 
   const sql = getSql();
   const moduleId = getIdFromPath(event.path);
+
+  // Helper: verify editor token scope matches the report that owns a module/payload
+  async function assertEditorScopeForReport(reportId) {
+    if (!auth.editorScope) return null;
+    if (editorScopeMismatch(auth, reportId)) {
+      return json(event, 403, { error: "Editor token does not match report" });
+    }
+    return null;
+  }
 
   try {
     if (event.httpMethod === "POST" && !moduleId) {
@@ -113,6 +122,9 @@ export const handler = async (event) => {
       if (!parsed.success) return json(event, 400, { error: "Invalid payload", issues: parsed.error.issues });
 
       const { report_id, module_type, content, style, after_module_id } = parsed.data;
+
+      const scopeErr = await assertEditorScopeForReport(report_id);
+      if (scopeErr) return scopeErr;
 
       if (module_type === "layout") {
         const err = validateLayoutContent(content);
@@ -202,6 +214,9 @@ export const handler = async (event) => {
       if (!mods.length) return json(event, 404, { error: "Module not found" });
       const mod = mods[0];
 
+      const scopeErr = await assertEditorScopeForReport(mod.report_id);
+      if (scopeErr) return scopeErr;
+
       const newContent = parsed.data.content || mod.content;
       const newStyle = parsed.data.style || mod.style;
 
@@ -249,6 +264,10 @@ export const handler = async (event) => {
       const mods = await sql`SELECT report_id, order_index FROM v2_report_modules WHERE id = ${moduleId} LIMIT 1`;
       if (!mods.length) return json(event, 404, { error: "Module not found" });
       const { report_id, order_index } = mods[0];
+
+      const scopeErr = await assertEditorScopeForReport(report_id);
+      if (scopeErr) return scopeErr;
+
       await sql`DELETE FROM v2_report_modules WHERE id = ${moduleId}`;
       await sql`
         UPDATE v2_report_modules SET order_index = order_index - 1

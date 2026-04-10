@@ -1,0 +1,422 @@
+/*
+ * Smyra editor (v2) — scoped design system matching rotor-platform-hub.
+ *
+ * All styles are namespaced under `.smyra-editor` so they never leak into
+ * the rest of the report-ai SPA (which uses its own neutral look).
+ */
+
+.smyra-editor {
+  /* ── Design tokens ── */
+  --rose-800: #94445b;
+  --rose-700: #a64f67;
+  --rose-600: #b85a73;
+  --rose-500: #c77389;
+  --ink: #2a1f2a;
+  --muted: #675f68;
+  --line: #e8dce3;
+  --line-strong: #ddc5d1;
+  --paper: #f7f3f5;
+  --card: #ffffff;
+  --ok: #2e7b58;
+  --warn: #99650d;
+  --danger: #a13f5a;
+  --radius: 16px;
+  --shadow-soft: 0 8px 24px rgba(126, 68, 90, 0.08);
+
+  font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(900px 460px at 50% -160px, #f3dfe8 0%, rgba(243, 223, 232, 0) 70%),
+    linear-gradient(180deg, #faf7f9 0%, var(--paper) 100%);
+  min-height: 100vh;
+}
+
+.smyra-editor *,
+.smyra-editor *::before,
+.smyra-editor *::after {
+  box-sizing: border-box;
+}
+
+/* ── Top bar (frosted) ── */
+.smyra-editor .editor-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  background: color-mix(in srgb, #fff 88%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--line-strong) 60%, transparent);
+}
+
+.smyra-editor .editor-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.smyra-editor .editor-brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: linear-gradient(160deg, #f8edf2 0%, #f0dce8 100%);
+  border: 1px solid var(--line-strong);
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+}
+
+.smyra-editor .editor-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.smyra-editor .editor-brand-title {
+  font-size: 15px;
+  font-weight: 750;
+  color: var(--ink);
+  letter-spacing: -.01em;
+}
+
+.smyra-editor .editor-brand-sub {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--rose-600);
+}
+
+.smyra-editor .editor-topbar-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+/* ── Buttons ── */
+.smyra-editor .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 650;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  background: linear-gradient(180deg, #c06a84 0%, var(--rose-600) 100%);
+  color: #fff;
+  box-shadow: 0 6px 14px rgba(184, 90, 115, 0.25);
+  transition: background .15s, transform .1s;
+}
+
+.smyra-editor .btn:hover { background: var(--rose-700); }
+.smyra-editor .btn:active { transform: translateY(1px); }
+.smyra-editor .btn:disabled { opacity: .6; cursor: default; transform: none; }
+
+.smyra-editor .btn-ghost {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--rose-700);
+  box-shadow: none;
+}
+
+.smyra-editor .btn-ghost:hover { background: #fdf0f4; }
+
+.smyra-editor .btn-danger {
+  background: transparent;
+  border-color: #edc5d3;
+  color: var(--danger);
+  box-shadow: none;
+}
+
+.smyra-editor .btn-danger:hover { background: #fceff3; }
+
+/* ── Layout ── */
+.smyra-editor .editor-wrap {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 40px 24px 96px;
+}
+
+.smyra-editor .editor-header {
+  margin-bottom: 32px;
+}
+
+.smyra-editor .editor-eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--rose-600);
+  margin-bottom: 8px;
+}
+
+.smyra-editor .editor-title {
+  font-size: clamp(26px, 3.6vw, 36px);
+  font-weight: 800;
+  letter-spacing: -.02em;
+  color: var(--ink);
+  line-height: 1.15;
+  margin-bottom: 10px;
+}
+
+.smyra-editor .editor-sub {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.smyra-editor .hint {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.smyra-editor .error {
+  color: var(--danger);
+  background: #fceff3;
+  border: 1px solid #edc5d3;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.smyra-editor .notice {
+  color: var(--ok);
+  background: #ecf7f1;
+  border: 1px solid #c6e4d3;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+/* ── Card/panel ── */
+.smyra-editor .card {
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 24px 28px;
+  box-shadow: var(--shadow-soft);
+}
+
+.smyra-editor .card + .card { margin-top: 20px; }
+
+.smyra-editor .card-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.smyra-editor .card-title-count {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  background: #fdf0f4;
+  color: var(--rose-700);
+  border: 1px solid #edc5d3;
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+
+/* ── Module list ── */
+.smyra-editor .module-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.smyra-editor .module-row:last-child { border-bottom: none; padding-bottom: 0; }
+.smyra-editor .module-row:first-child { padding-top: 0; }
+
+.smyra-editor .module-handle {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(160deg, #f8edf2 0%, #f0dce8 100%);
+  border: 1px solid var(--line-strong);
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+}
+
+.smyra-editor .module-body { flex: 1; min-width: 0; }
+
+.smyra-editor .module-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.smyra-editor .module-type {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  text-transform: capitalize;
+}
+
+.smyra-editor .module-order {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.smyra-editor .module-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ── Inputs ── */
+.smyra-editor label {
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+  letter-spacing: .02em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.smyra-editor input[type="text"],
+.smyra-editor input[type="number"],
+.smyra-editor input[type="url"],
+.smyra-editor textarea,
+.smyra-editor select {
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 10px 12px;
+  transition: border-color .12s, box-shadow .12s;
+}
+
+.smyra-editor input:focus,
+.smyra-editor textarea:focus,
+.smyra-editor select:focus {
+  outline: none;
+  border-color: var(--rose-500);
+  box-shadow: 0 0 0 3px rgba(199, 115, 137, 0.18);
+}
+
+.smyra-editor textarea { min-height: 72px; resize: vertical; }
+
+.smyra-editor .field-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.smyra-editor .field-row > * { flex: 1; min-width: 180px; }
+
+.smyra-editor .field-stack > * + * { margin-top: 14px; }
+
+/* ── Badge ── */
+.smyra-editor .badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.smyra-editor .badge-rose {
+  background: #fdf0f4;
+  color: var(--rose-700);
+  border-color: #edc5d3;
+}
+
+.smyra-editor .badge-ok {
+  background: #ecf7f1;
+  color: var(--ok);
+  border-color: #c6e4d3;
+}
+
+/* ── Loading state ── */
+.smyra-editor .loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 60vh;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.smyra-editor .spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--line);
+  border-top-color: var(--rose-600);
+  border-radius: 999px;
+  animation: smyra-spin 0.8s linear infinite;
+}
+
+@keyframes smyra-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── PDF preview link ── */
+.smyra-editor .pdf-link-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, #f9eef3 0%, #fdf5f8 100%);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.smyra-editor .pdf-link-row a {
+  color: var(--rose-700);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.smyra-editor .pdf-link-row a:hover { text-decoration: underline; }
+
+/* ── Add module row ── */
+.smyra-editor .add-module {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+}
+
+.smyra-editor .add-module select { flex: 1; }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  .smyra-editor .editor-topbar { padding: 0 16px; height: 64px; }
+  .smyra-editor .editor-wrap { padding: 24px 16px 72px; }
+  .smyra-editor .card { padding: 20px 18px; }
+  .smyra-editor .module-row { flex-wrap: wrap; }
+  .smyra-editor .module-actions { width: 100%; }
+}
