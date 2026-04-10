@@ -283,6 +283,19 @@ const TOOLS = [
     },
   },
 
+  // ── Brands ──
+  {
+    name: "list_brands",
+    description: "List brands belonging to a tenant. Used by the workflow runner to resolve a brand_id at workflow start.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: { type: "string", description: "Tenant UUID to filter by" },
+      },
+      required: ["tenant_id"],
+    },
+  },
+
   // ── Templates + Blueprints ──
   {
     name: "list_templates",
@@ -984,6 +997,21 @@ async function handleListTemplates(userId, args) {
   return textResult({ templates: rows, count: rows.length });
 }
 
+// ─── Handler: list_brands ───────────────────────────────────────────────────
+
+async function handleListBrands(userId, args) {
+  const { tenant_id } = args || {};
+  if (!tenant_id) throw new Error("tenant_id required");
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, tenant_id, name, tokens, created_at
+    FROM brands
+    WHERE tenant_id = ${tenant_id}
+    ORDER BY created_at ASC
+  `;
+  return textResult({ brands: rows, count: rows.length });
+}
+
 // ─── Handler: get_module_schema ─────────────────────────────────────────────
 
 async function handleGetModuleSchema(userId, args) {
@@ -1454,6 +1482,7 @@ const HANDLERS = {
   upload_logo:           handleUploadLogo,
   upload_asset:          handleUploadAsset,
   list_templates:        handleListTemplates,
+  list_brands:           handleListBrands,
   get_module_schema:     handleGetModuleSchema,
   save_blueprint:        handleSaveBlueprint,
   list_blueprints:       handleListBlueprints,
