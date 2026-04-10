@@ -59,6 +59,27 @@ export const api = {
   checkBrandReadiness: (payload) => request("/brand-readiness", { method: "POST", body: JSON.stringify(payload) }),
   runLayoutPreflight: (payload) => request("/layout-preflight", { method: "POST", body: JSON.stringify(payload) }),
 
+  // ─── Report Engine v2 ────────────────────────────────────────────────────
+  listV2Reports: (tenantId) => request(`/v2-reports?tenant_id=${encodeURIComponent(tenantId)}`),
+  getV2Report: (id) => request(`/v2-reports/${id}`),
+  createV2Report: (payload) => request("/v2-reports", { method: "POST", body: JSON.stringify(payload) }),
+  patchV2Report: (id, payload) => request(`/v2-reports/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteV2Report: (id) => request(`/v2-reports/${id}`, { method: "DELETE" }),
+
+  addV2Module: (payload) => request("/v2-modules", { method: "POST", body: JSON.stringify(payload) }),
+  updateV2Module: (id, payload) => request(`/v2-modules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteV2Module: (id) => request(`/v2-modules/${id}`, { method: "DELETE" }),
+
+  listV2Assets: (tenantId) => request(`/v2-assets?tenant_id=${encodeURIComponent(tenantId)}`),
+  uploadV2Asset: (payload) => request("/v2-assets", { method: "POST", body: JSON.stringify(payload) }),
+
+  renderV2Pdf: (payload) => request("/v2-render", { method: "POST", body: JSON.stringify(payload) }),
+
+  listV2Blueprints: (brandId) => request(`/v2-blueprints?brand_id=${encodeURIComponent(brandId)}`),
+  saveV2Blueprint: (payload) => request("/v2-blueprints", { method: "POST", body: JSON.stringify(payload) }),
+  createV2FromBlueprint: (payload) =>
+    request("/v2-blueprints/create-from", { method: "POST", body: JSON.stringify(payload) }),
+
   // Note: AI generation (design system, module plan, HTML) is handled by
   // Claude via MCP tools — no frontend endpoints needed.
 };
