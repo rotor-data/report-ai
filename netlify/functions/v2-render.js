@@ -41,6 +41,12 @@ async function callRenderService(path, body, tenantId) {
     const text = await res.text().catch(() => "");
     throw new Error(`Render service ${path} returned ${res.status}: ${text}`);
   }
+  // /render/pdf returns raw application/pdf bytes; other endpoints return JSON.
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/pdf")) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { pdf_bytes: buf };
+  }
   return res.json();
 }
 
@@ -120,7 +126,13 @@ export const handler = async (event) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const blobKey = `tenants/${report.tenant_id}/reports/${report_id}/${mode}-${timestamp}.pdf`;
     const store = await getBlobStore("report-ai-pdfs");
-    const pdfBuffer = Buffer.from(pdfResult.pdf_base64, "base64");
+    // smyra-render returns raw PDF bytes via callRenderService; legacy support
+    // for pdf_base64 JSON shape is kept for local/dev mocks.
+    const pdfBuffer = pdfResult.pdf_bytes
+      ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+    if (!pdfBuffer) {
+      throw new Error("Render service returned no PDF bytes");
+    }
     await store.set(blobKey, pdfBuffer, { contentType: "application/pdf" });
 
     const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
@@ -129,7 +141,7 @@ export const handler = async (event) => {
     return json(event, 200, {
       pdf_url: pdfUrl,
       blob_key: blobKey,
-      page_count: pdfResult.page_count ?? pages.length,
+      page_count: pages.length,
       mode,
       size_bytes: pdfBuffer.length,
     });

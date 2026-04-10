@@ -27,13 +27,15 @@ export function mintSmyraRenderToken({ tenantId, ttlSec = 120, extraClaims = {} 
 
   const now = Math.floor(Date.now() / 1000);
   const header  = { alg: "HS256", typ: "JWT" };
+  // Deliberately omit `aud`: smyra-render's jwt.decode() is called without
+  // an `audience` param, so any aud claim trips PyJWT's MissingRequiredClaim
+  // check. Adding aud back requires also passing audience= in app.py.
   const payload = {
     sub: tenantId,
     tenant_id: tenantId,
     iat: now,
     exp: now + ttlSec,
     iss: "report-ai",
-    aud: "smyra-render",
     ...extraClaims,
   };
 

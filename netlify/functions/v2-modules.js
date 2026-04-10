@@ -167,7 +167,7 @@ export const handler = async (event) => {
           brand_fonts: brand.fonts,
         }, tenantId);
         heightMm = rr.height_mm ?? null;
-        htmlCache = rr.html ?? null;
+        htmlCache = (rr.html_fragment ?? rr.html ?? null);
         await sql`
           UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
           WHERE id = ${newId}
@@ -231,7 +231,7 @@ export const handler = async (event) => {
           brand_fonts: brand.fonts,
         }, mod.tenant_id);
         await sql`
-          UPDATE v2_report_modules SET html_cache = ${rr.html ?? null}, height_mm = ${rr.height_mm ?? null}
+          UPDATE v2_report_modules SET html_cache = ${(rr.html_fragment ?? rr.html ?? null)}, height_mm = ${rr.height_mm ?? null}
           WHERE id = ${moduleId}
         `;
       } catch (e) {
