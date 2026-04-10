@@ -11,6 +11,7 @@
 import { randomUUID, createHmac } from "node:crypto";
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 import { getSql } from "./db.js";
+import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -65,24 +66,35 @@ function errorResult(msg) {
 
 // ─── Render service helper ──────────────────────────────────────────────────
 
-async function callRenderService(path, body) {
+async function callRenderService(path, body, tenantId) {
+  const token = mintSmyraRenderToken({ tenantId });
   const res = await fetch(`${RENDER_SERVICE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`Render service ${path} returned ${res.status}: ${text}`);
   }
+  // /render/pdf returns raw application/pdf bytes; other endpoints return JSON.
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/pdf")) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { pdf_bytes: buf };
+  }
   return res.json();
 }
 
 // ─── Blob store helper ──────────────────────────────────────────────────────
 
-async function getBlobStore(storeName) {
-  const { getStore } = await import("@netlify/blobs");
+async function getBlobStore(storeName, event) {
+  const { connectLambda, getStore } = await import("@netlify/blobs");
   try {
+    if (event) connectLambda(event);
     return getStore(storeName);
   } catch {
     const siteID = process.env.NETLIFY_SITE_ID;
@@ -448,10 +460,11 @@ async function handleAddModule(userId, args) {
     }
   }
 
-  // Verify report exists and get brand_id
-  const reports = await sql`SELECT id, brand_id FROM v2_reports WHERE id = ${report_id} LIMIT 1`;
+  // Verify report exists and get brand_id + tenant_id
+  const reports = await sql`SELECT id, brand_id, tenant_id FROM v2_reports WHERE id = ${report_id} LIMIT 1`;
   if (!reports.length) return errorResult(`Report ${report_id} not found.`);
   const brandId = reports[0].brand_id;
+  const tenantId = reports[0].tenant_id;
 
   // Determine order_index
   let orderIndex;
@@ -492,10 +505,11 @@ async function handleAddModule(userId, args) {
       style: style || {},
       brand_tokens: brand.tokens,
       brand_fonts: brand.fonts,
-    });
+    }, tenantId);
     heightMm = renderResult.height_mm ?? null;
+    const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
     await sql`
-      UPDATE v2_report_modules SET html_cache = ${renderResult.html}, height_mm = ${heightMm}
+      UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
       WHERE id = ${moduleId}
     `;
   } catch (e) {
@@ -513,9 +527,9 @@ async function handleUpdateModule(userId, args) {
   if (!module_id) return errorResult("module_id is required.");
   if (!content && !style) return errorResult("At least one of content or style is required.");
 
-  // Get existing module + report brand
+  // Get existing module + report brand + tenant
   const mods = await sql`
-    SELECT m.id, m.report_id, m.module_type, m.content, m.style, r.brand_id
+    SELECT m.id, m.report_id, m.module_type, m.content, m.style, r.brand_id, r.tenant_id
     FROM v2_report_modules m
     JOIN v2_reports r ON r.id = m.report_id
     WHERE m.id = ${module_id}
@@ -548,10 +562,11 @@ async function handleUpdateModule(userId, args) {
       style: newStyle,
       brand_tokens: brand.tokens,
       brand_fonts: brand.fonts,
-    });
+    }, mod.tenant_id);
     heightMm = renderResult.height_mm ?? null;
+    const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
     await sql`
-      UPDATE v2_report_modules SET html_cache = ${renderResult.html}, height_mm = ${heightMm}
+      UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
       WHERE id = ${module_id}
     `;
   } catch (e) {
@@ -764,7 +779,7 @@ async function handleBuildPages(userId, args) {
 
 // ─── Handler: render_pdf ────────────────────────────────────────────────────
 
-async function handleRenderPdf(userId, args) {
+async function handleRenderPdf(userId, args, event) {
   const sql = getSql();
   const { report_id, mode } = args;
   if (!report_id || !mode) return errorResult("report_id and mode are required.");
@@ -810,17 +825,19 @@ async function handleRenderPdf(userId, args) {
     brand_fonts: brand.fonts,
     brand_logos: brand.logos,
     css_base: cssBase,
-  });
+  }, report.tenant_id);
 
   // Store PDF in Netlify Blobs
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const blobKey = `tenants/${report.tenant_id}/reports/${report_id}/${timestamp}.pdf`;
-  const store = await getBlobStore("report-ai-pdfs");
-  const pdfBuffer = Buffer.from(pdfResult.pdf_base64, "base64");
+  const blobKey = `tenants/${report.tenant_id}/reports/${report_id}/${mode}-${timestamp}.pdf`;
+  const store = await getBlobStore("report-ai-pdfs", event);
+  const pdfBuffer = pdfResult.pdf_bytes
+    ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+  if (!pdfBuffer) throw new Error("Render service returned no PDF bytes");
   await store.set(blobKey, pdfBuffer, { contentType: "application/pdf" });
 
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-  const pdfUrl = `${siteUrl}/.netlify/blobs/report-ai-pdfs/${blobKey}`;
+  const pdfUrl = `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(blobKey)}`;
 
   return textResult({
     pdf_url: pdfUrl,
@@ -916,7 +933,7 @@ async function handleUploadLogo(userId, args) {
 
 // ─── Handler: upload_asset ──────────────────────────────────────────────────
 
-async function handleUploadAsset(userId, args) {
+async function handleUploadAsset(userId, args, event) {
   const sql = getSql();
   const { tenant_id, filename, mime_type, data_base64 } = args;
   if (!tenant_id || !filename || !mime_type || !data_base64) {
@@ -938,7 +955,7 @@ async function handleUploadAsset(userId, args) {
   const assetId = randomUUID();
   const ext = filename.split(".").pop() || "bin";
   const blobKey = `tenants/${tenant_id}/assets/${assetId}.${ext}`;
-  const store = await getBlobStore("report-ai-assets");
+  const store = await getBlobStore("report-ai-assets", event);
   const buffer = Buffer.from(data_base64, "base64");
   const contentTypes = {
     svg: "image/svg+xml",
@@ -1136,7 +1153,7 @@ async function handleCreateFromBlueprint(userId, args) {
 
 // ─── Handler: rasterize_pdf ─────────────────────────────────────────────────
 
-async function handleRasterizePdf(userId, args) {
+async function handleRasterizePdf(userId, args, event) {
   const sql = getSql();
   const { report_id, pages } = args;
   if (!report_id) return errorResult("report_id is required.");
@@ -1148,7 +1165,7 @@ async function handleRasterizePdf(userId, args) {
   const tenantId = reports[0].tenant_id;
 
   // Find latest PDF blob key
-  const store = await getBlobStore("report-ai-pdfs");
+  const store = await getBlobStore("report-ai-pdfs", event);
   const prefix = `tenants/${tenantId}/reports/${report_id}/`;
 
   // Call Python render service to rasterize
@@ -1156,10 +1173,10 @@ async function handleRasterizePdf(userId, args) {
     report_id,
     pdf_blob_prefix: prefix,
     pages: pages || null,
-  });
+  }, tenantId);
 
   // Store rasterized PNGs in blobs
-  const rasterStore = await getBlobStore("report-ai-rasters");
+  const rasterStore = await getBlobStore("report-ai-rasters", event);
   const imageUrls = [];
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
 
@@ -1208,10 +1225,16 @@ function metaResult(meta) {
 // ─── Handler: extract_design_from_pdf (Layer 2) ─────────────────────────────
 
 async function handleExtractDesignFromPdf(userId, args) {
+  const sql = getSql();
   const { pdf_base64, brand_id } = args;
   if (!pdf_base64 || !brand_id) {
     return errorResult("pdf_base64 and brand_id are required.");
   }
+
+  // Look up tenant from brand so smyra-render JWT carries a tenant_id claim.
+  const brands = await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`;
+  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
+  const tenantId = brands[0].tenant_id;
 
   // Rasterize directly via render service so the result is available as an
   // input to Claude's judgment step. We skip the report_id path because this
@@ -1221,7 +1244,7 @@ async function handleExtractDesignFromPdf(userId, args) {
     const rasterResult = await callRenderService("/render/rasterize", {
       pdf_base64,
       pages: [1, 2, 3], // first three pages are usually enough
-    });
+    }, tenantId);
     rasterPages = rasterResult.images || rasterResult.pages || [];
   } catch (e) {
     return errorResult(`Rasterize failed: ${e.message}`);
@@ -1492,7 +1515,7 @@ export const handler = async (event) => {
     if (!fn) return rpcError(id, -32601, `Unknown tool: ${name}`);
 
     try {
-      return rpcResult(id, await fn(hubUserId, args));
+      return rpcResult(id, await fn(hubUserId, args, event));
     } catch (e) {
       console.error(`[mcp-v2] ${toolName} failed:`, e);
       return rpcError(id, -32000, e.message ?? "Internal error");
