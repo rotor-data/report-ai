@@ -100,6 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_v2_reports_tenant_id
 CREATE INDEX IF NOT EXISTS idx_v2_reports_brand_id
   ON v2_reports (brand_id);
 
+DROP TRIGGER IF EXISTS trg_v2_reports_updated_at ON v2_reports;
 CREATE TRIGGER trg_v2_reports_updated_at
   BEFORE UPDATE ON v2_reports
   FOR EACH ROW
@@ -139,6 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_v2_report_modules_report_order
 CREATE INDEX IF NOT EXISTS idx_v2_report_modules_page_id
   ON v2_report_modules (page_id);
 
+DROP TRIGGER IF EXISTS trg_v2_report_modules_updated_at ON v2_report_modules;
 CREATE TRIGGER trg_v2_report_modules_updated_at
   BEFORE UPDATE ON v2_report_modules
   FOR EACH ROW
