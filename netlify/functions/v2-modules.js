@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { json, noContent } from "./cors.js";
 import { requireHubAuth } from "./auth-middleware.js";
+import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
 import { getSql } from "./db.js";
 
 const RENDER_SERVICE_URL = process.env.RENDER_SERVICE_URL || "http://localhost:8080";
@@ -49,10 +50,14 @@ function getIdFromPath(path = "") {
   return parts[idx + 1] ?? null;
 }
 
-async function callRenderService(path, body) {
+async function callRenderService(path, body, tenantId) {
+  const token = mintSmyraRenderToken({ tenantId });
   const res = await fetch(`${RENDER_SERVICE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -114,9 +119,10 @@ export const handler = async (event) => {
         if (err) return json(event, 400, { error: err });
       }
 
-      const reports = await sql`SELECT id, brand_id FROM v2_reports WHERE id = ${report_id} LIMIT 1`;
+      const reports = await sql`SELECT id, brand_id, tenant_id FROM v2_reports WHERE id = ${report_id} LIMIT 1`;
       if (!reports.length) return json(event, 404, { error: "Report not found" });
       const brandId = reports[0].brand_id;
+      const tenantId = reports[0].tenant_id;
 
       let orderIndex;
       if (after_module_id) {
@@ -159,7 +165,7 @@ export const handler = async (event) => {
           style: style || {},
           brand_tokens: brand.tokens,
           brand_fonts: brand.fonts,
-        });
+        }, tenantId);
         heightMm = rr.height_mm ?? null;
         htmlCache = rr.html ?? null;
         await sql`
@@ -188,7 +194,7 @@ export const handler = async (event) => {
       }
 
       const mods = await sql`
-        SELECT m.id, m.report_id, m.module_type, m.content, m.style, r.brand_id
+        SELECT m.id, m.report_id, m.module_type, m.content, m.style, r.brand_id, r.tenant_id
         FROM v2_report_modules m
         JOIN v2_reports r ON r.id = m.report_id
         WHERE m.id = ${moduleId} LIMIT 1
@@ -223,7 +229,7 @@ export const handler = async (event) => {
           style: newStyle,
           brand_tokens: brand.tokens,
           brand_fonts: brand.fonts,
-        });
+        }, mod.tenant_id);
         await sql`
           UPDATE v2_report_modules SET html_cache = ${rr.html ?? null}, height_mm = ${rr.height_mm ?? null}
           WHERE id = ${moduleId}

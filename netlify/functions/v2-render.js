@@ -10,6 +10,7 @@ import { z } from "zod";
 import { json, noContent } from "./cors.js";
 import { requireHubAuth } from "./auth-middleware.js";
 import { getSql } from "./db.js";
+import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
 
 const RENDER_SERVICE_URL = process.env.RENDER_SERVICE_URL || "http://localhost:8080";
 
@@ -26,10 +27,14 @@ function parseBody(event) {
   }
 }
 
-async function callRenderService(path, body) {
+async function callRenderService(path, body, tenantId) {
+  const token = mintSmyraRenderToken({ tenantId });
   const res = await fetch(`${RENDER_SERVICE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -110,7 +115,7 @@ export const handler = async (event) => {
       brand_fonts: brand.fonts,
       brand_logos: brand.logos,
       css_base: cssBase,
-    });
+    }, report.tenant_id);
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const blobKey = `tenants/${report.tenant_id}/reports/${report_id}/${mode}-${timestamp}.pdf`;
