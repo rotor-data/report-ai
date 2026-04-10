@@ -27,9 +27,10 @@ function parseBody(event) {
   }
 }
 
-async function getBlobStore(storeName) {
-  const { getStore } = await import("@netlify/blobs");
+async function getBlobStore(storeName, event) {
+  const { connectLambda, getStore } = await import("@netlify/blobs");
   try {
+    if (event) connectLambda(event);
     return getStore(storeName);
   } catch {
     const siteID = process.env.NETLIFY_SITE_ID;
@@ -87,12 +88,12 @@ export const handler = async (event) => {
       const assetId = randomUUID();
       const ext = (filename.split(".").pop() || "bin").toLowerCase();
       const blobKey = `tenants/${tenant_id}/assets/${assetId}.${ext}`;
-      const store = await getBlobStore("report-ai-assets");
+      const store = await getBlobStore("report-ai-assets", event);
       const buffer = Buffer.from(data_base64, "base64");
       await store.set(blobKey, buffer, { contentType: mime_type });
 
       const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-      const storageUrl = `${siteUrl}/.netlify/blobs/report-ai-assets/${blobKey}`;
+      const storageUrl = `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`;
       const sizeBytes = buffer.length;
       const assetClass = classifyAsset(mime_type, data_base64);
 

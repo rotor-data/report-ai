@@ -968,7 +968,7 @@ async function handleUploadAsset(userId, args, event) {
   await store.set(blobKey, buffer, { contentType: contentTypes[ext] || mime_type });
 
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-  const storageUrl = `${siteUrl}/.netlify/blobs/report-ai-assets/${blobKey}`;
+  const storageUrl = `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`;
   const sizeBytes = buffer.length;
 
   // DPI warning for photos under 150 DPI at A4 width (210mm)
