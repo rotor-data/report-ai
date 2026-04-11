@@ -840,12 +840,38 @@ async function handleRenderPdf(userId, args, event) {
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
   const pdfUrl = `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(blobKey)}`;
 
+  // For draft mode, also rasterize each page and save thumbnails so callers
+  // (e.g. workflow steps, the React editor) can show inline visual previews
+  // without depending on a PDF viewer. We skip this for final mode to keep
+  // export latency down — final exports are downloaded as PDF, not previewed.
+  let thumbnails = [];
+  if (mode === "draft") {
+    try {
+      const raster = await callRenderService("/render/rasterize", {
+        pdf_base64: pdfBuffer.toString("base64"),
+      }, report.tenant_id);
+      const assetStore = await getBlobStore("report-ai-assets", event);
+      for (const page of raster.pages || []) {
+        const thumbKey = `tenants/${report.tenant_id}/reports/${report_id}/thumbs/${timestamp}-page-${page.page}.png`;
+        const pngBuffer = Buffer.from(page.png_base64, "base64");
+        await assetStore.set(thumbKey, pngBuffer, { contentType: "image/png" });
+        thumbnails.push({
+          page: page.page,
+          url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(thumbKey)}`,
+        });
+      }
+    } catch (err) {
+      console.warn("[render_pdf] rasterize failed (non-fatal):", err.message);
+    }
+  }
+
   return textResult({
     pdf_url: pdfUrl,
     blob_key: blobKey,
     page_count: pdfResult.page_count ?? pages.length,
     mode,
     size_bytes: pdfBuffer.length,
+    thumbnails,
   });
 }
 
