@@ -207,6 +207,24 @@ const TOOLS = [
     },
   },
   {
+    name: "preview_plan",
+    description: "Render a stub PDF from a plan_structure plan (no DB writes) and return per-module thumbnail URLs. Used by workflow plan-review steps to show visual previews before build_modules runs. Each plan module is converted to stub content (heading/body_sketch text becomes the rendered content) and rendered through the same Python service as final reports.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brand_id: { type: "string", description: "Brand UUID for tokens/fonts/logos" },
+        tenant_id: { type: "string", description: "Tenant UUID for blob namespacing" },
+        template_id: { type: "string", description: "Optional template ID, defaults to standard-v1" },
+        plan: {
+          type: "array",
+          description: "Plan modules (same shape as report2.plan_structure output): {local_id, module_type, title, summary?, column_preset?, slots?}",
+          items: { type: "object" },
+        },
+      },
+      required: ["brand_id", "plan"],
+    },
+  },
+  {
     name: "get_editor_url",
     description: "Get a signed editor URL for the visual report editor.",
     inputSchema: {
@@ -875,6 +893,122 @@ async function handleRenderPdf(userId, args, event) {
   });
 }
 
+// ─── Handler: preview_plan ──────────────────────────────────────────────────
+
+/**
+ * Convert a plan_structure plan module → renderable content/style.
+ * Mirrors smyra-core build-modules.ts toApiContent() so the preview matches
+ * what build_modules would actually produce (minus any rewrites Claude does
+ * to slot text between plan_structure and build_modules).
+ */
+function planModuleToRenderable(m) {
+  if (m.content) return { content: m.content, style: m.style };
+
+  if (m.module_type === "cover") {
+    return { content: { title: m.title, subtitle: m.summary ?? "" }, style: m.style };
+  }
+  if (m.module_type === "back_cover") {
+    return { content: { company_name: m.title, disclaimer: m.summary ?? "" }, style: m.style };
+  }
+  if (m.module_type === "chapter_break") {
+    return { content: { chapter_title: m.title }, style: m.style };
+  }
+
+  // layout
+  const slots = (m.slots ?? []).map((s) => ({
+    category: s.category,
+    content: s.category === "text"
+      ? { heading: s.heading ?? m.title, body: s.body_sketch ?? "" }
+      : s.category === "data"
+      ? { label: s.heading ?? "", value: s.body_sketch ?? "" }
+      : { caption: s.heading ?? "" },
+  }));
+  return {
+    content: { columns: m.column_preset ?? "full", slots },
+    style: m.style,
+  };
+}
+
+async function handlePreviewPlan(userId, args, event) {
+  const sql = getSql();
+  const { brand_id, tenant_id, plan, template_id } = args;
+  if (!brand_id) return errorResult("brand_id is required.");
+  if (!Array.isArray(plan) || plan.length === 0) return errorResult("plan must be a non-empty array.");
+
+  const tenantId = tenant_id || (await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`)[0]?.tenant_id;
+  if (!tenantId) return errorResult(`Could not resolve tenant_id for brand ${brand_id}.`);
+
+  const brand = await fetchBrandContext(sql, brand_id);
+
+  let cssBase = "";
+  const tplId = template_id || "standard-v1";
+  const templates = await sql`SELECT css_base FROM report_templates WHERE id = ${tplId} LIMIT 1`;
+  cssBase = templates[0]?.css_base || "";
+
+  // Build one synthetic page per plan module so each module gets its own thumbnail.
+  const pages = plan.map((m, idx) => {
+    const { content, style } = planModuleToRenderable(m);
+    return {
+      page_number: idx + 1,
+      page_type: m.module_type === "cover" || m.module_type === "back_cover" || m.module_type === "chapter_break" ? m.module_type : "content",
+      modules: [
+        {
+          id: m.local_id || `preview-${idx + 1}`,
+          module_type: m.module_type,
+          order_index: idx,
+          content,
+          style: style || {},
+        },
+      ],
+    };
+  });
+
+  const pdfResult = await callRenderService("/render/pdf", {
+    title: "Plan preview",
+    mode: "draft",
+    pages,
+    brand_tokens: brand.tokens,
+    brand_fonts: brand.fonts,
+    brand_logos: brand.logos,
+    css_base: cssBase,
+  }, tenantId);
+
+  const pdfBuffer = pdfResult.pdf_bytes
+    ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+  if (!pdfBuffer) throw new Error("Render service returned no PDF bytes for preview");
+
+  // Rasterize → store one PNG per page → map back to plan local_ids
+  const raster = await callRenderService("/render/rasterize", {
+    pdf_base64: pdfBuffer.toString("base64"),
+  }, tenantId);
+
+  const assetStore = await getBlobStore("report-ai-assets", event);
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const previews = [];
+
+  for (const page of raster.pages || []) {
+    const planIndex = page.page - 1;
+    const planModule = plan[planIndex];
+    if (!planModule) continue;
+    const thumbKey = `tenants/${tenantId}/plan-previews/${timestamp}-${planModule.local_id || `m${page.page}`}.png`;
+    const pngBuffer = Buffer.from(page.png_base64, "base64");
+    await assetStore.set(thumbKey, pngBuffer, { contentType: "image/png" });
+    previews.push({
+      local_id: planModule.local_id,
+      title: planModule.title,
+      page: page.page,
+      thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(thumbKey)}`,
+    });
+  }
+
+  return textResult({
+    previews,
+    module_count: plan.length,
+    rendered: previews.length,
+  });
+}
+
 // ─── Handler: get_editor_url ────────────────────────────────────────────────
 
 async function handleGetEditorUrl(userId, args) {
@@ -1501,6 +1635,7 @@ const HANDLERS = {
   get_structure:         handleGetStructure,
   build_pages:           handleBuildPages,
   render_pdf:            handleRenderPdf,
+  preview_plan:          handlePreviewPlan,
   get_editor_url:        handleGetEditorUrl,
   save_brand_tokens:     handleSaveBrandTokens,
   get_brand_tokens:      handleGetBrandTokens,
