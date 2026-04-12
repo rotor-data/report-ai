@@ -207,6 +207,17 @@ const TOOLS = [
     },
   },
   {
+    name: "render_module_thumbnails",
+    description: "Render each built module in a report as an individual PNG thumbnail. Returns per-module thumbnail URLs so the workflow can show per-module design previews for user approval before final PDF assembly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        report_id: { type: "string", description: "Report UUID" },
+      },
+      required: ["report_id"],
+    },
+  },
+  {
     name: "preview_plan",
     description: "Render a stub PDF from a plan_structure plan (no DB writes) and return per-module thumbnail URLs. Used by workflow plan-review steps to show visual previews before build_modules runs. Each plan module is converted to stub content (heading/body_sketch text becomes the rendered content) and rendered through the same Python service as final reports.",
     inputSchema: {
@@ -1009,6 +1020,87 @@ async function handlePreviewPlan(userId, args, event) {
   });
 }
 
+// ─── Handler: render_module_thumbnails ──────────────────────────────────────
+
+async function handleRenderModuleThumbnails(userId, args, event) {
+  const sql = getSql();
+  const { report_id } = args;
+  if (!report_id) return errorResult("report_id is required.");
+
+  const reports = await sql`
+    SELECT r.id, r.tenant_id, r.brand_id, r.template_id
+    FROM v2_reports r WHERE r.id = ${report_id} LIMIT 1
+  `;
+  if (!reports.length) return errorResult(`Report ${report_id} not found.`);
+  const report = reports[0];
+
+  const modules = await sql`
+    SELECT id, module_type, order_index, content, style
+    FROM v2_report_modules
+    WHERE report_id = ${report_id}
+    ORDER BY order_index
+  `;
+  if (!modules.length) return errorResult("No modules found.");
+
+  const brand = await fetchBrandContext(sql, report.brand_id);
+
+  // Build a single PDF with one module per page, then rasterize.
+  const pages = modules.map((mod, idx) => ({
+    page_number: idx + 1,
+    page_type: FULL_BLEED_TYPES.has(mod.module_type) ? mod.module_type : "content",
+    modules: [{
+      id: mod.id,
+      module_type: mod.module_type,
+      order_index: mod.order_index,
+      content: mod.content || {},
+      style: mod.style || {},
+    }],
+  }));
+
+  const pdfResult = await callRenderService("/render/pdf", {
+    title: "Module thumbnails",
+    mode: "draft",
+    pages,
+    brand_tokens: brand.tokens,
+    brand_fonts: brand.fonts,
+    brand_logos: brand.logos,
+  }, report.tenant_id);
+
+  const pdfBuffer = pdfResult.pdf_bytes
+    ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+  if (!pdfBuffer) throw new Error("Render returned no PDF");
+
+  const raster = await callRenderService("/render/rasterize", {
+    pdf_base64: pdfBuffer.toString("base64"),
+  }, report.tenant_id);
+
+  const assetStore = await getBlobStore("report-ai-assets", event);
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const thumbnails = [];
+
+  for (const page of raster.pages || []) {
+    const mod = modules[page.page - 1];
+    if (!mod) continue;
+    const thumbKey = `tenants/${report.tenant_id}/reports/${report_id}/module-thumbs/${timestamp}-${mod.id}.png`;
+    const pngBuffer = Buffer.from(page.png_base64, "base64");
+    await assetStore.set(thumbKey, pngBuffer, { contentType: "image/png" });
+    thumbnails.push({
+      module_id: mod.id,
+      module_type: mod.module_type,
+      order_index: mod.order_index,
+      title: mod.content?.title || mod.content?.chapter_title || mod.content?.company_name || `Modul ${page.page}`,
+      thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(thumbKey)}`,
+    });
+  }
+
+  return textResult({
+    thumbnails,
+    module_count: modules.length,
+    rendered: thumbnails.length,
+  });
+}
+
 // ─── Handler: get_editor_url ────────────────────────────────────────────────
 
 async function handleGetEditorUrl(userId, args) {
@@ -1636,6 +1728,7 @@ const HANDLERS = {
   build_pages:           handleBuildPages,
   render_pdf:            handleRenderPdf,
   preview_plan:          handlePreviewPlan,
+  render_module_thumbnails: handleRenderModuleThumbnails,
   get_editor_url:        handleGetEditorUrl,
   save_brand_tokens:     handleSaveBrandTokens,
   get_brand_tokens:      handleGetBrandTokens,
