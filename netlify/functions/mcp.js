@@ -2293,12 +2293,27 @@ async function handleGetPreviewUrl(hubUserId, args) {
 async function handleGetEditorUrl(hubUserId, args) {
   const sql = getSql();
   const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://rotor-report-ai.netlify.app";
+  const docId = args.document_id || args.report_id;
+  if (!docId) return { content: [{ type: "text", text: "document_id or report_id is required" }], isError: true };
 
-  const rows = await sql`SELECT id, title FROM documents WHERE id = ${args.document_id} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
+  // Try v2 reports first
+  const v2rows = await sql`SELECT id, title FROM v2_reports WHERE id = ${docId} LIMIT 1`;
+  if (v2rows[0]) {
+    const editorToken = createEditorToken(hubUserId, docId);
+    const editorUrl = `${siteUrl}/editor/v2?token=${editorToken}`;
+    return { content: [{ type: "text", text: JSON.stringify({
+      editor_url: editorUrl,
+      title: v2rows[0].title,
+      hint: "Öppna länken i webbläsaren för att granska rapporten visuellt.",
+    }, null, 2) }] };
+  }
+
+  // Fallback to v1 documents
+  const rows = await sql`SELECT id, title FROM documents WHERE id = ${docId} AND hub_user_id = ${hubUserId} AND deleted_at IS NULL LIMIT 1`;
   if (!rows[0]) return { content: [{ type: "text", text: "Document not found" }], isError: true };
 
-  const editorToken = createEditorToken(hubUserId, args.document_id);
-  const editorUrl = `${siteUrl}/editor.html?doc=${args.document_id}&token=${editorToken}`;
+  const editorToken = createEditorToken(hubUserId, docId);
+  const editorUrl = `${siteUrl}/editor.html?doc=${docId}&token=${editorToken}`;
 
   return { content: [{ type: "text", text: JSON.stringify({
     editor_url: editorUrl,
