@@ -16,7 +16,7 @@ import { getSql } from "./db.js";
 
 const RENDER_SERVICE_URL = process.env.RENDER_SERVICE_URL || "http://localhost:8080";
 
-const VALID_MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout"];
+const VALID_MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout", "freeform"];
 const VALID_COLUMNS = ["full", "half", "primary", "sidebar", "thirds", "wide-left", "quarter"];
 const MAX_SLOTS = { full: 1, half: 2, primary: 2, sidebar: 2, thirds: 3, "wide-left": 2, quarter: 2 };
 const VALID_CATEGORIES = ["text", "data", "media"];
@@ -24,14 +24,16 @@ const VALID_CATEGORIES = ["text", "data", "media"];
 const addSchema = z.object({
   report_id: z.string().uuid(),
   module_type: z.enum(VALID_MODULE_TYPES),
-  content: z.record(z.string(), z.any()),
+  content: z.record(z.string(), z.any()).optional(),
   style: z.record(z.string(), z.any()).optional(),
+  html_content: z.string().optional(),
   after_module_id: z.string().uuid().nullable().optional(),
-});
+}).refine(d => d.html_content || d.content, { message: "Either html_content or content is required" });
 
 const updateSchema = z.object({
   content: z.record(z.string(), z.any()).optional(),
   style: z.record(z.string(), z.any()).optional(),
+  html_content: z.string().optional(),
 });
 
 function parseBody(event) {
@@ -121,12 +123,12 @@ export const handler = async (event) => {
       const parsed = addSchema.safeParse(body);
       if (!parsed.success) return json(event, 400, { error: "Invalid payload", issues: parsed.error.issues });
 
-      const { report_id, module_type, content, style, after_module_id } = parsed.data;
+      const { report_id, module_type, content, style, after_module_id, html_content } = parsed.data;
 
       const scopeErr = await assertEditorScopeForReport(report_id);
       if (scopeErr) return scopeErr;
 
-      if (module_type === "layout") {
+      if (module_type === "layout" && !html_content) {
         const err = validateLayoutContent(content);
         if (err) return json(event, 400, { error: err });
       }
@@ -158,11 +160,12 @@ export const handler = async (event) => {
 
       const newId = randomUUID();
       await sql`
-        INSERT INTO v2_report_modules (id, report_id, module_type, order_index, content, style)
+        INSERT INTO v2_report_modules (id, report_id, module_type, order_index, content, style, html_content)
         VALUES (
           ${newId}, ${report_id}, ${module_type}, ${orderIndex},
-          ${JSON.stringify(content)}::jsonb,
-          ${JSON.stringify(style || {})}::jsonb
+          ${JSON.stringify(content || {})}::jsonb,
+          ${JSON.stringify(style || {})}::jsonb,
+          ${html_content || null}
         )
       `;
 
@@ -170,14 +173,10 @@ export const handler = async (event) => {
       let htmlCache = null;
       try {
         const brand = await fetchBrandContext(sql, brandId);
-        const rr = await callRenderService("/render/module", {
-          module_id: newId,
-          module_type,
-          content,
-          style: style || {},
-          brand_tokens: brand.tokens,
-          brand_fonts: brand.fonts,
-        }, tenantId);
+        const renderPayload = html_content
+          ? { html_content, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: "draft" }
+          : { module_id: newId, module_type, content, style: style || {}, brand_tokens: brand.tokens, brand_fonts: brand.fonts };
+        const rr = await callRenderService("/render/module", renderPayload, tenantId);
         heightMm = rr.height_mm ?? null;
         htmlCache = (rr.html_fragment ?? rr.html ?? null);
         await sql`
@@ -201,12 +200,12 @@ export const handler = async (event) => {
 
       const parsed = updateSchema.safeParse(body);
       if (!parsed.success) return json(event, 400, { error: "Invalid payload", issues: parsed.error.issues });
-      if (!parsed.data.content && !parsed.data.style) {
-        return json(event, 400, { error: "Provide content and/or style" });
+      if (!parsed.data.content && !parsed.data.style && !parsed.data.html_content) {
+        return json(event, 400, { error: "Provide html_content, content, and/or style" });
       }
 
       const mods = await sql`
-        SELECT m.id, m.report_id, m.module_type, m.content, m.style, r.brand_id, r.tenant_id
+        SELECT m.id, m.report_id, m.module_type, m.content, m.style, m.html_content, r.brand_id, r.tenant_id
         FROM v2_report_modules m
         JOIN v2_reports r ON r.id = m.report_id
         WHERE m.id = ${moduleId} LIMIT 1
@@ -217,10 +216,11 @@ export const handler = async (event) => {
       const scopeErr = await assertEditorScopeForReport(mod.report_id);
       if (scopeErr) return scopeErr;
 
+      const newHtmlContent = parsed.data.html_content ?? mod.html_content ?? null;
       const newContent = parsed.data.content || mod.content;
       const newStyle = parsed.data.style || mod.style;
 
-      if (mod.module_type === "layout" && parsed.data.content) {
+      if (mod.module_type === "layout" && parsed.data.content && !newHtmlContent) {
         const err = validateLayoutContent(newContent);
         if (err) return json(event, 400, { error: err });
       }
@@ -229,6 +229,7 @@ export const handler = async (event) => {
         UPDATE v2_report_modules
         SET content = ${JSON.stringify(newContent)}::jsonb,
             style = ${JSON.stringify(newStyle)}::jsonb,
+            html_content = ${newHtmlContent},
             html_cache = NULL,
             height_mm = NULL,
             updated_at = NOW()
@@ -237,14 +238,10 @@ export const handler = async (event) => {
 
       try {
         const brand = await fetchBrandContext(sql, mod.brand_id);
-        const rr = await callRenderService("/render/module", {
-          module_id: moduleId,
-          module_type: mod.module_type,
-          content: newContent,
-          style: newStyle,
-          brand_tokens: brand.tokens,
-          brand_fonts: brand.fonts,
-        }, mod.tenant_id);
+        const renderPayload = newHtmlContent
+          ? { html_content: newHtmlContent, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: "draft" }
+          : { module_id: moduleId, module_type: mod.module_type, content: newContent, style: newStyle, brand_tokens: brand.tokens, brand_fonts: brand.fonts };
+        const rr = await callRenderService("/render/module", renderPayload, mod.tenant_id);
         await sql`
           UPDATE v2_report_modules SET html_cache = ${(rr.html_fragment ?? rr.html ?? null)}, height_mm = ${rr.height_mm ?? null}
           WHERE id = ${moduleId}

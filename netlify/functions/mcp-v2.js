@@ -829,7 +829,7 @@ async function handleRenderPdf(userId, args, event) {
     WHERE report_id = ${report_id} ORDER BY page_number
   `;
   const modules = await sql`
-    SELECT id, page_id, module_type, order_index, content, style, html_cache
+    SELECT id, page_id, module_type, order_index, content, style, html_cache, html_content
     FROM v2_report_modules WHERE report_id = ${report_id} ORDER BY order_index
   `;
 
