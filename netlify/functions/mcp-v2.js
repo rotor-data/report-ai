@@ -18,7 +18,7 @@ import { createEditorToken } from "./editor-token.js";
 
 const RENDER_SERVICE_URL = process.env.RENDER_SERVICE_URL || "http://localhost:8080";
 
-const VALID_MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout"];
+const VALID_MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout", "freeform"];
 
 const VALID_COLUMNS = ["full", "half", "primary", "sidebar", "thirds", "wide-left", "quarter"];
 const MAX_SLOTS = { full: 1, half: 2, primary: 2, sidebar: 2, thirds: 3, "wide-left": 2, quarter: 2 };
@@ -127,26 +127,28 @@ const TOOLS = [
   },
   {
     name: "add_module",
-    description: "Add a module to a report. For layout modules, provide columns preset and slot categories.",
+    description: "Add a module to a report. Two modes: (1) html_content — provide Claude-authored HTML using the design system CSS classes. Use module_type='freeform'. (2) Legacy — provide module_type + content JSON for Jinja2 template rendering.",
     inputSchema: {
       type: "object",
       properties: {
         report_id: { type: "string" },
         module_type: { type: "string", enum: VALID_MODULE_TYPES },
-        content: { type: "object", description: "Module content payload" },
-        style: { type: "object", description: "Optional style overrides" },
+        html_content: { type: "string", description: "Claude-authored HTML using design system classes. When provided, content/style are ignored." },
+        content: { type: "object", description: "Legacy: module content payload for Jinja2 templates" },
+        style: { type: "object", description: "Optional style overrides (legacy path)" },
         after_module_id: { type: "string", description: "Insert after this module (null = first)" },
       },
-      required: ["report_id", "module_type", "content"],
+      required: ["report_id", "module_type"],
     },
   },
   {
     name: "update_module",
-    description: "Update a module's content and/or style. Re-renders HTML cache.",
+    description: "Update a module. Provide html_content for freeform modules, or content/style for legacy modules. Re-renders HTML cache.",
     inputSchema: {
       type: "object",
       properties: {
         module_id: { type: "string" },
+        html_content: { type: "string", description: "Claude-authored HTML (replaces existing html_content)" },
         content: { type: "object" },
         style: { type: "object" },
       },
@@ -462,17 +464,20 @@ async function handleCreate(userId, args) {
 
 async function handleAddModule(userId, args) {
   const sql = getSql();
-  const { report_id, module_type, content, style, after_module_id } = args;
+  const { report_id, module_type, content, style, after_module_id, html_content } = args;
 
-  if (!report_id || !module_type || !content) {
-    return errorResult("report_id, module_type, and content are required.");
+  if (!report_id || !module_type) {
+    return errorResult("report_id and module_type are required.");
+  }
+  if (!html_content && !content) {
+    return errorResult("Either html_content or content is required.");
   }
   if (!VALID_MODULE_TYPES.includes(module_type)) {
     return errorResult(`Invalid module_type. Must be one of: ${VALID_MODULE_TYPES.join(", ")}`);
   }
 
-  // Validate layout columns
-  if (module_type === "layout") {
+  // Validate layout columns (only for legacy path, skip for freeform/html_content)
+  if (module_type === "layout" && !html_content) {
     const columns = content.columns;
     if (!columns || !VALID_COLUMNS.includes(columns)) {
       return errorResult(`Layout modules require content.columns to be one of: ${VALID_COLUMNS.join(", ")}`);
@@ -520,22 +525,20 @@ async function handleAddModule(userId, args) {
   // Insert module
   const moduleId = randomUUID();
   await sql`
-    INSERT INTO v2_report_modules (id, report_id, module_type, order_index, content, style)
-    VALUES (${moduleId}, ${report_id}, ${module_type}, ${orderIndex}, ${JSON.stringify(content)}::jsonb, ${JSON.stringify(style || {})}::jsonb)
+    INSERT INTO v2_report_modules (id, report_id, module_type, order_index, content, style, html_content)
+    VALUES (${moduleId}, ${report_id}, ${module_type}, ${orderIndex},
+            ${JSON.stringify(content || {})}::jsonb, ${JSON.stringify(style || {})}::jsonb,
+            ${html_content || null})
   `;
 
   // Call Python render service for html_cache + height_mm
   let heightMm = null;
   try {
     const brand = await fetchBrandContext(sql, brandId);
-    const renderResult = await callRenderService("/render/module", {
-      module_id: moduleId,
-      module_type,
-      content,
-      style: style || {},
-      brand_tokens: brand.tokens,
-      brand_fonts: brand.fonts,
-    }, tenantId);
+    const renderPayload = html_content
+      ? { html_content, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: 'draft' }
+      : { module_type, content, style: style || {}, brand_tokens: brand.tokens, brand_fonts: brand.fonts };
+    const renderResult = await callRenderService("/render/module", renderPayload, tenantId);
     heightMm = renderResult.height_mm ?? null;
     const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
     await sql`
@@ -553,13 +556,13 @@ async function handleAddModule(userId, args) {
 
 async function handleUpdateModule(userId, args) {
   const sql = getSql();
-  const { module_id, content, style } = args;
+  const { module_id, content, style, html_content } = args;
   if (!module_id) return errorResult("module_id is required.");
-  if (!content && !style) return errorResult("At least one of content or style is required.");
+  if (!content && !style && !html_content) return errorResult("At least one of html_content, content, or style is required.");
 
   // Get existing module + report brand + tenant
   const mods = await sql`
-    SELECT m.id, m.report_id, m.module_type, m.content, m.style, r.brand_id, r.tenant_id
+    SELECT m.id, m.report_id, m.module_type, m.content, m.style, m.html_content, r.brand_id, r.tenant_id
     FROM v2_report_modules m
     JOIN v2_reports r ON r.id = m.report_id
     WHERE m.id = ${module_id}
@@ -570,12 +573,14 @@ async function handleUpdateModule(userId, args) {
 
   const newContent = content || mod.content;
   const newStyle = style || mod.style;
+  const newHtmlContent = html_content !== undefined ? html_content : mod.html_content;
 
   // Update module, invalidate cache
   await sql`
     UPDATE v2_report_modules
     SET content = ${JSON.stringify(newContent)}::jsonb,
         style = ${JSON.stringify(newStyle)}::jsonb,
+        html_content = ${newHtmlContent || null},
         html_cache = NULL,
         height_mm = NULL
     WHERE id = ${module_id}
@@ -585,14 +590,10 @@ async function handleUpdateModule(userId, args) {
   let heightMm = null;
   try {
     const brand = await fetchBrandContext(sql, mod.brand_id);
-    const renderResult = await callRenderService("/render/module", {
-      module_id,
-      module_type: mod.module_type,
-      content: newContent,
-      style: newStyle,
-      brand_tokens: brand.tokens,
-      brand_fonts: brand.fonts,
-    }, mod.tenant_id);
+    const renderPayload = newHtmlContent
+      ? { html_content: newHtmlContent, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: 'draft' }
+      : { module_type: mod.module_type, content: newContent, style: newStyle, brand_tokens: brand.tokens, brand_fonts: brand.fonts };
+    const renderResult = await callRenderService("/render/module", renderPayload, mod.tenant_id);
     heightMm = renderResult.height_mm ?? null;
     const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
     await sql`
