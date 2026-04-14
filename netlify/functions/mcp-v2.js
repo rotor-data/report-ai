@@ -334,6 +334,17 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "get_stub_plan",
+    description: "Get the default module stub plan for a document type. Returns an ordered list of modules (cover, text_spread, kpi_grid, etc.) that form the standard structure for this document type.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        document_type: { type: "string", description: "Document type key (e.g. quarterly, annual_report, pitch, case_study)" },
+      },
+      required: ["document_type"],
+    },
+  },
+  {
     name: "get_module_schema",
     description: "Get JSON schema for module types and slot categories. Optionally filter by template or module type.",
     inputSchema: {
@@ -376,6 +387,69 @@ const TOOLS = [
         document_type: { type: "string" },
       },
       required: ["blueprint_id", "title", "document_type"],
+    },
+  },
+
+  // ── Component library ──
+  {
+    name: "save_component",
+    description: "Save or update a reusable HTML component in a brand's component library. Components are small HTML templates (~10-30 lines) with {{PLACEHOLDER}} tokens. Set is_default=true to make it the default for this component_type. Pass component_id to update an existing component.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        component_id: { type: "string", description: "Existing component ID to update (omit for new component)" },
+        brand_id: { type: "string" },
+        component_type: { type: "string", enum: [
+          "heading", "body_text", "pullquote", "callout", "list", "comparison",
+          "kpi_group", "kpi_hero", "data_table", "chart", "fact_strip", "timeline", "metric_change",
+          "image", "icon_grid", "team_grid", "logo_grid", "full_bleed_image",
+          "two_column", "sidebar_box",
+          "cover", "chapter_break", "back_cover", "divider", "toc", "colophon",
+        ] },
+        label: { type: "string", description: "Human-readable name, e.g. 'KPI-grupp med accent-border'" },
+        html_template: { type: "string", description: "HTML with {{PLACEHOLDER}} tokens using design system CSS classes" },
+        placeholder_schema: { type: "array", items: { type: "object" }, description: "Array of {name, required?, type?} describing placeholders" },
+        design_notes: { type: "string", description: "Art director notes explaining the design choices" },
+        source: { type: "string", enum: ["extraction", "report", "manual"] },
+        is_default: { type: "boolean", description: "Set as default component for this type+brand" },
+      },
+      required: ["brand_id", "component_type", "label", "html_template"],
+    },
+  },
+  {
+    name: "list_components",
+    description: "List components in a brand's component library. Returns metadata and full HTML templates. Filter by component_type to narrow results.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brand_id: { type: "string" },
+        component_type: { type: "string", description: "Filter by type (optional)" },
+      },
+      required: ["brand_id"],
+    },
+  },
+  {
+    name: "get_component",
+    description: "Get a single component with its full HTML template.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        component_id: { type: "string" },
+      },
+      required: ["component_id"],
+    },
+  },
+  {
+    name: "render_component_preview",
+    description: "Render a component with placeholder values (or lorem ipsum defaults) and return the measured height. Useful for previewing a component before adding it to a report.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        component_id: { type: "string", description: "Existing component ID (fetches template from DB)" },
+        html_template: { type: "string", description: "Or provide HTML directly (for preview before saving)" },
+        brand_id: { type: "string", description: "Required when using html_template directly" },
+        placeholder_values: { type: "object", description: "Key-value map to fill {{PLACEHOLDER}} tokens" },
+      },
     },
   },
 
@@ -787,7 +861,8 @@ async function handleBuildPages(userId, args) {
 
   for (const mod of modules) {
     const isFullBleed = FULL_BLEED_TYPES.has(mod.module_type);
-    const modHeight = mod.height_mm || 0;
+    // Default to 60mm if height_mm is NULL (e.g. freeform modules not yet rendered)
+    const modHeight = mod.height_mm ?? 60;
 
     if (isFullBleed) {
       // Full-bleed modules always get their own page
@@ -860,11 +935,19 @@ async function handleRenderPdf(userId, args, event) {
   // Fetch brand tokens and fonts
   const brand = await fetchBrandContext(sql, report.brand_id);
 
-  // Fetch template CSS
+  // Fetch template CSS — warn if missing so callers know design system is bare
   let cssBase = "";
+  let cssWarning = null;
   if (report.template_id) {
     const templates = await sql`SELECT css_base FROM report_templates WHERE id = ${report.template_id} LIMIT 1`;
     cssBase = templates[0]?.css_base || "";
+    if (!cssBase) {
+      cssWarning = `Template ${report.template_id} has no css_base — PDF will use design-system defaults only.`;
+      console.warn(`[render_pdf] ${cssWarning}`);
+    }
+  } else {
+    cssWarning = "No template_id on report — PDF will use design-system defaults only.";
+    console.warn(`[render_pdf] ${cssWarning}`);
   }
 
   // Call Python render service
@@ -1150,14 +1233,18 @@ async function handleSaveBrandTokens(userId, args) {
   const { brand_id, tokens } = args;
   if (!brand_id || !tokens) return errorResult("brand_id and tokens are required.");
 
+  // MERGE — only overwrite keys that are provided, preserve the rest.
+  // This prevents session-local overrides from wiping unrelated token keys.
   const rows = await sql`
-    UPDATE brands SET tokens = ${JSON.stringify(tokens)}::jsonb
+    UPDATE brands
+    SET tokens = COALESCE(tokens, '{}'::jsonb) || ${JSON.stringify(tokens)}::jsonb,
+        updated_at = NOW()
     WHERE id = ${brand_id}
     RETURNING id, tenant_id, name, tokens
   `;
   if (!rows.length) return errorResult(`Brand ${brand_id} not found.`);
 
-  return textResult({ brand_id: rows[0].id, updated: true });
+  return textResult({ brand_id: rows[0].id, updated: true, merged_keys: Object.keys(tokens) });
 }
 
 // ─── Handler: get_brand_tokens ──────────────────────────────────────────────
@@ -1272,6 +1359,23 @@ async function handleListTemplates(userId, args) {
     FROM report_templates ORDER BY name
   `;
   return textResult({ templates: rows, count: rows.length });
+}
+
+async function handleGetStubPlan(userId, args) {
+  const { document_type } = args;
+  if (!document_type) return errorResult("document_type is required.");
+
+  const { getTemplate } = await import("./document-type-templates.js");
+  const template = await getTemplate(document_type);
+  if (!template) {
+    return errorResult(`No template found for document type "${document_type}". Use "custom" for freeform documents.`);
+  }
+  return textResult({
+    document_type: template.document_type,
+    required_sections: template.required_sections,
+    stub_plan: template.default_stub_plan,
+    module_count: template.default_stub_plan?.length ?? 0,
+  });
 }
 
 // ─── Handler: list_brands ───────────────────────────────────────────────────
@@ -1442,6 +1546,185 @@ async function handleCreateFromBlueprint(userId, args) {
     module_count: bpModules.length,
     next_step: "Use report2__get_structure to see the report, then report2__update_module to add content.",
   });
+}
+
+// ─── Handler: save_component ────────────────────────────────────────────────
+
+async function handleSaveComponent(userId, args) {
+  const sql = getSql();
+  const { component_id, brand_id, component_type, label, html_template, placeholder_schema, design_notes, source, is_default } = args;
+  if (!brand_id || !component_type || !label || !html_template) {
+    return errorResult("brand_id, component_type, label, and html_template are required.");
+  }
+
+  // If marking as default, clear existing defaults for this type+brand
+  if (is_default) {
+    await sql`
+      UPDATE brand_components SET is_default = false
+      WHERE brand_id = ${brand_id} AND component_type = ${component_type} AND is_default = true
+        ${component_id ? sql`AND id != ${component_id}` : sql``}
+    `;
+  }
+
+  // UPDATE existing component if component_id provided, otherwise INSERT
+  if (component_id) {
+    const rows = await sql`
+      UPDATE brand_components
+      SET label = ${label},
+          html_template = ${html_template},
+          placeholder_schema = ${JSON.stringify(placeholder_schema || [])}::jsonb,
+          design_notes = ${design_notes || null},
+          source = ${source || 'manual'},
+          is_default = ${is_default || false},
+          version = version + 1,
+          updated_at = NOW()
+      WHERE id = ${component_id} AND brand_id = ${brand_id}
+      RETURNING id
+    `;
+    if (!rows.length) return errorResult(`Component ${component_id} not found for brand ${brand_id}.`);
+    return textResult({ component_id: rows[0].id, component_type, label, updated: true });
+  }
+
+  const rows = await sql`
+    INSERT INTO brand_components (brand_id, component_type, label, html_template, placeholder_schema, design_notes, source, is_default)
+    VALUES (
+      ${brand_id}, ${component_type}, ${label}, ${html_template},
+      ${JSON.stringify(placeholder_schema || [])}::jsonb,
+      ${design_notes || null}, ${source || 'manual'}, ${is_default || false}
+    )
+    RETURNING id
+  `;
+
+  return textResult({ component_id: rows[0].id, component_type, label });
+}
+
+// ─── Handler: list_components ───────────────────────────────────────────────
+
+async function handleListComponents(userId, args) {
+  const sql = getSql();
+  const { brand_id, component_type } = args;
+  if (!brand_id) return errorResult("brand_id is required.");
+
+  let rows;
+  if (component_type) {
+    rows = await sql`
+      SELECT id, component_type, label, is_default, placeholder_schema, html_template, design_notes, source, version, created_at
+      FROM brand_components WHERE brand_id = ${brand_id} AND component_type = ${component_type}
+      ORDER BY is_default DESC, updated_at DESC
+    `;
+  } else {
+    rows = await sql`
+      SELECT id, component_type, label, is_default, placeholder_schema, html_template, design_notes, source, version, created_at
+      FROM brand_components WHERE brand_id = ${brand_id}
+      ORDER BY component_type, is_default DESC, updated_at DESC
+    `;
+  }
+
+  return textResult({ components: rows, count: rows.length });
+}
+
+// ─── Handler: get_component ─────────────────────────────────────────────────
+
+async function handleGetComponent(userId, args) {
+  const sql = getSql();
+  const { component_id } = args;
+  if (!component_id) return errorResult("component_id is required.");
+
+  const rows = await sql`
+    SELECT id, brand_id, component_type, label, html_template, placeholder_schema, design_notes, source, version, is_default, created_at
+    FROM brand_components WHERE id = ${component_id} LIMIT 1
+  `;
+  if (!rows.length) return errorResult(`Component ${component_id} not found.`);
+
+  return textResult(rows[0]);
+}
+
+// ─── Handler: render_component_preview ──────────────────────────────────────
+
+async function handleRenderComponentPreview(userId, args, event) {
+  const sql = getSql();
+  const { component_id, html_template: directHtml, brand_id: directBrandId, placeholder_values } = args;
+
+  let htmlTemplate, brandId;
+
+  if (component_id) {
+    const rows = await sql`
+      SELECT html_template, brand_id FROM brand_components WHERE id = ${component_id} LIMIT 1
+    `;
+    if (!rows.length) return errorResult(`Component ${component_id} not found.`);
+    htmlTemplate = rows[0].html_template;
+    brandId = rows[0].brand_id;
+  } else if (directHtml && directBrandId) {
+    htmlTemplate = directHtml;
+    brandId = directBrandId;
+  } else {
+    return errorResult("Provide component_id OR (html_template + brand_id).");
+  }
+
+  // Fill placeholders
+  let filled = htmlTemplate;
+  if (placeholder_values) {
+    for (const [key, value] of Object.entries(placeholder_values)) {
+      filled = filled.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+    }
+  }
+  // Clean unfilled placeholders
+  filled = filled.replace(/\{\{[A-Z_0-9]+\}\}/g, "");
+
+  // Fetch brand tokens + fonts
+  const brands = await sql`SELECT tokens FROM brands WHERE id = ${brandId} LIMIT 1`;
+  const brandTokens = brands.length ? (brands[0].tokens || {}) : {};
+  const fonts = await sql`SELECT family, weight, style, format, data_base64 FROM brand_fonts WHERE brand_id = ${brandId}`;
+
+  // Look up tenant_id for blob storage path
+  const brandRows = await sql`SELECT tenant_id FROM brands WHERE id = ${brandId} LIMIT 1`;
+  const tenantId = brandRows[0]?.tenant_id || "unknown";
+
+  // Render as single-page PDF so we can rasterize to PNG thumbnail
+  const pdfResult = await callRenderService("/render/pdf", {
+    title: "Component preview",
+    mode: "draft",
+    pages: [{
+      page_number: 1,
+      page_type: "content",
+      modules: [{
+        id: "preview",
+        module_type: "freeform",
+        order_index: 0,
+        content: {},
+        style: {},
+        html_content: filled,
+      }],
+    }],
+    brand_tokens: brandTokens,
+    brand_fonts: fonts,
+    brand_logos: [],
+  }, tenantId);
+
+  const pdfBuffer = pdfResult.pdf_bytes
+    ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+
+  let thumbnailUrl = null;
+  let heightMm = pdfResult.page_heights?.[0] ?? 60;
+
+  if (pdfBuffer) {
+    // Rasterize PDF → PNG
+    const raster = await callRenderService("/render/rasterize", {
+      pdf_base64: pdfBuffer.toString("base64"),
+    }, tenantId);
+
+    if (raster.pages?.length) {
+      const assetStore = await getBlobStore("report-ai-assets", event);
+      const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const thumbKey = `tenants/${tenantId}/component-previews/${timestamp}-${brandId}.png`;
+      const pngBuffer = Buffer.from(raster.pages[0].png_base64, "base64");
+      await assetStore.set(thumbKey, pngBuffer, { contentType: "image/png" });
+      thumbnailUrl = `${siteUrl}/api/v2-asset?key=${encodeURIComponent(thumbKey)}`;
+    }
+  }
+
+  return textResult({ height_mm: heightMm, thumbnail_url: thumbnailUrl });
 }
 
 // ─── Handler: rasterize_pdf ─────────────────────────────────────────────────
@@ -1825,11 +2108,16 @@ const HANDLERS = {
   upload_logo:           handleUploadLogo,
   upload_asset:          handleUploadAsset,
   list_templates:        handleListTemplates,
+  get_stub_plan:         handleGetStubPlan,
   list_brands:           handleListBrands,
   get_module_schema:     handleGetModuleSchema,
   save_blueprint:        handleSaveBlueprint,
   list_blueprints:       handleListBlueprints,
   create_from_blueprint: handleCreateFromBlueprint,
+  save_component:        handleSaveComponent,
+  list_components:       handleListComponents,
+  get_component:         handleGetComponent,
+  render_component_preview: handleRenderComponentPreview,
   rasterize_pdf:         handleRasterizePdf,
   request_upload:        handleRequestUpload,
   check_upload:          handleCheckUpload,

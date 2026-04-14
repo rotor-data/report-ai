@@ -232,6 +232,213 @@ const FALLBACK_TEMPLATES = {
       { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
     ],
   },
+
+  // ── Added for v2 setup step alignment ─────────────────────────────────────
+
+  monthly_update: {
+    document_type: "monthly_update",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "kpi_grid", label: "Nyckeltal", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "kpi_grid", title: "Nyckeltal", data: { kpis: [] }, stub: true },
+      { order: 3, module_type: "text_spread", title: "Highlights & utmaningar", content: "", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Nästa månad", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  market_report: {
+    document_type: "market_report",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Sammanfattning", required: true, semantic_role: "executive_summary" },
+      { module_type: "kpi_grid", label: "Marknadssiffror", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Sammanfattning", semantic_role: "executive_summary", content: "", data: {}, stub: true },
+      { order: 3, module_type: "kpi_grid", title: "Marknadssiffror", data: { kpis: [] }, stub: true },
+      { order: 4, module_type: "text_spread", title: "Trender & drivkrafter", content: "", data: {}, stub: true },
+      { order: 5, module_type: "text_spread", title: "Konkurrenslandskap", content: "", data: {}, stub: true },
+      { order: 6, module_type: "text_spread", title: "Möjligheter & risker", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  strategy_doc: {
+    document_type: "strategy_doc",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Vision & mål", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Nuläge", content: "", data: {}, stub: true },
+      { order: 3, module_type: "text_spread", title: "Vision & mål", content: "", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Strategiska initiativ", content: "", data: {}, stub: true },
+      { order: 5, module_type: "text_spread", title: "Vägkarta & tidplan", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  research_report: {
+    document_type: "research_report",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Sammanfattning", required: true, semantic_role: "executive_summary" },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Sammanfattning", semantic_role: "executive_summary", content: "", data: {}, stub: true },
+      { order: 3, module_type: "text_spread", title: "Bakgrund & frågeställning", content: "", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Metod", content: "", data: {}, stub: true },
+      { order: 5, module_type: "text_spread", title: "Resultat", content: "", data: {}, stub: true },
+      { order: 6, module_type: "kpi_grid", title: "Nyckeldata", data: { kpis: [] }, stub: true },
+      { order: 7, module_type: "text_spread", title: "Slutsatser & rekommendationer", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  competitive_analysis: {
+    document_type: "competitive_analysis",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "table", label: "Jämförelsetabell", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Marknadsöversikt", content: "", data: {}, stub: true },
+      { order: 3, module_type: "table", title: "Konkurrentjämförelse", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Styrkor & svagheter", content: "", data: {}, stub: true },
+      { order: 5, module_type: "text_spread", title: "Vår positionering", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  press_release: {
+    document_type: "press_release",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Pressmeddelande", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Pressmeddelande", content: "", data: {}, stub: true },
+      { order: 3, module_type: "text_spread", title: "Om företaget", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  impact_report: {
+    document_type: "impact_report",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Inledning", required: true, semantic_role: "executive_summary" },
+      { module_type: "kpi_grid", label: "Impact-nyckeltal", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Inledning", semantic_role: "executive_summary", content: "", data: {}, stub: true },
+      { order: 3, module_type: "kpi_grid", title: "Impact-nyckeltal", data: { kpis: [] }, stub: true },
+      { order: 4, module_type: "text_spread", title: "Social påverkan", content: "", data: {}, stub: true },
+      { order: 5, module_type: "text_spread", title: "Miljöpåverkan", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  compliance_report: {
+    document_type: "compliance_report",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Sammanfattning", required: true, semantic_role: "executive_summary" },
+      { module_type: "table", label: "Regelefterlevnad", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Sammanfattning", semantic_role: "executive_summary", content: "", data: {}, stub: true },
+      { order: 3, module_type: "table", title: "Regelefterlevnad", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Riskbedömning", content: "", data: {}, stub: true },
+      { order: 5, module_type: "text_spread", title: "Åtgärdsplan", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  internal_report: {
+    document_type: "internal_report",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Sammanfattning", required: true, semantic_role: "executive_summary" },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Sammanfattning", semantic_role: "executive_summary", content: "", data: {}, stub: true },
+      { order: 3, module_type: "text_spread", title: "Analys", content: "", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Rekommendation", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  onboarding_guide: {
+    document_type: "onboarding_guide",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Välkommen", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Välkommen!", content: "", data: {}, stub: true },
+      { order: 3, module_type: "text_spread", title: "Vår kultur & värderingar", content: "", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Verktyg & processer", content: "", data: {}, stub: true },
+      { order: 5, module_type: "text_spread", title: "Första veckorna", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  process_doc: {
+    document_type: "process_doc",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Processbeskrivning", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Syfte & scope", content: "", data: {}, stub: true },
+      { order: 3, module_type: "text_spread", title: "Steg-för-steg", content: "", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Roller & ansvar", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  training_material: {
+    document_type: "training_material",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "text_spread", label: "Kursinnehåll", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 2, module_type: "text_spread", title: "Kursmål", content: "", data: {}, stub: true },
+      { order: 3, module_type: "text_spread", title: "Del 1", content: "", data: {}, stub: true },
+      { order: 4, module_type: "text_spread", title: "Del 2", content: "", data: {}, stub: true },
+      { order: 5, module_type: "text_spread", title: "Sammanfattning & övningar", content: "", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
+  custom: {
+    document_type: "custom",
+    required_sections: [
+      { module_type: "cover", label: "Omslag", required: true },
+      { module_type: "back_cover", label: "Baksida", required: true },
+    ],
+    default_stub_plan: [
+      { order: 1, module_type: "cover", title: "Omslag", data: {}, stub: true },
+      { order: 99, module_type: "back_cover", title: "Baksida", data: {}, stub: true },
+    ],
+  },
 };
 
 export async function getTemplate(documentType) {
