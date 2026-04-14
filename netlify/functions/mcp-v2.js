@@ -1597,11 +1597,17 @@ async function handleSaveComponent(userId, args) {
 
   // If marking as default, clear existing defaults for this type+brand
   if (is_default) {
-    await sql`
-      UPDATE brand_components SET is_default = false
-      WHERE brand_id = ${brand_id} AND component_type = ${component_type} AND is_default = true
-        ${component_id ? sql`AND id != ${component_id}` : sql``}
-    `;
+    if (component_id) {
+      await sql`
+        UPDATE brand_components SET is_default = false
+        WHERE brand_id = ${brand_id} AND component_type = ${component_type} AND is_default = true AND id != ${component_id}
+      `;
+    } else {
+      await sql`
+        UPDATE brand_components SET is_default = false
+        WHERE brand_id = ${brand_id} AND component_type = ${component_type} AND is_default = true
+      `;
+    }
   }
 
   // UPDATE existing component if component_id provided, otherwise INSERT
