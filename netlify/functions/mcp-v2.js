@@ -314,6 +314,19 @@ const TOOLS = [
     },
   },
 
+  {
+    name: "list_assets",
+    description: "List uploaded image assets for a tenant. Returns asset_id, filename, mime_type, asset_class (photo/icon/svg), and storage_url. Use to discover available images for placing in report components.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: { type: "string" },
+        asset_class: { type: "string", description: "Filter by class: photo, icon, svg. Omit for all." },
+      },
+      required: ["tenant_id"],
+    },
+  },
+
   // ── Brands ──
   {
     name: "list_brands",
@@ -1350,6 +1363,31 @@ async function handleUploadAsset(userId, args, event) {
   return textResult({ asset_id: assetId, asset_class: assetClass, size_bytes: sizeBytes, storage_url: storageUrl, warning });
 }
 
+// ─── Handler: list_assets ──────────────────────────────────────────────────
+
+async function handleListAssets(userId, args) {
+  const sql = getSql();
+  const { tenant_id, asset_class } = args;
+  if (!tenant_id) return errorResult("tenant_id is required.");
+
+  let rows;
+  if (asset_class) {
+    rows = await sql`
+      SELECT id, filename, mime_type, asset_class, storage_url, size_bytes, created_at
+      FROM tenant_assets WHERE tenant_id = ${tenant_id} AND asset_class = ${asset_class}
+      ORDER BY created_at DESC
+    `;
+  } else {
+    rows = await sql`
+      SELECT id, filename, mime_type, asset_class, storage_url, size_bytes, created_at
+      FROM tenant_assets WHERE tenant_id = ${tenant_id}
+      ORDER BY asset_class, created_at DESC
+    `;
+  }
+
+  return textResult({ assets: rows, count: rows.length });
+}
+
 // ─── Handler: list_templates ────────────────────────────────────────────────
 
 async function handleListTemplates(userId, args) {
@@ -2107,6 +2145,7 @@ const HANDLERS = {
   upload_font:           handleUploadFont,
   upload_logo:           handleUploadLogo,
   upload_asset:          handleUploadAsset,
+  list_assets:           handleListAssets,
   list_templates:        handleListTemplates,
   get_stub_plan:         handleGetStubPlan,
   list_brands:           handleListBrands,
