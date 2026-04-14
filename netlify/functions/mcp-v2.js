@@ -1511,9 +1511,13 @@ async function handleExtractDesignFromPdf(userId, args) {
   const tenantId = brands[0].tenant_id;
 
   // Build rasterize request — prefer source_url (server-side fetch, no base64 overhead)
+  // Use 72 DPI JPEG for design extraction — enough to identify colors/typography,
+  // ~50-100 KB per page instead of 1-2 MB PNG at 150 DPI.
   const rasterPayload = {
     pages: requestedPages || [1, 2, 3],
-    dpi: 150,
+    dpi: 72,
+    format: 'jpeg',
+    quality: 70,
   };
   if (source_url) {
     rasterPayload.source_url = source_url;
