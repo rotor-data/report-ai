@@ -1510,33 +1510,31 @@ async function handleExtractDesignFromPdf(userId, args) {
   if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
   const tenantId = brands[0].tenant_id;
 
-  // Build rasterize request — prefer source_url (server-side fetch, no base64 overhead)
-  // Use 72 DPI JPEG for design extraction — enough to identify colors/typography,
-  // ~50-100 KB per page instead of 1-2 MB PNG at 150 DPI.
-  const rasterPayload = {
-    pages: requestedPages || [1, 2, 3],
-    dpi: 72,
-    format: 'jpeg',
-    quality: 70,
-  };
+  // Use server-side PDF analysis — extracts colors, fonts, spacing, layout
+  // directly from PDF structure. NO rasterization, NO images, NO base64 bloat.
+  const analyzePayload = {};
   if (source_url) {
-    rasterPayload.source_url = source_url;
+    analyzePayload.source_url = source_url;
   } else {
-    rasterPayload.pdf_base64 = pdf_base64;
+    analyzePayload.pdf_base64 = pdf_base64;
   }
+  if (requestedPages) analyzePayload.pages = requestedPages;
 
-  let rasterPages;
+  let pdfAnalysis;
   try {
-    const rasterResult = await callRenderService("/render/rasterize", rasterPayload, tenantId);
-    rasterPages = rasterResult.images || rasterResult.pages || [];
+    pdfAnalysis = await callRenderService("/render/analyze-pdf", analyzePayload, tenantId);
   } catch (e) {
-    return errorResult(`Rasterize failed: ${e.message}`);
+    return errorResult(`PDF analysis failed: ${e.message}`);
   }
 
   return metaResult({
-    task: "Extract brand design tokens from reference PDF",
+    task: "Map PDF design analysis to brand tokens",
     description:
-      "Analyze the rasterized pages below and identify the brand's visual identity. Produce a brand_tokens object matching the schema, then save via report2__save_brand_tokens.",
+      "The server has extracted colors, fonts, spacing, and layout from the PDF. " +
+      "Review the analysis below and produce a brand_tokens object. " +
+      "Map the extracted font names to CSS-safe font-family values. " +
+      "Use the detected colors, margins, and layout to set appropriate tokens. " +
+      "Then save via report2__save_brand_tokens.",
     output_schema: {
       type: "object",
       properties: {
@@ -1562,13 +1560,17 @@ async function handleExtractDesignFromPdf(userId, args) {
     save_result_via: "report2__save_brand_tokens",
     inputs: {
       brand_id,
-      raster_pages: rasterPages,
+      pdf_analysis: pdfAnalysis,
     },
     steps: [
       {
         action: "judge",
         instruction:
-          "Examine the raster_pages images. Identify: (1) dominant brand color (primary), a darker variant, and an accent color; (2) body/heading/display typography (look up CSS-safe family names); (3) approximate page margins in mm; (4) column gaps and section spacing. Return a brand_tokens object matching output_schema. Prefer conservative defaults over guesses.",
+          "Review the pdf_analysis data. " +
+          "(1) Colors: use analysis.colors.primary as primary_color, darken it for primary_dark_color, use analysis.colors.accent as accent_color. Use text/text_muted from analysis. Derive bg_light_color and border_color from the palette. " +
+          "(2) Typography: map analysis.typography.display_font/heading_font/body_font to CSS font-family values. If the PDF font name looks like a specific typeface (e.g. 'ObviouslyWide-Bold'), keep the family name and add a generic fallback. " +
+          "(3) Layout: use analysis.layout.margins_mm for margin tokens. Estimate column_gap_mm and section_gap_mm from the layout. " +
+          "Return a brand_tokens object matching output_schema.",
         produces: "brand_tokens",
       },
       {
