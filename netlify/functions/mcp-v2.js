@@ -394,14 +394,16 @@ const TOOLS = [
   },
   {
     name: "extract_design_from_pdf",
-    description: "LAYER 2 META-TOOL. Returns an instruction chain to extract brand design tokens from a reference PDF. Claude rasterizes the PDF, analyzes the images for colors/typography/spacing, and saves the result as brand tokens.",
+    description: "LAYER 2 META-TOOL. Extract brand design tokens from a reference PDF. Provide source_url (preferred) or pdf_base64. The server fetches and rasterizes the PDF — do NOT send large files as base64.",
     inputSchema: {
       type: "object",
       properties: {
-        pdf_base64: { type: "string", description: "Base64-encoded reference PDF" },
+        source_url: { type: "string", description: "URL to the PDF document (preferred — avoids base64 overhead)" },
+        pdf_base64: { type: "string", description: "Base64-encoded PDF (ONLY for small documents < 1MB, prefer source_url)" },
         brand_id: { type: "string", description: "Brand to save tokens to" },
+        pages: { type: "array", items: { type: "integer" }, description: "Page numbers to analyze (default: [1,2,3])" },
       },
-      required: ["pdf_base64", "brand_id"],
+      required: ["brand_id"],
     },
   },
   {
@@ -1495,9 +1497,12 @@ function metaResult(meta) {
 
 async function handleExtractDesignFromPdf(userId, args) {
   const sql = getSql();
-  const { pdf_base64, brand_id } = args;
-  if (!pdf_base64 || !brand_id) {
-    return errorResult("pdf_base64 and brand_id are required.");
+  const { pdf_base64, source_url, brand_id, pages: requestedPages } = args;
+  if (!brand_id) {
+    return errorResult("brand_id is required.");
+  }
+  if (!pdf_base64 && !source_url) {
+    return errorResult("Either source_url or pdf_base64 is required. Prefer source_url for large documents.");
   }
 
   // Look up tenant from brand so smyra-render JWT carries a tenant_id claim.
@@ -1505,15 +1510,20 @@ async function handleExtractDesignFromPdf(userId, args) {
   if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
   const tenantId = brands[0].tenant_id;
 
-  // Rasterize directly via render service so the result is available as an
-  // input to Claude's judgment step. We skip the report_id path because this
-  // PDF isn't a report yet — it's a reference document.
+  // Build rasterize request — prefer source_url (server-side fetch, no base64 overhead)
+  const rasterPayload = {
+    pages: requestedPages || [1, 2, 3],
+    dpi: 150,
+  };
+  if (source_url) {
+    rasterPayload.source_url = source_url;
+  } else {
+    rasterPayload.pdf_base64 = pdf_base64;
+  }
+
   let rasterPages;
   try {
-    const rasterResult = await callRenderService("/render/rasterize", {
-      pdf_base64,
-      pages: [1, 2, 3], // first three pages are usually enough
-    }, tenantId);
+    const rasterResult = await callRenderService("/render/rasterize", rasterPayload, tenantId);
     rasterPages = rasterResult.images || rasterResult.pages || [];
   } catch (e) {
     return errorResult(`Rasterize failed: ${e.message}`);
