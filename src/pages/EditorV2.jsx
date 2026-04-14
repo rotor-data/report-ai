@@ -98,6 +98,19 @@ export default function EditorV2() {
     }
   };
 
+  const onSaveHtml = async (moduleId, newHtml) => {
+    setBusy((b) => ({ ...b, [moduleId]: true }));
+    setError("");
+    try {
+      const res = await api.updateV2Module(moduleId, { html_content: newHtml });
+      setModules((prev) => prev.map((m) => (m.id === moduleId ? res.item : m)));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy((b) => ({ ...b, [moduleId]: false }));
+    }
+  };
+
   const onDeleteModule = async (mod) => {
     if (!confirm(`Ta bort modul "${mod.module_type}"?`)) return;
     try {
@@ -250,6 +263,7 @@ export default function EditorV2() {
                   busy={!!busy[mod.id]}
                   onChange={onModuleChange}
                   onSave={onSaveModule}
+                  onSaveHtml={onSaveHtml}
                   onDelete={() => onDeleteModule(mod)}
                 />
               ))}

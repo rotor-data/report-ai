@@ -1,5 +1,7 @@
+import { useState } from "react";
 import SlotEditor from "./SlotEditor";
 import StyleOverridePanel from "./StyleOverridePanel";
+import HtmlPreview from "./HtmlPreview";
 
 const COLUMN_PRESETS = ["full", "half", "primary", "sidebar", "thirds", "wide-left", "quarter"];
 const MAX_SLOTS = { full: 1, half: 2, primary: 2, sidebar: 2, thirds: 3, "wide-left": 2, quarter: 2 };
@@ -8,11 +10,16 @@ const MAX_SLOTS = { full: 1, half: 2, primary: 2, sidebar: 2, thirds: 3, "wide-l
  * ModuleEditor — switches on module.module_type and renders the right fields.
  * Emits updated module via onChange. Parent persists via api.updateV2Module.
  */
-export default function ModuleEditor({ module, onChange, onDelete, onSave, busy }) {
+export default function ModuleEditor({ module, onChange, onDelete, onSave, onSaveHtml, busy }) {
+  const [showPreview, setShowPreview] = useState(true);
   const content = module.content || {};
   const style = module.style || {};
   const updateContent = (patch) => onChange({ ...module, content: { ...content, ...patch } });
   const updateStyle = (nextStyle) => onChange({ ...module, style: nextStyle });
+
+  const handleHtmlChange = (newHtml) => {
+    if (onSaveHtml) onSaveHtml(module.id, newHtml);
+  };
 
   return (
     <article className="card stack">
@@ -115,6 +122,23 @@ export default function ModuleEditor({ module, onChange, onDelete, onSave, busy 
       ) : null}
 
       <StyleOverridePanel style={style} onChange={updateStyle} moduleType={module.module_type} />
+
+      {/* Rendered HTML preview with element interaction */}
+      {module.html_cache ? (
+        <div style={{ marginTop: 16 }}>
+          <div className="row-between" style={{ marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 650, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".02em" }}>
+              Preview
+            </span>
+            <button className="btn-ghost" type="button" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => setShowPreview(!showPreview)}>
+              {showPreview ? "Dölj" : "Visa"} preview
+            </button>
+          </div>
+          {showPreview && (
+            <HtmlPreview html={module.html_cache} onHtmlChange={handleHtmlChange} />
+          )}
+        </div>
+      ) : null}
     </article>
   );
 }
