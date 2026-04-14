@@ -285,6 +285,45 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
 .canvas-page [data-module-id].mod-editing {
   outline-color: #4aa84a;
 }
+/* ─── Element selection within modules ─────────────────────────────────── */
+.canvas-page [data-module-id] > *:hover,
+.canvas-page [data-module-id] > * > *:hover {
+  outline: 1px dashed rgba(91, 155, 213, 0.25);
+  outline-offset: 1px;
+}
+.el-selected {
+  outline: 2px solid #e8a838 !important;
+  outline-offset: 1px;
+  position: relative;
+}
+.el-action-bar {
+  position: absolute;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: #2d2d2d;
+  border: 1px solid #555;
+  border-radius: 4px;
+  z-index: 200;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  pointer-events: auto;
+}
+.el-action-bar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 3px;
+  font-size: 13px;
+  color: #ccc;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.el-action-bar button:hover { background: #404040; }
+.el-action-bar .el-btn-delete:hover { background: #c0392b; color: #fff; }
+
 .canvas-empty {
   display: flex;
   align-items: center;
@@ -1017,6 +1056,7 @@ class ReportApi {
 
   getDocument()            { return this.rpc('get_document'); }
   saveModuleContent(moduleId, content) { return this.rpc('save_module_content', { module_id: moduleId, content }); }
+  saveModuleHtml(moduleId, html) { return this.rpc('save_module_html', { module_id: moduleId, html_fragment: html }); }
   saveModulePlan(plan)     { return this.rpc('save_module_plan', { module_plan: plan }); }
   saveDesignSystem(ds)     { return this.rpc('save_design_system', { design_system: ds }); }
   assembleDocument()       { return this.rpc('assemble_document'); }
@@ -1344,6 +1384,7 @@ function renderCanvas() {
   applyZoom();
   highlightSelectedModule();
   applyLiveDesign();
+  bindElementSelection();
 
   // Apply any pending layout overrides to module sections
   (state.doc.module_plan || []).forEach(mod => {
@@ -2539,6 +2580,183 @@ function execFormat(cmd, value) {
       break;
     }
   }
+}
+
+// ─── Element Selection & Deletion ─────────────────────────────────────────
+// Selectable element tags within a module section
+const SELECTABLE_TAGS = new Set(['p','h1','h2','h3','h4','h5','h6','hr','img','div','section','blockquote','ul','ol','table','figure','aside','header','footer','nav','pre','dl']);
+
+state.selectedElement = null;
+
+function findSelectableElement(target, boundary) {
+  // Walk up from click target to find a meaningful block-level element
+  let el = target;
+  while (el && el !== boundary) {
+    const tag = el.tagName?.toLowerCase();
+    if (SELECTABLE_TAGS.has(tag)) return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function selectElement(el) {
+  deselectElement();
+  if (!el) return;
+  el.classList.add('el-selected');
+  state.selectedElement = el;
+  showElementActionBar(el);
+}
+
+function deselectElement() {
+  if (state.selectedElement) {
+    state.selectedElement.classList.remove('el-selected');
+    state.selectedElement = null;
+  }
+  removeElementActionBar();
+}
+
+function showElementActionBar(el) {
+  removeElementActionBar();
+  const bar = document.createElement('div');
+  bar.className = 'el-action-bar';
+  bar.id = 'el-action-bar';
+
+  // Delete button
+  const delBtn = document.createElement('button');
+  delBtn.className = 'el-btn-delete';
+  delBtn.title = 'Ta bort element';
+  delBtn.innerHTML = '&#128465;'; // wastebasket
+  delBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteSelectedElement();
+  });
+  bar.appendChild(delBtn);
+
+  // Duplicate button
+  const dupBtn = document.createElement('button');
+  dupBtn.title = 'Duplicera element';
+  dupBtn.innerHTML = '&#10697;'; // copy icon
+  dupBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    duplicateSelectedElement();
+  });
+  bar.appendChild(dupBtn);
+
+  // Position above the element
+  document.body.appendChild(bar);
+  positionActionBar(bar, el);
+}
+
+function positionActionBar(bar, el) {
+  const rect = el.getBoundingClientRect();
+  const barW = 60;
+  let left = rect.left + rect.width / 2 - barW / 2;
+  let top = rect.top - 34;
+  // Keep on screen
+  if (left < 4) left = 4;
+  if (top < 4) top = rect.bottom + 4;
+  bar.style.left = left + 'px';
+  bar.style.top = top + 'px';
+}
+
+function removeElementActionBar() {
+  const existing = document.getElementById('el-action-bar');
+  if (existing) existing.remove();
+}
+
+function deleteSelectedElement() {
+  const el = state.selectedElement;
+  if (!el) return;
+  const section = el.closest('[data-module-id]');
+  if (!section) return;
+  const moduleId = section.dataset.moduleId;
+  const tag = el.tagName.toLowerCase();
+  const preview = el.textContent?.slice(0, 40) || tag;
+
+  if (!confirm(`Ta bort ${tag}-element "${preview.trim()}"?`)) return;
+
+  pushUndo();
+  el.remove();
+  deselectElement();
+
+  // Save the updated section HTML back to the module
+  saveModuleHtmlFromCanvas(moduleId, section);
+}
+
+function duplicateSelectedElement() {
+  const el = state.selectedElement;
+  if (!el) return;
+  const section = el.closest('[data-module-id]');
+  if (!section) return;
+  const moduleId = section.dataset.moduleId;
+
+  pushUndo();
+  const clone = el.cloneNode(true);
+  clone.classList.remove('el-selected');
+  el.after(clone);
+  selectElement(clone);
+
+  saveModuleHtmlFromCanvas(moduleId, section);
+}
+
+async function saveModuleHtmlFromCanvas(moduleId, sectionEl) {
+  // Save the section's inner HTML as the module fragment
+  const updatedHtml = sectionEl.innerHTML;
+
+  showLoading('Sparar ändring...');
+  try {
+    await api.saveModuleHtml(moduleId, updatedHtml);
+    await api.assembleDocument();
+    const data = await api.getDocument();
+    state.doc = data.item || data;
+    renderCanvas();
+    renderProperties();
+    setSaveStatus('saved');
+    toast('Element uppdaterat.');
+  } catch (e) {
+    toast('Kunde inte spara: ' + e.message, true);
+    setSaveStatus('unsaved');
+  }
+  hideLoading();
+}
+
+// Bind element-level click handling (called after renderCanvas)
+function bindElementSelection() {
+  document.querySelectorAll('#canvas-area [data-module-id]').forEach(section => {
+    section.addEventListener('click', (e) => {
+      // Don't interfere with inline editing
+      if (state.editingElement) return;
+
+      // Alt+click or right panel is collapsed = element selection mode
+      const el = findSelectableElement(e.target, section);
+      if (el && e.altKey) {
+        e.stopPropagation();
+        e.preventDefault();
+        selectElement(el);
+        return;
+      }
+    });
+
+    // Right-click for element context
+    section.addEventListener('contextmenu', (e) => {
+      if (state.editingElement) return;
+      const el = findSelectableElement(e.target, section);
+      if (el) {
+        e.preventDefault();
+        e.stopPropagation();
+        selectElement(el);
+      }
+    });
+  });
+
+  // Click on canvas background deselects element
+  document.getElementById('canvas-area').addEventListener('click', (e) => {
+    if (state.selectedElement && !e.target.closest('.el-action-bar')) {
+      // Only deselect element if not clicking within the action bar
+      const el = findSelectableElement(e.target, e.target.closest('[data-module-id]'));
+      if (!el) deselectElement();
+    }
+  });
 }
 
 // ─── Zoom ─────────────────────────────────────────────────────────────────
