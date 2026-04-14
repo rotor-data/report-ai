@@ -393,15 +393,37 @@ const TOOLS = [
     },
   },
   {
-    name: "extract_design_from_pdf",
-    description: "LAYER 2 META-TOOL. Extract brand design tokens from a reference PDF. Provide source_url (preferred) or pdf_base64. The server fetches and rasterizes the PDF — do NOT send large files as base64.",
+    name: "request_upload",
+    description: "Generate a one-time upload link for the user. Use this when the user wants to provide a PDF or image as a reference document but it's too large to include in the conversation. Returns a URL where the user can drag-and-drop their file. After they confirm the upload is done, use the returned upload_token with extract_design_from_pdf or other tools.",
     inputSchema: {
       type: "object",
       properties: {
-        source_url: { type: "string", description: "URL to the PDF document (preferred — avoids base64 overhead)" },
-        pdf_base64: { type: "string", description: "Base64-encoded PDF (ONLY for small documents < 1MB, prefer source_url)" },
+        purpose: { type: "string", description: "Brief description shown to user, e.g. 'reference PDF for design extraction'" },
+      },
+    },
+  },
+  {
+    name: "check_upload",
+    description: "Check if a file has been uploaded via a previously generated upload link.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        upload_token: { type: "string", description: "Token from request_upload" },
+      },
+      required: ["upload_token"],
+    },
+  },
+  {
+    name: "extract_design_from_pdf",
+    description: "LAYER 2 META-TOOL. Extract brand design tokens from a reference PDF. Provide upload_token (from request_upload), source_url, or pdf_base64. The server analyzes the PDF structure directly — no images needed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        upload_token: { type: "string", description: "Token from request_upload (preferred for user-uploaded files)" },
+        source_url: { type: "string", description: "URL to the PDF document" },
+        pdf_base64: { type: "string", description: "Base64-encoded PDF (ONLY for small documents < 1MB)" },
         brand_id: { type: "string", description: "Brand to save tokens to" },
-        pages: { type: "array", items: { type: "integer" }, description: "Page numbers to analyze (default: [1,2,3])" },
+        pages: { type: "array", items: { type: "integer" }, description: "Page numbers to analyze (default: first 10)" },
       },
       required: ["brand_id"],
     },
@@ -1493,16 +1515,53 @@ function metaResult(meta) {
   };
 }
 
+// ─── Handler: request_upload ────────────────────────────────────────────────
+
+async function handleRequestUpload(userId, args) {
+  const { createUploadToken } = await import("./upload-ref.js");
+  const { token } = createUploadToken();
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+  const uploadUrl = `${siteUrl}/upload-ref?token=${token}`;
+
+  return textResult({
+    upload_token: token,
+    upload_url: uploadUrl,
+    expires_in_minutes: 30,
+    instruction: "Ge användaren denna länk. Filen analyseras direkt av servern — inga bilder skickas genom konversationen. När användaren bekräftar att uppladdningen är klar, använd upload_token med extract_design_from_pdf eller check_upload.",
+  });
+}
+
+// ─── Handler: check_upload ─────────────────────────────────────────────────
+
+async function handleCheckUpload(userId, args) {
+  const { upload_token } = args;
+  if (!upload_token) return errorResult("upload_token is required.");
+
+  const { verifyUploadToken } = await import("./upload-ref.js");
+  if (!verifyUploadToken(upload_token)) {
+    return errorResult("Upload token is invalid or expired.");
+  }
+
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+  try {
+    const resp = await fetch(`${siteUrl}/upload-ref?token=${upload_token}&check=1`);
+    const data = await resp.json();
+    return textResult(data);
+  } catch (e) {
+    return errorResult(`Check failed: ${e.message}`);
+  }
+}
+
 // ─── Handler: extract_design_from_pdf (Layer 2) ─────────────────────────────
 
-async function handleExtractDesignFromPdf(userId, args) {
+async function handleExtractDesignFromPdf(userId, args, event) {
   const sql = getSql();
-  const { pdf_base64, source_url, brand_id, pages: requestedPages } = args;
+  const { pdf_base64, source_url, upload_token, brand_id, pages: requestedPages } = args;
   if (!brand_id) {
     return errorResult("brand_id is required.");
   }
-  if (!pdf_base64 && !source_url) {
-    return errorResult("Either source_url or pdf_base64 is required. Prefer source_url for large documents.");
+  if (!pdf_base64 && !source_url && !upload_token) {
+    return errorResult("Provide upload_token (from request_upload), source_url, or pdf_base64.");
   }
 
   // Look up tenant from brand so smyra-render JWT carries a tenant_id claim.
@@ -1510,10 +1569,23 @@ async function handleExtractDesignFromPdf(userId, args) {
   if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
   const tenantId = brands[0].tenant_id;
 
-  // Use server-side PDF analysis — extracts colors, fonts, spacing, layout
-  // directly from PDF structure. NO rasterization, NO images, NO base64 bloat.
+  // Build analyze payload — resolve upload_token to actual PDF data
   const analyzePayload = {};
-  if (source_url) {
+
+  if (upload_token) {
+    // Fetch uploaded file from Blobs
+    const { verifyUploadToken } = await import("./upload-ref.js");
+    if (!verifyUploadToken(upload_token)) {
+      return errorResult("Upload token is invalid or expired.");
+    }
+    const { getStore } = await import("@netlify/blobs");
+    const store = getStore({ name: "upload-refs", consistency: "strong" });
+    const fileData = await store.get(`${upload_token}/file`, { type: "arrayBuffer" });
+    if (!fileData) {
+      return errorResult("No file found for this upload token. Ask the user to upload the file first.");
+    }
+    analyzePayload.pdf_base64 = Buffer.from(fileData).toString("base64");
+  } else if (source_url) {
     analyzePayload.source_url = source_url;
   } else {
     analyzePayload.pdf_base64 = pdf_base64;
@@ -1759,6 +1831,8 @@ const HANDLERS = {
   list_blueprints:       handleListBlueprints,
   create_from_blueprint: handleCreateFromBlueprint,
   rasterize_pdf:         handleRasterizePdf,
+  request_upload:        handleRequestUpload,
+  check_upload:          handleCheckUpload,
   // Layer 2 meta-code tools
   extract_design_from_pdf: handleExtractDesignFromPdf,
   generate_template:       handleGenerateTemplate,

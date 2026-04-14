@@ -10,6 +10,11 @@
   functions = "netlify/functions"
 
 [[redirects]]
+  from = "/upload-ref"
+  to = "/.netlify/functions/upload-ref"
+  status = 200
+
+[[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
