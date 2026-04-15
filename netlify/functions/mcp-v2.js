@@ -415,7 +415,7 @@ const TOOLS = [
         component_type: { type: "string", enum: [
           "heading", "body_text", "pullquote", "callout", "list", "comparison",
           "kpi_group", "kpi_hero", "data_table", "chart", "fact_strip", "timeline", "metric_change",
-          "image", "icon_grid", "team_grid", "logo_grid", "full_bleed_image",
+          "image", "icon_grid", "team_grid", "logo_grid", "full_bleed_image", "infographic",
           "two_column", "sidebar_box",
           "cover", "chapter_break", "back_cover", "divider", "toc", "colophon",
         ] },

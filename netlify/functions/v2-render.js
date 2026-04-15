@@ -103,7 +103,7 @@ export const handler = async (event) => {
     if (!reports.length) return json(event, 404, { error: "Report not found" });
     const report = reports[0];
 
-    const pages = await sql`
+    let pages = await sql`
       SELECT id, page_number, page_type FROM v2_report_pages
       WHERE report_id = ${report_id} ORDER BY page_number
     `;
@@ -111,6 +111,35 @@ export const handler = async (event) => {
       SELECT id, page_id, module_type, order_index, content, style, html_cache, html_content
       FROM v2_report_modules WHERE report_id = ${report_id} ORDER BY order_index
     `;
+
+    // Auto-paginate: if no pages exist but modules do, create one page per module
+    if (!pages.length && modules.length) {
+      const { randomUUID } = await import("node:crypto");
+      for (let i = 0; i < modules.length; i++) {
+        const mod = modules[i];
+        const pageId = randomUUID();
+        const pageType = mod.module_type === "cover" ? "cover"
+          : mod.module_type === "back_cover" ? "back_cover"
+          : "content";
+        await sql`
+          INSERT INTO v2_report_pages (id, report_id, page_number, page_type)
+          VALUES (${pageId}, ${report_id}, ${i + 1}, ${pageType})
+        `;
+        await sql`
+          UPDATE v2_report_modules SET page_id = ${pageId} WHERE id = ${mod.id}
+        `;
+        mod.page_id = pageId;
+      }
+      pages = await sql`
+        SELECT id, page_number, page_type FROM v2_report_pages
+        WHERE report_id = ${report_id} ORDER BY page_number
+      `;
+    }
+
+    if (!pages.length) {
+      return json(event, 400, { error: "No pages or modules in report — nothing to render" });
+    }
+
     const brand = await fetchBrandContext(sql, report.brand_id);
 
     let cssBase = "";
