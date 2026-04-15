@@ -69,12 +69,29 @@ export const api = {
 
   addV2Module: (payload) => request("/v2-modules", { method: "POST", body: JSON.stringify(payload) }),
   updateV2Module: (id, payload) => request(`/v2-modules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  reorderV2Module: (id, newIndex) =>
+    request(`/v2-modules/${id}`, { method: "PATCH", body: JSON.stringify({ order_index: newIndex }) }),
   deleteV2Module: (id) => request(`/v2-modules/${id}`, { method: "DELETE" }),
 
   listV2Assets: (tenantId) => request(`/v2-assets?tenant_id=${encodeURIComponent(tenantId)}`),
   uploadV2Asset: (payload) => request("/v2-assets", { method: "POST", body: JSON.stringify(payload) }),
 
   renderV2Pdf: (payload) => request("/v2-render", { method: "POST", body: JSON.stringify(payload) }),
+
+  // Brand CSS bundle (font-face + tokens + design-system.css) — returns text/css
+  getV2BrandCss: async (reportId) => {
+    const { hubToken, editorToken } = useUiStore.getState();
+    const headers = {};
+    if (editorToken) headers["X-Editor-Token"] = editorToken;
+    else if (hubToken) headers.Authorization = `Bearer ${hubToken}`;
+    const res = await fetch(`/api/v2-brand-css?report_id=${encodeURIComponent(reportId)}`, { headers });
+    if (!res.ok) {
+      const err = new Error(`v2-brand-css HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return res.text();
+  },
 
   listV2Blueprints: (brandId) => request(`/v2-blueprints?brand_id=${encodeURIComponent(brandId)}`),
   saveV2Blueprint: (payload) => request("/v2-blueprints", { method: "POST", body: JSON.stringify(payload) }),

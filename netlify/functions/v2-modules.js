@@ -34,6 +34,7 @@ const updateSchema = z.object({
   content: z.record(z.string(), z.any()).optional(),
   style: z.record(z.string(), z.any()).optional(),
   html_content: z.string().optional(),
+  order_index: z.number().int().min(0).optional(),
 });
 
 function parseBody(event) {
@@ -200,12 +201,18 @@ export const handler = async (event) => {
 
       const parsed = updateSchema.safeParse(body);
       if (!parsed.success) return json(event, 400, { error: "Invalid payload", issues: parsed.error.issues });
-      if (!parsed.data.content && !parsed.data.style && !parsed.data.html_content) {
-        return json(event, 400, { error: "Provide html_content, content, and/or style" });
+      if (
+        !parsed.data.content &&
+        !parsed.data.style &&
+        !parsed.data.html_content &&
+        parsed.data.order_index === undefined
+      ) {
+        return json(event, 400, { error: "Provide html_content, content, style, or order_index" });
       }
 
       const mods = await sql`
-        SELECT m.id, m.report_id, m.module_type, m.content, m.style, m.html_content, r.brand_id, r.tenant_id
+        SELECT m.id, m.report_id, m.module_type, m.content, m.style, m.html_content, m.order_index,
+               r.brand_id, r.tenant_id
         FROM v2_report_modules m
         JOIN v2_reports r ON r.id = m.report_id
         WHERE m.id = ${moduleId} LIMIT 1
@@ -215,6 +222,49 @@ export const handler = async (event) => {
 
       const scopeErr = await assertEditorScopeForReport(mod.report_id);
       if (scopeErr) return scopeErr;
+
+      // Reorder-only request: adjust order_index of all modules to keep
+      // a contiguous sequence, then return the updated row.
+      if (
+        parsed.data.order_index !== undefined &&
+        !parsed.data.content &&
+        !parsed.data.style &&
+        !parsed.data.html_content
+      ) {
+        const targetIdx = parsed.data.order_index;
+        const currentIdx = mod.order_index;
+        if (targetIdx !== currentIdx) {
+          if (targetIdx > currentIdx) {
+            // Moving down: shift intermediate modules up
+            await sql`
+              UPDATE v2_report_modules
+              SET order_index = order_index - 1
+              WHERE report_id = ${mod.report_id}
+                AND order_index > ${currentIdx}
+                AND order_index <= ${targetIdx}
+            `;
+          } else {
+            // Moving up: shift intermediate modules down
+            await sql`
+              UPDATE v2_report_modules
+              SET order_index = order_index + 1
+              WHERE report_id = ${mod.report_id}
+                AND order_index >= ${targetIdx}
+                AND order_index < ${currentIdx}
+            `;
+          }
+          await sql`
+            UPDATE v2_report_modules
+            SET order_index = ${targetIdx}, updated_at = NOW()
+            WHERE id = ${moduleId}
+          `;
+        }
+        const rows = await sql`
+          SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, created_at, updated_at
+          FROM v2_report_modules WHERE id = ${moduleId}
+        `;
+        return json(event, 200, { item: rows[0] });
+      }
 
       const newHtmlContent = parsed.data.html_content ?? mod.html_content ?? null;
       const newContent = parsed.data.content || mod.content;

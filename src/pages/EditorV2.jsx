@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useUiStore } from "../stores/uiStore";
-import ModuleEditor from "../components/v2/ModuleEditor";
+import HtmlPreview from "../components/v2/HtmlPreview";
+import ModuleInspector from "../components/v2/ModuleInspector";
 import "./EditorV2.css";
 
 const MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout"];
@@ -10,14 +11,14 @@ const MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout"];
 /**
  * Scoped editor opened via HMAC capability token (`/editor/v2?token=...`).
  *
- * Flow:
- *  1. Parse `?token=` from URL.
- *  2. GET /api/editor-session?token=... → verify + scope (reportId, tenantId, brandId).
- *  3. Store token + scope in uiStore so api/client attaches X-Editor-Token header.
- *  4. Load report + modules and render a Hub-styled editor surface.
- *
- * The chrome is intentionally self-contained — this route is rendered
- * OUTSIDE the normal `<App />` layout so none of the SPA nav leaks in.
+ * Three-pane layout:
+ *   ┌───────────── topbar ──────────────┐
+ *   │ brand · title · PDF preview       │
+ *   ├─────┬─────────────────┬───────────┤
+ *   │ nav │ live preview    │ inspector │
+ *   │ list│ (brand-styled   │ (structured│
+ *   │     │  shadow DOM)    │  fields)   │
+ *   └─────┴─────────────────┴───────────┘
  */
 export default function EditorV2() {
   const [searchParams] = useSearchParams();
@@ -29,26 +30,30 @@ export default function EditorV2() {
   const [session, setSession] = useState(null);
   const [report, setReport] = useState(null);
   const [modules, setModules] = useState([]);
+  const [brandCss, setBrandCss] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  const [selectedId, setSelectedId] = useState(null);
   const [busy, setBusy] = useState({});
+  const [saveStatus, setSaveStatus] = useState(""); // 'saving' | 'saved' | ''
   const [newType, setNewType] = useState("layout");
   const [adding, setAdding] = useState(false);
   const [renderBusy, setRenderBusy] = useState(false);
   const [pdfUrl, setPdfUrl] = useState("");
 
-  // Verify token + load report
+  // Debounced save timer for contentEditable live edits
+  const saveTimerRef = useRef(null);
+
+  // Verify token + load report + brand CSS
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
       if (!token) {
         setError("Ingen token i länken. Be Claude skapa en ny redigeringslänk.");
         setLoading(false);
         return;
       }
-
       try {
         const res = await fetch(`/api/editor-session?token=${encodeURIComponent(token)}`);
         const data = await res.json();
@@ -63,10 +68,21 @@ export default function EditorV2() {
         setEditorAuth(token, scope);
         setSession(data);
 
-        const r = await api.getV2Report(data.report_id);
+        // Load report + modules + brand CSS in parallel
+        const [r, css] = await Promise.all([
+          api.getV2Report(data.report_id),
+          api.getV2BrandCss(data.report_id).catch((err) => {
+            console.warn("brand-css fetch failed:", err);
+            return "";
+          }),
+        ]);
         if (cancelled) return;
+
         setReport(r.item);
-        setModules(r.modules || []);
+        const sorted = [...(r.modules || [])].sort((a, b) => a.order_index - b.order_index);
+        setModules(sorted);
+        setBrandCss(css);
+        if (sorted.length > 0) setSelectedId(sorted[0].id);
       } catch (err) {
         if (!cancelled) setError(err.message);
       } finally {
@@ -77,32 +93,51 @@ export default function EditorV2() {
     return () => {
       cancelled = true;
       clearEditorAuth();
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const onModuleChange = (updated) => {
-    setModules((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
-  };
+  const selectedModule = useMemo(
+    () => modules.find((m) => m.id === selectedId) || null,
+    [modules, selectedId]
+  );
 
-  const onSaveModule = async (mod) => {
-    setBusy((b) => ({ ...b, [mod.id]: true }));
-    setError("");
-    try {
-      const res = await api.updateV2Module(mod.id, { content: mod.content, style: mod.style });
-      setModules((prev) => prev.map((m) => (m.id === mod.id ? res.item : m)));
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy((b) => ({ ...b, [mod.id]: false }));
-    }
-  };
+  // ──────────────── module operations ────────────────
 
-  const onSaveHtml = async (moduleId, newHtml) => {
-    setBusy((b) => ({ ...b, [moduleId]: true }));
+  const onSaveHtml = async (moduleId, newHtml, { silent = false } = {}) => {
+    if (!silent) setBusy((b) => ({ ...b, [moduleId]: true }));
+    setSaveStatus("saving");
     setError("");
     try {
       const res = await api.updateV2Module(moduleId, { html_content: newHtml });
+      setModules((prev) => prev.map((m) => (m.id === moduleId ? res.item : m)));
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus((s) => (s === "saved" ? "" : s)), 1500);
+    } catch (err) {
+      setError(err.message);
+      setSaveStatus("");
+    } finally {
+      if (!silent) setBusy((b) => ({ ...b, [moduleId]: false }));
+    }
+  };
+
+  // Debounced save for contentEditable live edits. The HtmlPreview
+  // fires onHtmlChange on every commit (blur/Enter); we still debounce
+  // so rapid consecutive edits collapse into one PATCH.
+  const onLiveHtmlChange = (moduleId, newHtml) => {
+    setSaveStatus("saving");
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      onSaveHtml(moduleId, newHtml, { silent: true });
+    }, 400);
+  };
+
+  const onSaveContent = async (moduleId, patch) => {
+    setBusy((b) => ({ ...b, [moduleId]: true }));
+    setError("");
+    try {
+      const res = await api.updateV2Module(moduleId, patch);
       setModules((prev) => prev.map((m) => (m.id === moduleId ? res.item : m)));
     } catch (err) {
       setError(err.message);
@@ -115,7 +150,11 @@ export default function EditorV2() {
     if (!confirm(`Ta bort modul "${mod.module_type}"?`)) return;
     try {
       await api.deleteV2Module(mod.id);
-      setModules((prev) => prev.filter((m) => m.id !== mod.id));
+      setModules((prev) => {
+        const next = prev.filter((m) => m.id !== mod.id);
+        if (selectedId === mod.id) setSelectedId(next[0]?.id ?? null);
+        return next;
+      });
     } catch (err) {
       setError(err.message);
     }
@@ -137,6 +176,7 @@ export default function EditorV2() {
         after_module_id: lastId,
       });
       setModules((prev) => [...prev, res.item]);
+      setSelectedId(res.item.id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -157,6 +197,54 @@ export default function EditorV2() {
       setRenderBusy(false);
     }
   };
+
+  // ──────────────── drag to reorder ────────────────
+  const [dragId, setDragId] = useState(null);
+  const [dropBeforeId, setDropBeforeId] = useState(null);
+
+  const handleDragStart = (e, id) => {
+    setDragId(id);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", id);
+  };
+
+  const handleDragOver = (e, id) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDropBeforeId(id);
+  };
+
+  const handleDrop = async (e, targetId) => {
+    e.preventDefault();
+    const sourceId = dragId;
+    setDragId(null);
+    setDropBeforeId(null);
+    if (!sourceId || sourceId === targetId) return;
+
+    const sourceIdx = modules.findIndex((m) => m.id === sourceId);
+    const targetIdx = modules.findIndex((m) => m.id === targetId);
+    if (sourceIdx === -1 || targetIdx === -1) return;
+
+    // Optimistic local reorder
+    const next = [...modules];
+    const [moved] = next.splice(sourceIdx, 1);
+    next.splice(targetIdx, 0, moved);
+    // Rewrite indices to stay contiguous for display
+    const relabeled = next.map((m, i) => ({ ...m, order_index: i }));
+    setModules(relabeled);
+
+    try {
+      const res = await api.reorderV2Module(sourceId, targetIdx);
+      // Server returns authoritative row — keep other rows as-is
+      setModules((prev) => prev.map((m) => (m.id === sourceId ? { ...m, ...res.item } : m)));
+    } catch (err) {
+      setError(`Kunde inte flytta modul: ${err.message}`);
+      // Roll back on failure
+      setModules(modules);
+    }
+  };
+
+  // ──────────────── render ────────────────
 
   if (loading) {
     return (
@@ -180,16 +268,25 @@ export default function EditorV2() {
   }
 
   return (
-    <div className="smyra-editor">
+    <div className="smyra-editor editor-v2-layout">
       <header className="editor-topbar">
         <div className="editor-brand">
           <div className="editor-brand-mark">✦</div>
           <div className="editor-brand-text">
-            <span className="editor-brand-title">Smyra Editor</span>
-            <span className="editor-brand-sub">Report Engine v2</span>
+            <span className="editor-brand-title">{report?.title || "Smyra Editor"}</span>
+            <span className="editor-brand-sub">
+              {report?.document_type} · {modules.length} moduler
+            </span>
           </div>
         </div>
         <div className="editor-topbar-actions">
+          {saveStatus === "saving" && <span className="save-pill saving">Sparar…</span>}
+          {saveStatus === "saved" && <span className="save-pill saved">✓ Sparat</span>}
+          {pdfUrl && (
+            <a className="btn-ghost" href={pdfUrl} target="_blank" rel="noopener noreferrer">
+              Öppna PDF ↗
+            </a>
+          )}
           <button
             className="btn"
             type="button"
@@ -201,34 +298,37 @@ export default function EditorV2() {
         </div>
       </header>
 
-      <main className="editor-wrap">
-        <div className="editor-header">
-          <div className="editor-eyebrow">
-            {report.document_type} · {report.status}
+      {error ? <div className="error" style={{ margin: "12px 24px" }}>{error}</div> : null}
+
+      <div className="editor-v2-body">
+        {/* ─── Left: module navigator ─── */}
+        <aside className="editor-sidebar">
+          <div className="sidebar-header">
+            <span className="sidebar-title">Sidor</span>
+            <span className="sidebar-count">{modules.length}</span>
           </div>
-          <h1 className="editor-title">{report.title}</h1>
-          <p className="editor-sub">
-            Redigera moduler direkt och förhandsgranska som PDF. Ändringar sparas
-            per modul när du klickar Spara.
-          </p>
-        </div>
-
-        {error ? <div className="error">{error}</div> : null}
-
-        {pdfUrl ? (
-          <div className="pdf-link-row">
-            <span>📄 Draft-PDF klar:</span>
-            <a href={pdfUrl} target="_blank" rel="noopener noreferrer">
-              Öppna i ny flik ↗
-            </a>
+          <div className="sidebar-list">
+            {modules.map((mod, idx) => (
+              <SidebarItem
+                key={mod.id}
+                module={mod}
+                index={idx}
+                selected={selectedId === mod.id}
+                isDropTarget={dropBeforeId === mod.id}
+                isDragging={dragId === mod.id}
+                onSelect={() => setSelectedId(mod.id)}
+                onDragStart={(e) => handleDragStart(e, mod.id)}
+                onDragOver={(e) => handleDragOver(e, mod.id)}
+                onDrop={(e) => handleDrop(e, mod.id)}
+                onDelete={() => onDeleteModule(mod)}
+              />
+            ))}
           </div>
-        ) : null}
-
-        <section className="card">
-          <div className="card-title">Lägg till modul</div>
-          <div className="add-module">
-            <div>
-              <label htmlFor="new-module-type">Modultyp</label>
+          <div className="sidebar-footer">
+            <label htmlFor="new-module-type" className="sidebar-addlabel">
+              Ny modul
+            </label>
+            <div className="sidebar-addrow">
               <select
                 id="new-module-type"
                 value={newType}
@@ -240,37 +340,136 @@ export default function EditorV2() {
                   </option>
                 ))}
               </select>
+              <button
+                className="btn-ghost"
+                type="button"
+                disabled={adding}
+                onClick={onAddModule}
+              >
+                {adding ? "…" : "+"}
+              </button>
             </div>
-            <button className="btn" type="button" disabled={adding} onClick={onAddModule}>
-              {adding ? "Lägger till…" : "Lägg till"}
-            </button>
           </div>
-        </section>
+        </aside>
 
-        <section className="card">
-          <div className="card-title">
-            Moduler
-            <span className="card-title-count">{modules.length} st</span>
-          </div>
-          {modules.length === 0 ? (
-            <p className="hint">Inga moduler än. Lägg till en ovan för att börja.</p>
+        {/* ─── Middle: live preview ─── */}
+        <main className="editor-canvas">
+          {selectedModule ? (
+            <>
+              <div className="canvas-meta">
+                <span className="canvas-badge">
+                  {(selectedModule.order_index ?? 0) + 1}
+                </span>
+                <span className="canvas-title">{moduleDisplayName(selectedModule)}</span>
+                <span className="canvas-hint">Dubbelklicka på text för att redigera · Klicka på element för att ta bort eller duplicera</span>
+              </div>
+              <HtmlPreview
+                html={selectedModule.html_cache}
+                brandCss={brandCss}
+                onHtmlChange={(newHtml) => onLiveHtmlChange(selectedModule.id, newHtml)}
+                zoom={0.55}
+              />
+            </>
           ) : (
-            <div>
-              {modules.map((mod) => (
-                <ModuleEditor
-                  key={mod.id}
-                  module={mod}
-                  busy={!!busy[mod.id]}
-                  onChange={onModuleChange}
-                  onSave={onSaveModule}
-                  onSaveHtml={onSaveHtml}
-                  onDelete={() => onDeleteModule(mod)}
-                />
-              ))}
+            <div className="canvas-empty">
+              <p>Ingen modul vald. Välj en från listan till vänster.</p>
             </div>
           )}
-        </section>
-      </main>
+        </main>
+
+        {/* ─── Right: inspector ─── */}
+        <aside className="editor-inspector">
+          {selectedModule ? (
+            <ModuleInspector
+              module={selectedModule}
+              busy={!!busy[selectedModule.id]}
+              onSaveContent={(patch) => onSaveContent(selectedModule.id, patch)}
+              onDelete={() => onDeleteModule(selectedModule)}
+            />
+          ) : (
+            <p className="hint">Välj en modul för att se fält och åtgärder.</p>
+          )}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────
+
+function moduleDisplayName(mod) {
+  // Prefer content title / chapter_title, then first heading from html_cache, fallback to type.
+  const content = mod.content || {};
+  if (content.title) return content.title;
+  if (content.chapter_title) return content.chapter_title;
+  if (content.headline) return content.headline;
+
+  const html = mod.html_cache || "";
+  const match = html.match(/<h[1-3][^>]*>([^<]{3,80})<\/h[1-3]>/i);
+  if (match) return match[1].trim();
+
+  return mod.module_type || "Modul";
+}
+
+function moduleThumbColor(type) {
+  const palette = {
+    cover: "linear-gradient(160deg, #f5e0ec, #f0bfd6)",
+    back_cover: "linear-gradient(160deg, #e5d5f0, #cab2e2)",
+    chapter_break: "linear-gradient(160deg, #ffe6cc, #ffc999)",
+    layout: "linear-gradient(160deg, #e4f0e4, #c5e0c5)",
+    freeform: "linear-gradient(160deg, #e0ebf5, #bcd4ec)",
+  };
+  return palette[type] || palette.freeform;
+}
+
+// ─── SidebarItem ───────────────────────────────────────────────────────
+function SidebarItem({
+  module: mod,
+  index,
+  selected,
+  isDropTarget,
+  isDragging,
+  onSelect,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDelete,
+}) {
+  return (
+    <div
+      className={[
+        "sidebar-item",
+        selected && "is-selected",
+        isDropTarget && "is-drop-target",
+        isDragging && "is-dragging",
+      ].filter(Boolean).join(" ")}
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onClick={onSelect}
+    >
+      <div
+        className="sidebar-thumb"
+        style={{ background: moduleThumbColor(mod.module_type) }}
+      >
+        <span className="sidebar-thumb-index">{index + 1}</span>
+      </div>
+      <div className="sidebar-meta">
+        <div className="sidebar-name">{moduleDisplayName(mod)}</div>
+        <div className="sidebar-type">{mod.module_type}</div>
+      </div>
+      <button
+        className="sidebar-delete"
+        type="button"
+        title="Ta bort modul"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        ×
+      </button>
     </div>
   );
 }

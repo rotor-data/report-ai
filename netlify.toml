@@ -3,6 +3,10 @@
   publish = "dist"
   functions = "netlify/functions"
 
+[functions]
+  # Bundle the static assets folder so functions can read design-system.css etc.
+  included_files = ["netlify/functions/assets/**"]
+
 [dev]
   command = "npm run dev"
   port = 8888

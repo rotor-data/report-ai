@@ -1,0 +1,793 @@
+/*
+ * design-system.css — Print-first CSS design system for smyra-render.
+ *
+ * Brand-agnostic: all colors, fonts, and spacing derive from CSS custom
+ * properties (--primary, --font-display, etc.) injected per brand.
+ *
+ * Target: WeasyPrint (CSS Grid, Flexbox, @page rules).
+ * Units: mm for spacing (print), pt for typography.
+ *
+ * Claude writes module HTML using these classes. The render service
+ * wraps modules in base.jinja2 (which includes this file) and renders
+ * via WeasyPrint.
+ */
+
+
+/* ================================================================
+   1. PAGE CONTAINERS
+   ================================================================ */
+
+.page {
+  width: 210mm;
+  height: 297mm;
+  padding: var(--mg-top) var(--mg-inner) var(--mg-bottom) var(--mg-outer);
+  position: relative;
+  overflow: hidden;
+  page-break-after: always;
+}
+
+.page--full-bleed {
+  width: 210mm;
+  height: 297mm;
+  padding: 0;
+  position: relative;
+  overflow: hidden;
+  page-break-after: always;
+}
+
+/* Full-bleed color variants */
+.page--dark {
+  background: var(--primary-dark, var(--primary));
+  color: #ffffff;
+}
+.page--primary {
+  background: var(--primary);
+  color: #ffffff;
+}
+.page--accent {
+  background: var(--accent);
+  color: #ffffff;
+}
+.page--light {
+  background: var(--bg-light);
+}
+
+
+/* ================================================================
+   2. GRID LAYOUT
+   ================================================================ */
+
+.grid {
+  display: grid;
+  gap: var(--col-gap);
+  width: 100%;
+}
+
+.grid--1   { grid-template-columns: 1fr; }
+.grid--2   { grid-template-columns: 1fr 1fr; }
+.grid--3   { grid-template-columns: 1fr 1fr 1fr; }
+.grid--4   { grid-template-columns: 1fr 1fr 1fr 1fr; }
+
+/* Asymmetric presets */
+.grid--primary    { grid-template-columns: 2fr 1fr; }
+.grid--sidebar    { grid-template-columns: 3fr 1fr; }
+.grid--wide-left  { grid-template-columns: 3fr 2fr; }
+.grid--quarter    { grid-template-columns: 1fr 3fr; }
+.grid--golden     { grid-template-columns: 1.618fr 1fr; }
+.grid--asymmetric { grid-template-columns: 2fr 1fr 1fr; }
+
+/* Cell alignment */
+.cell--top     { align-self: start; }
+.cell--center  { align-self: center; }
+.cell--bottom  { align-self: end; }
+.cell--stretch { align-self: stretch; }
+.cell--span-2  { grid-column: span 2; }
+.cell--span-3  { grid-column: span 3; }
+.cell--span-full { grid-column: 1 / -1; }
+
+
+/* ================================================================
+   3. TYPOGRAPHY SCALE
+   ================================================================ */
+
+/* Display — hero headings, cover titles */
+.t-display {
+  font-family: var(--font-display);
+  font-size: 30pt;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.t-display-xl {
+  font-family: var(--font-display);
+  font-size: 42pt;
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+.t-display-lg {
+  font-family: var(--font-display);
+  font-size: 36pt;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.t-display-sm {
+  font-family: var(--font-display);
+  font-size: 24pt;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+/* Heading hierarchy */
+.t-h1 {
+  font-family: var(--font-display);
+  font-size: 20pt;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--primary);
+}
+.t-h2 {
+  font-family: var(--font-heading);
+  font-size: 14pt;
+  font-weight: 400;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.t-h3 {
+  font-family: var(--font-display);
+  font-size: 9pt;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--primary);
+}
+
+/* Body & reading text */
+.t-subheading {
+  font-family: var(--font-heading);
+  font-size: 11pt;
+  font-weight: 400;
+  line-height: 1.35;
+}
+.t-intro {
+  font-size: 12pt;
+  font-weight: 300;
+  line-height: 1.55;
+}
+.t-body {
+  font-size: 10.5pt;
+  font-weight: 300;
+  line-height: 1.65;
+}
+.t-body-lg {
+  font-size: 12pt;
+  line-height: 1.55;
+}
+.t-body-sm {
+  font-size: 9pt;
+  line-height: 1.5;
+}
+
+/* Labels & metadata */
+.t-label {
+  font-size: 7.5pt;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--primary);
+}
+.t-overline {
+  font-size: 8pt;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+.t-caption {
+  font-size: 7.5pt;
+  color: var(--text-muted);
+}
+
+/* KPI typography */
+.t-kpi-value {
+  font-family: var(--font-display);
+  font-size: 20pt;
+  font-weight: 600;
+  color: var(--primary);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.t-kpi-value-lg {
+  font-family: var(--font-display);
+  font-size: 36pt;
+  font-weight: 600;
+  color: var(--primary);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.t-kpi-value-xl {
+  font-family: var(--font-display);
+  font-size: 48pt;
+  font-weight: 600;
+  color: var(--primary);
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.t-kpi-label {
+  font-size: 8pt;
+  color: var(--text-muted);
+}
+
+/* Pullquote */
+.t-pullquote {
+  font-family: var(--font-heading);
+  font-size: 16pt;
+  font-style: italic;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
+/* Color modifiers */
+.t-white    { color: #ffffff; }
+.t-white-80 { color: rgba(255, 255, 255, 0.80); }
+.t-white-60 { color: rgba(255, 255, 255, 0.60); }
+.t-white-35 { color: rgba(255, 255, 255, 0.35); }
+.t-primary  { color: var(--primary); }
+.t-accent   { color: var(--accent); }
+.t-muted    { color: var(--text-muted); }
+
+
+/* ================================================================
+   4. BACKGROUNDS & SURFACES
+   ================================================================ */
+
+.bg-primary      { background: var(--primary); color: #ffffff; }
+.bg-primary-dark { background: var(--primary-dark, var(--primary)); color: #ffffff; }
+.bg-accent       { background: var(--accent); color: #ffffff; }
+.bg-light        { background: var(--bg-light); }
+.bg-white        { background: #ffffff; }
+
+/* Surfaces — contained blocks */
+.surface {
+  padding: 4mm;
+  page-break-inside: avoid;
+}
+.surface--card {
+  background: var(--bg-light);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--primary);
+  padding: 4mm;
+  page-break-inside: avoid;
+}
+.surface--card-accent {
+  background: var(--bg-light);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--accent);
+  padding: 4mm;
+  page-break-inside: avoid;
+}
+.surface--bordered {
+  border: 1px solid var(--border);
+  padding: 4mm;
+  page-break-inside: avoid;
+}
+.surface--filled {
+  background: var(--bg-light);
+  padding: 6mm;
+  page-break-inside: avoid;
+}
+.surface--dark {
+  background: var(--primary);
+  color: #ffffff;
+  padding: 6mm;
+  page-break-inside: avoid;
+}
+
+
+/* ================================================================
+   5. DECORATIVE ELEMENTS
+   ================================================================ */
+
+.accent-line {
+  width: 20mm;
+  height: 2px;
+  background: var(--accent);
+}
+.accent-line--primary { background: var(--primary); }
+.accent-line--white   { background: #ffffff; }
+.accent-line--wide    { width: 40mm; }
+.accent-line--narrow  { width: 12mm; }
+
+.divider {
+  width: 100%;
+  height: 0;
+  border-top: 0.5px solid var(--border);
+}
+.divider--primary { border-top: 1.5px solid var(--primary); }
+.divider--accent  { border-top: 1.5px solid var(--accent); }
+
+.section-marker {
+  width: 20mm;
+  height: 2px;
+  background: var(--accent);
+  margin-bottom: 4mm;
+}
+.section-marker--primary {
+  background: var(--primary);
+}
+
+.watermark {
+  font-family: var(--font-display);
+  font-size: 140pt;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: rgba(255, 255, 255, 0.10);
+  position: absolute;
+  pointer-events: none;
+}
+
+
+/* ================================================================
+   6. SPACING UTILITIES (mm-based for print)
+   ================================================================ */
+
+/* Margin top */
+.mt-0  { margin-top: 0; }
+.mt-1  { margin-top: 1mm; }
+.mt-2  { margin-top: 2mm; }
+.mt-3  { margin-top: 3mm; }
+.mt-4  { margin-top: 4mm; }
+.mt-6  { margin-top: 6mm; }
+.mt-8  { margin-top: 8mm; }
+.mt-10 { margin-top: 10mm; }
+.mt-12 { margin-top: 12mm; }
+.mt-15 { margin-top: 15mm; }
+.mt-20 { margin-top: 20mm; }
+
+/* Margin bottom */
+.mb-0  { margin-bottom: 0; }
+.mb-1  { margin-bottom: 1mm; }
+.mb-2  { margin-bottom: 2mm; }
+.mb-3  { margin-bottom: 3mm; }
+.mb-4  { margin-bottom: 4mm; }
+.mb-6  { margin-bottom: 6mm; }
+.mb-8  { margin-bottom: 8mm; }
+.mb-10 { margin-bottom: 10mm; }
+.mb-12 { margin-bottom: 12mm; }
+.mb-15 { margin-bottom: 15mm; }
+.mb-20 { margin-bottom: 20mm; }
+
+/* Padding */
+.p-0  { padding: 0; }
+.p-2  { padding: 2mm; }
+.p-4  { padding: 4mm; }
+.p-6  { padding: 6mm; }
+.p-8  { padding: 8mm; }
+.p-10 { padding: 10mm; }
+.p-15 { padding: 15mm; }
+.p-20 { padding: 20mm; }
+
+.px-4  { padding-left: 4mm;  padding-right: 4mm; }
+.px-8  { padding-left: 8mm;  padding-right: 8mm; }
+.px-12 { padding-left: 12mm; padding-right: 12mm; }
+.px-20 { padding-left: 20mm; padding-right: 20mm; }
+.px-25 { padding-left: 25mm; padding-right: 25mm; }
+.px-30 { padding-left: 30mm; padding-right: 30mm; }
+
+.py-4  { padding-top: 4mm;  padding-bottom: 4mm; }
+.py-6  { padding-top: 6mm;  padding-bottom: 6mm; }
+.py-8  { padding-top: 8mm;  padding-bottom: 8mm; }
+.py-10 { padding-top: 10mm; padding-bottom: 10mm; }
+.py-12 { padding-top: 12mm; padding-bottom: 12mm; }
+.py-15 { padding-top: 15mm; padding-bottom: 15mm; }
+.py-20 { padding-top: 20mm; padding-bottom: 20mm; }
+.py-30 { padding-top: 30mm; padding-bottom: 30mm; }
+.py-40 { padding-top: 40mm; padding-bottom: 40mm; }
+
+/* Gap (for flex/grid containers) */
+.gap-2 { gap: 2mm; }
+.gap-3 { gap: 3mm; }
+.gap-4 { gap: 4mm; }
+.gap-6 { gap: 6mm; }
+.gap-8 { gap: 8mm; }
+.gap-10 { gap: 10mm; }
+.gap-12 { gap: 12mm; }
+
+
+/* ================================================================
+   7. FLEXBOX HELPERS
+   ================================================================ */
+
+.flex         { display: flex; }
+.flex-col     { flex-direction: column; }
+.flex-row     { flex-direction: row; }
+.flex-wrap    { flex-wrap: wrap; }
+.flex-1       { flex: 1; }
+
+.items-start    { align-items: flex-start; }
+.items-center   { align-items: center; }
+.items-end      { align-items: flex-end; }
+.items-stretch  { align-items: stretch; }
+
+.justify-start   { justify-content: flex-start; }
+.justify-center  { justify-content: center; }
+.justify-end     { justify-content: flex-end; }
+.justify-between { justify-content: space-between; }
+
+.text-center { text-align: center; }
+.text-right  { text-align: right; }
+.text-left   { text-align: left; }
+
+
+/* ================================================================
+   8. COMPONENT PATTERNS
+   ================================================================ */
+
+/* --- KPI Card --- */
+.kpi-card {
+  background: var(--bg-light);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--primary);
+  padding: 4mm;
+  page-break-inside: avoid;
+}
+.kpi-card--accent {
+  border-top-color: var(--accent);
+}
+.kpi-card--minimal {
+  background: transparent;
+  border: none;
+  border-top: 2px solid var(--primary);
+  padding: 3mm 0;
+}
+.kpi-card__value {
+  font-family: var(--font-display);
+  font-size: 20pt;
+  font-weight: 600;
+  color: var(--primary);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.kpi-card__label {
+  font-size: 8pt;
+  color: var(--text-muted);
+  margin-top: 1.5mm;
+}
+.kpi-card__trend {
+  font-size: 7.5pt;
+  margin-top: 1mm;
+  color: var(--text-muted);
+}
+
+/* KPI Grid — auto-fit responsive */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(35mm, 1fr));
+  gap: 4mm;
+}
+
+/* --- Fact Strip --- */
+.fact-strip {
+  display: flex;
+  justify-content: space-between;
+  padding: 4mm 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.fact-strip__item {
+  text-align: center;
+  flex: 1;
+}
+.fact-strip__item + .fact-strip__item {
+  border-left: 1px solid var(--border);
+}
+.fact-strip__value {
+  font-family: var(--font-display);
+  font-size: 16pt;
+  font-weight: 600;
+  color: var(--primary);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.fact-strip__label {
+  font-size: 7pt;
+  color: var(--text-muted);
+  margin-top: 1mm;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* --- Pullquote --- */
+.pullquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 6mm;
+  page-break-inside: avoid;
+}
+.pullquote--primary {
+  border-left-color: var(--primary);
+}
+.pullquote__text {
+  font-family: var(--font-heading);
+  font-size: 16pt;
+  font-style: italic;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+.pullquote__attribution {
+  font-size: 8.5pt;
+  color: var(--text-muted);
+  margin-top: 2mm;
+  font-style: normal;
+}
+
+/* --- Aside / Callout --- */
+.aside {
+  border-left: 1.5px solid var(--primary);
+  padding-left: 5mm;
+}
+.aside--accent {
+  border-left-color: var(--accent);
+}
+
+.callout {
+  border-left: 3px solid var(--accent);
+  padding-left: 5mm;
+  background: var(--bg-light);
+  padding: 4mm 4mm 4mm 6mm;
+}
+.callout--primary {
+  border-left-color: var(--primary);
+}
+
+/* --- Table --- */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9pt;
+}
+.table th {
+  text-align: left;
+  padding: 2mm 3mm;
+  border-bottom: 1.5px solid var(--primary);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 7.5pt;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--primary);
+}
+.table td {
+  padding: 2mm 3mm;
+  border-bottom: 0.5px solid var(--border);
+  color: var(--text);
+}
+.table tr:nth-child(even) td {
+  background: var(--bg-light);
+}
+.table__total-row td {
+  border-top: 1.5px solid var(--primary);
+  font-weight: 600;
+  background: transparent;
+}
+.table--compact td,
+.table--compact th {
+  padding: 1.5mm 2mm;
+}
+.table--no-stripe tr:nth-child(even) td {
+  background: transparent;
+}
+
+/* --- Timeline --- */
+.timeline {
+  padding: 2mm 0;
+}
+.timeline__item {
+  display: flex;
+  margin-bottom: 3mm;
+  page-break-inside: avoid;
+}
+.timeline__date {
+  min-width: 22mm;
+  font-family: var(--font-display);
+  font-size: 8pt;
+  font-weight: 600;
+  color: var(--primary);
+  padding-top: 0.5mm;
+}
+.timeline__content {
+  flex: 1;
+  padding-left: 4mm;
+  border-left: 2px solid var(--border);
+}
+.timeline__title {
+  font-weight: 600;
+  font-size: 10pt;
+  margin-bottom: 1mm;
+}
+.timeline__desc {
+  font-size: 9pt;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* --- Media --- */
+.media {
+  page-break-inside: avoid;
+}
+.media__img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+.media__img--rounded {
+  border-radius: 2mm;
+}
+.media__img--shadow {
+  box-shadow: 0 1mm 3mm rgba(0, 0, 0, 0.12);
+}
+.media__caption {
+  font-size: 7.5pt;
+  color: var(--text-muted);
+  margin-top: 2mm;
+}
+.media__placeholder {
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: var(--bg-light);
+  border: 1px dashed var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 9pt;
+}
+
+
+/* ================================================================
+   9. COVER / CHAPTER / BACK COVER HELPERS
+   ================================================================ */
+
+/* Cover page — hero zone (flex child, grows to fill) */
+.cover-hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 20mm 25mm 20mm 30mm;
+  min-height: 170mm;
+  position: relative;
+}
+
+/* Cover page — bottom bar */
+.cover-bar {
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 12mm 25mm 12mm 30mm;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Chapter break */
+.chapter-break {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 40mm 25mm 40mm 30mm;
+  position: relative;
+  overflow: hidden;
+}
+.chapter-number {
+  font-family: var(--font-display);
+  font-size: 130pt;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.10);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+.chapter-number--subtle {
+  font-size: 180pt;
+  color: rgba(255, 255, 255, 0.06);
+  position: absolute;
+  right: -10mm;
+  bottom: 20mm;
+}
+
+/* Back cover */
+.back-cover-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 40mm 30mm;
+  text-align: center;
+}
+.back-cover-footer {
+  border-top: 1px solid var(--border);
+  padding: 10mm 25mm;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+
+/* ================================================================
+   10. PAGE FOOTER
+   ================================================================ */
+
+.page-footer {
+  position: absolute;
+  bottom: 10mm;
+  left: var(--mg-outer);
+  right: var(--mg-inner);
+  border-top: 0.5px solid var(--border);
+  padding-top: 3mm;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 7.5pt;
+  color: var(--text-muted);
+}
+
+
+/* ================================================================
+   11. PRINT & LAYOUT HELPERS
+   ================================================================ */
+
+.no-break        { page-break-inside: avoid; }
+.page-break      { page-break-after: always; }
+
+.relative        { position: relative; }
+.absolute        { position: absolute; }
+.overflow-hidden { overflow: hidden; }
+
+.w-full    { width: 100%; }
+.max-w-100 { max-width: 100mm; }
+.max-w-120 { max-width: 120mm; }
+.max-w-140 { max-width: 140mm; }
+.max-w-160 { max-width: 160mm; }
+
+.opacity-90 { opacity: 0.90; }
+.opacity-80 { opacity: 0.80; }
+.opacity-65 { opacity: 0.65; }
+.opacity-50 { opacity: 0.50; }
+.opacity-35 { opacity: 0.35; }
+.opacity-20 { opacity: 0.20; }
+.opacity-10 { opacity: 0.10; }
+
+/* Section auto-spacing (between sibling .section elements) */
+.section + .section {
+  margin-top: var(--section-gap);
+}
+
+
+/* ================================================================
+   12. INLINE STYLE ESCAPE HATCHES
+   ================================================================
+
+   Claude can always use inline style="" for one-off adjustments.
+   The design system classes handle 90% of cases; inline styles
+   handle brand-specific tweaks, exact positioning, or creative
+   choices that don't fit a utility class.
+
+   Convention for assets in Claude-authored HTML:
+
+   Images:
+     <img data-asset-ref="uuid" alt="..." class="media__img">
+     Server resolves data-asset-ref to src (placeholder in draft,
+     base64 in final).
+
+   Charts:
+     <div data-chart='{"type":"bar","series":[...]}' class="w-full no-break"></div>
+     Server renders to inline SVG using charts.py.
+
+   Logos:
+     <img data-logo="primary" class="..." />
+     <img data-logo="white" class="..." />
+     Server resolves to brand logo variant.
+
+   ================================================================ */
