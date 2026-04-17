@@ -9,23 +9,152 @@ const EDITABLE_TEXT_TAGS = new Set([
   "p","h1","h2","h3","h4","h5","h6","span","li","td","th","blockquote","figcaption",
 ]);
 
+// Standard paper sizes in millimeters. The preview tries to detect which
+// one the module HTML targets and size the frame accordingly.
+const PAPER_SIZES = {
+  a4_portrait:  { w: 210, h: 297 },
+  a4_landscape: { w: 297, h: 210 },
+  a5_portrait:  { w: 148, h: 210 },
+  a5_landscape: { w: 210, h: 148 },
+  letter_portrait:  { w: 216, h: 279 },
+  letter_landscape: { w: 279, h: 216 },
+  a3_portrait:  { w: 297, h: 420 },
+  a3_landscape: { w: 420, h: 297 },
+};
+
+/**
+ * Detect the page format of a module by inspecting its HTML.
+ * Precedence:
+ *   1. Explicit class hints on a .page element (.page--landscape, .page--a5, .page--letter, ...)
+ *   2. Inline width/height style on a .page element
+ *   3. Default to A4 portrait
+ */
+function detectPageSize(html) {
+  if (!html) return PAPER_SIZES.a4_portrait;
+  const probe = document.createElement("div");
+  probe.innerHTML = html;
+  const page = probe.querySelector(".page");
+  if (!page) return PAPER_SIZES.a4_portrait;
+
+  const cls = page.className || "";
+  const has = (t) => cls.includes(t);
+  if (has("page--a3-landscape")) return PAPER_SIZES.a3_landscape;
+  if (has("page--a3")) return PAPER_SIZES.a3_portrait;
+  if (has("page--letter-landscape")) return PAPER_SIZES.letter_landscape;
+  if (has("page--letter")) return PAPER_SIZES.letter_portrait;
+  if (has("page--a5-landscape")) return PAPER_SIZES.a5_landscape;
+  if (has("page--a5")) return PAPER_SIZES.a5_portrait;
+  if (has("page--landscape")) return PAPER_SIZES.a4_landscape;
+
+  // Inline style: width:297mm;height:210mm etc.
+  const style = page.getAttribute("style") || "";
+  const widthMatch = style.match(/width\s*:\s*(\d+(?:\.\d+)?)mm/i);
+  const heightMatch = style.match(/height\s*:\s*(\d+(?:\.\d+)?)mm/i);
+  if (widthMatch && heightMatch) {
+    const w = Number(widthMatch[1]);
+    const h = Number(heightMatch[1]);
+    if (w > 50 && h > 50) return { w, h };
+  }
+  // width/height swap on element = landscape hint
+  if (widthMatch && !heightMatch) {
+    const w = Number(widthMatch[1]);
+    if (w > 250) return PAPER_SIZES.a4_landscape;
+  }
+
+  return PAPER_SIZES.a4_portrait;
+}
+
+/**
+ * Rewrite references inside the injected HTML so the shadow DOM
+ * can actually load logos and tenant assets. smyra-render does this
+ * on the server, but the editor needs to do it client-side so the
+ * preview isn't peppered with broken-image placeholders.
+ */
+function resolveAssetRefs(root, logos, assets) {
+  // ── data-logo="variant" → resolve to brand_logos row
+  const logoByVariant = new Map();
+  for (const logo of logos || []) {
+    if (logo?.data_uri) logoByVariant.set(logo.variant, logo.data_uri);
+  }
+  // Fallback order when a module asks for a variant we don't have:
+  // default → primary → first whatever we do have.
+  const fallbackLogo =
+    logoByVariant.get("default") ||
+    logoByVariant.get("primary") ||
+    (logos && logos[0]?.data_uri) ||
+    null;
+
+  root.querySelectorAll("img[data-logo], [data-logo]").forEach((el) => {
+    const variant = el.getAttribute("data-logo") || "default";
+    const src = logoByVariant.get(variant) || fallbackLogo;
+    if (!src) return;
+    if (el.tagName.toLowerCase() === "img") {
+      el.setAttribute("src", src);
+    } else {
+      // Non-img element with data-logo: turn it into an inline background.
+      el.style.backgroundImage = `url("${src}")`;
+      el.style.backgroundRepeat = "no-repeat";
+      el.style.backgroundPosition = "center";
+      el.style.backgroundSize = "contain";
+    }
+  });
+
+  // ── data-asset-ref="uuid" → resolve to tenant_assets.url
+  const assetById = new Map();
+  for (const a of assets || []) {
+    if (a?.id && a?.url) assetById.set(String(a.id), a.url);
+  }
+  root.querySelectorAll("img[data-asset-ref], [data-asset-ref]").forEach((el) => {
+    const ref = el.getAttribute("data-asset-ref");
+    const src = assetById.get(String(ref));
+    if (!src) return;
+    if (el.tagName.toLowerCase() === "img") {
+      el.setAttribute("src", src);
+    } else {
+      el.style.backgroundImage = `url("${src}")`;
+      el.style.backgroundRepeat = "no-repeat";
+      el.style.backgroundPosition = "center";
+      el.style.backgroundSize = "cover";
+    }
+  });
+
+  // ── charts rendered as <div data-chart="..."> stay empty in the
+  // editor preview (smyra-render generates the SVG on the server).
+  // Draw a visible placeholder so the author sees "chart here".
+  root.querySelectorAll("[data-chart]").forEach((el) => {
+    if (el.childElementCount > 0) return; // already rendered
+    const placeholder = document.createElement("div");
+    placeholder.textContent = "📊 Diagram (renderas i PDF)";
+    placeholder.style.cssText =
+      "display:flex;align-items:center;justify-content:center;" +
+      "min-height:120px;border:1px dashed rgba(0,0,0,0.25);" +
+      "border-radius:6px;color:rgba(0,0,0,0.55);font-size:12px;" +
+      "background:rgba(0,0,0,0.03);";
+    el.appendChild(placeholder);
+  });
+}
+
 /**
  * HtmlPreview — renders a module's html_cache in a shadow DOM that mimics
- * the real smyra-render output (A4 page container + brand fonts + tokens
- * + design-system.css utilities), lets the user click elements to select
- * them, delete/duplicate them, and double-click text to edit in place.
+ * the real smyra-render output (paper-size page container + brand fonts +
+ * tokens + design-system.css utilities), lets the user click elements to
+ * select them, delete/duplicate them, and double-click text to edit in place.
  *
  * Props:
  *  - html: string (html_cache from the module)
  *  - brandCss: string — complete CSS bundle from /api/v2-brand-css
+ *  - logos: [{ variant, data_uri }] — brand logos for data-logo resolution
+ *  - assets: [{ id, url }] — tenant assets for data-asset-ref resolution
  *  - onHtmlChange: (newHtml: string) => void — fired after structural
  *    edits (delete/duplicate) and after contentEditable commits.
- *  - zoom: number (0–1) — visual shrink factor for the A4 preview. Defaults 0.55.
+ *  - zoom: number (0–1) — visual shrink factor for the preview. Defaults 0.55.
  *  - interactive: boolean — default true. Set false for thumbnail-only rendering.
  */
 export default function HtmlPreview({
   html,
   brandCss = "",
+  logos = [],
+  assets = [],
   onHtmlChange,
   zoom = 0.55,
   interactive = true,
@@ -40,6 +169,8 @@ export default function HtmlPreview({
 
     if (node.shadowRoot) node.shadowRoot.innerHTML = "";
     const shadow = node.shadowRoot || node.attachShadow({ mode: "open" });
+
+    const pageSize = detectPageSize(html);
 
     // 1. Brand CSS bundle (fonts, tokens, design-system classes)
     if (brandCss) {
@@ -58,8 +189,8 @@ export default function HtmlPreview({
         overflow: auto;
       }
       .page-frame {
-        width: 210mm;
-        min-height: 297mm;
+        width: ${pageSize.w}mm;
+        min-height: ${pageSize.h}mm;
         background: #fff;
         margin: 0 auto;
         box-shadow: 0 4px 24px rgba(0,0,0,0.15);
@@ -68,7 +199,7 @@ export default function HtmlPreview({
       }
       .page-frame > .preview-root {
         width: 100%;
-        min-height: 297mm;
+        min-height: ${pageSize.h}mm;
         box-sizing: border-box;
       }
       /* When the module HTML already contains a .page wrapper, let it drive
@@ -97,7 +228,7 @@ export default function HtmlPreview({
     `;
     shadow.appendChild(chrome);
 
-    // 3. A4 page frame
+    // 3. Page frame sized to detected paper size
     const frame = document.createElement("div");
     frame.className = "page-frame";
     frame.style.transform = `scale(${zoom})`;
@@ -105,11 +236,17 @@ export default function HtmlPreview({
     const root = document.createElement("div");
     root.className = "preview-root";
     root.innerHTML = html || "";
+
     // If the module HTML does NOT already wrap itself in a .page element,
     // add outer padding so the content doesn't butt up against the paper.
     if (!root.querySelector(":scope > .page")) {
       root.classList.add("needs-padding");
     }
+
+    // Resolve data-logo / data-asset-ref / chart placeholders before we
+    // tag selectables so the rewritten DOM is what the user sees and edits.
+    resolveAssetRefs(root, logos, assets);
+
     frame.appendChild(root);
     shadow.appendChild(frame);
 
@@ -122,10 +259,10 @@ export default function HtmlPreview({
     });
 
     // Frame size workaround: shadow host needs to reserve space equal to
-    // the scaled A4 page so the outer page can scroll correctly.
-    const pageHeightMm = 297;
+    // the scaled page so the outer editor can scroll correctly.
     const pxPerMm = 3.78; // 96dpi
-    node.style.height = `${(pageHeightMm * pxPerMm * zoom) + 40}px`;
+    node.style.height = `${(pageSize.h * pxPerMm * zoom) + 40}px`;
+    node.style.minWidth = `${(pageSize.w * pxPerMm * zoom) + 40}px`;
 
     if (!interactive) return;
 
@@ -187,12 +324,12 @@ export default function HtmlPreview({
       el.addEventListener("blur", finish);
       el.addEventListener("keydown", onKey);
     });
-  }, [html, brandCss, zoom, interactive, onHtmlChange]);
+  }, [html, brandCss, logos, assets, zoom, interactive, onHtmlChange]);
 
-  // Re-run injection when html/brandCss change
+  // Re-run injection when html/brandCss/logos/assets change
   useEffect(() => {
     if (containerRef.current) injectHtml(containerRef.current);
-  }, [html, brandCss, zoom, interactive, injectHtml]);
+  }, [html, brandCss, logos, assets, zoom, interactive, injectHtml]);
 
   function findSelectable(target, boundary) {
     let el = target;
@@ -212,7 +349,7 @@ export default function HtmlPreview({
     if (!shadow) return null;
     const root = shadow.querySelector(".preview-root");
     if (!root) return null;
-    // Strip editor-only attributes before returning
+    // Strip editor-only attributes and resolved src values before returning
     const clone = root.cloneNode(true);
     clone.querySelectorAll("[data-editor-selectable]").forEach((el) =>
       el.removeAttribute("data-editor-selectable")
@@ -223,6 +360,14 @@ export default function HtmlPreview({
     clone.querySelectorAll("[contenteditable]").forEach((el) =>
       el.removeAttribute("contenteditable")
     );
+    // Unresolve: data-logo / data-asset-ref images should stay as tokens in
+    // the saved HTML so smyra-render re-resolves them at PDF render time.
+    clone.querySelectorAll("img[data-logo]").forEach((el) => el.removeAttribute("src"));
+    clone.querySelectorAll("img[data-asset-ref]").forEach((el) => el.removeAttribute("src"));
+    // Remove placeholder chart markup we injected for visual preview only.
+    clone.querySelectorAll("[data-chart]").forEach((el) => {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    });
     return clone.innerHTML;
   }
 

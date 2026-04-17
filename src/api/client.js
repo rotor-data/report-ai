@@ -78,20 +78,11 @@ export const api = {
 
   renderV2Pdf: (payload) => request("/v2-render", { method: "POST", body: JSON.stringify(payload) }),
 
-  // Brand CSS bundle (font-face + tokens + design-system.css) — returns text/css
-  getV2BrandCss: async (reportId) => {
-    const { hubToken, editorToken } = useUiStore.getState();
-    const headers = {};
-    if (editorToken) headers["X-Editor-Token"] = editorToken;
-    else if (hubToken) headers.Authorization = `Bearer ${hubToken}`;
-    const res = await fetch(`/api/v2-brand-css?report_id=${encodeURIComponent(reportId)}`, { headers });
-    if (!res.ok) {
-      const err = new Error(`v2-brand-css HTTP ${res.status}`);
-      err.status = res.status;
-      throw err;
-    }
-    return res.text();
-  },
+  // Editor render context — CSS bundle + brand logos + tenant assets so
+  // the editor preview can resolve data-logo / data-asset-ref references.
+  // Returns { css, logos, assets }.
+  getV2EditorContext: (reportId) =>
+    request(`/v2-brand-css?report_id=${encodeURIComponent(reportId)}`),
 
   listV2Blueprints: (brandId) => request(`/v2-blueprints?brand_id=${encodeURIComponent(brandId)}`),
   saveV2Blueprint: (payload) => request("/v2-blueprints", { method: "POST", body: JSON.stringify(payload) }),

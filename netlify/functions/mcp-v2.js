@@ -406,39 +406,121 @@ const TOOLS = [
   // ── Component library ──
   {
     name: "save_component",
-    description: "Save or update a reusable HTML component in a brand's component library. Components are small HTML templates (~10-30 lines) with {{PLACEHOLDER}} tokens. Set is_default=true to make it the default for this component_type. Pass component_id to update an existing component.",
+    description: "Save or update a reusable HTML component in a brand's component library. Components are small HTML templates (~10-30 lines) with {{PLACEHOLDER}} tokens. A brand can have multiple NAMED VARIANTS of the same component_type (e.g. 'Bold', 'Minimal', 'Editorial' headings) — pass `variant_name` to distinguish them. Set is_default=true to make one variant the default for its component_type. Pass component_id to update an existing component.",
     inputSchema: {
       type: "object",
       properties: {
         component_id: { type: "string", description: "Existing component ID to update (omit for new component)" },
         brand_id: { type: "string" },
-        component_type: { type: "string", enum: [
-          "heading", "body_text", "pullquote", "callout", "list", "comparison",
-          "kpi_group", "kpi_hero", "data_table", "chart", "fact_strip", "timeline", "metric_change",
-          "image", "icon_grid", "team_grid", "logo_grid", "full_bleed_image", "infographic",
-          "two_column", "sidebar_box",
-          "cover", "chapter_break", "back_cover", "divider", "toc", "colophon",
-        ] },
+        component_type: { type: "string", description: "Canonical component type id (validated in application code, DB constraint relaxed)." },
+        variant_name: { type: "string", description: "Named variant of this component_type (e.g. 'Bold', 'Minimal', 'Editorial'). Defaults to 'Default'. Two components with the same (component_type, variant_name) for the same brand are NOT allowed — use component_id to update existing." },
         label: { type: "string", description: "Human-readable name, e.g. 'KPI-grupp med accent-border'" },
         html_template: { type: "string", description: "HTML with {{PLACEHOLDER}} tokens using design system CSS classes" },
         placeholder_schema: { type: "array", items: { type: "object" }, description: "Array of {name, required?, type?} describing placeholders" },
         design_notes: { type: "string", description: "Art director notes explaining the design choices" },
         source: { type: "string", enum: ["extraction", "report", "manual"] },
-        is_default: { type: "boolean", description: "Set as default component for this type+brand" },
+        is_default: { type: "boolean", description: "Set as default variant for this component_type+brand. Clears default flag on other variants of the same type." },
+        extraction_id: { type: "string", description: "Optional design_extractions row this component was derived from" },
+        is_public: { type: "boolean", description: "If true, any brand may fork this component into their own library" },
+        unsplash_query: { type: "string", description: "Semantic hint for image placeholders, e.g. 'corporate boardroom blue'" },
+        reference_page_numbers: { type: "array", items: { type: "integer" }, description: "Page numbers in the source PDF where this component appears" },
       },
       required: ["brand_id", "component_type", "label", "html_template"],
     },
   },
   {
     name: "list_components",
-    description: "List components in a brand's component library. Returns metadata and full HTML templates. Filter by component_type to narrow results.",
+    description: "List components in a brand's component library. Returns all named variants per component_type. Filter by component_type to narrow results. Optionally include public components shared by other brands.",
     inputSchema: {
       type: "object",
       properties: {
         brand_id: { type: "string" },
         component_type: { type: "string", description: "Filter by type (optional)" },
+        variant_name: { type: "string", description: "Filter to one specific variant (optional)" },
+        include_public: { type: "boolean", description: "Also include is_public=true components from other brands" },
+        extraction_id: { type: "string", description: "Filter to one specific extraction session" },
       },
       required: ["brand_id"],
+    },
+  },
+  {
+    name: "fork_component",
+    description: "Copy a component from any brand's library (must be is_public=true if the source brand differs) into the target brand's library. Returns the new component_id. Use this to reuse a McKinsey-style pullquote designed for brand A in brand B's reports.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source_component_id: { type: "string" },
+        target_brand_id: { type: "string" },
+        label: { type: "string", description: "Optional new label for the forked copy" },
+        is_default: { type: "boolean", description: "Mark as default for this type in the target brand" },
+      },
+      required: ["source_component_id", "target_brand_id"],
+    },
+  },
+  {
+    name: "create_design_extraction",
+    description: "Create a new design_extractions row for storing reference-PDF design tokens and component inventory. This is the ONLY safe place to store colors/fonts extracted from a reference document. Do NOT call save_brand_tokens with reference colors — they would overwrite the real brand. The extraction can later be promoted to brand tokens via apply_design_extraction if the user explicitly wants it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brand_id: { type: "string", description: "Brand that will own the extracted components" },
+        label: { type: "string", description: "Human-readable label, e.g. 'McKinsey Global AI Report 2025'" },
+        source_description: { type: "string", description: "Where the reference came from (URL, filename)" },
+        suggested_tokens: { type: "object", description: "Initial token overlay (colors, fonts). Same shape as brands.tokens." },
+        inventory: { type: "array", items: { type: "object" }, description: "Initial component inventory (optional — can be filled in later via update_design_extraction)" },
+        reference_pages: { type: "array", items: { type: "object" }, description: "Rasterized page refs [{page, url, key}]" },
+      },
+      required: ["brand_id", "label"],
+    },
+  },
+  {
+    name: "update_design_extraction",
+    description: "Update a design_extractions row. Use to add/replace suggested_tokens, inventory, reference_pages, or change status ('draft' → 'ready' → 'applied').",
+    inputSchema: {
+      type: "object",
+      properties: {
+        extraction_id: { type: "string" },
+        label: { type: "string" },
+        source_description: { type: "string" },
+        suggested_tokens: { type: "object" },
+        inventory: { type: "array", items: { type: "object" } },
+        reference_pages: { type: "array", items: { type: "object" } },
+        status: { type: "string", enum: ["draft", "ready", "applied", "archived"] },
+      },
+      required: ["extraction_id"],
+    },
+  },
+  {
+    name: "get_design_extraction",
+    description: "Fetch a design_extractions row by id, including suggested_tokens, inventory, and reference_pages.",
+    inputSchema: {
+      type: "object",
+      properties: { extraction_id: { type: "string" } },
+      required: ["extraction_id"],
+    },
+  },
+  {
+    name: "list_design_extractions",
+    description: "List all design_extractions for a brand.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brand_id: { type: "string" },
+        status: { type: "string", enum: ["draft", "ready", "applied", "archived"] },
+      },
+      required: ["brand_id"],
+    },
+  },
+  {
+    name: "apply_design_extraction",
+    description: "EXPLICIT user action — promotes an extraction's suggested_tokens onto the real brand.tokens. This is the ONLY path that changes a brand's colors/fonts from reference data. Requires explicit user confirmation. Sets extraction.status='applied'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        extraction_id: { type: "string" },
+        token_keys: { type: "array", items: { type: "string" }, description: "Optional — only apply these keys (default: all keys in suggested_tokens)" },
+      },
+      required: ["extraction_id"],
     },
   },
   {
@@ -1590,10 +1672,27 @@ async function handleCreateFromBlueprint(userId, args) {
 
 async function handleSaveComponent(userId, args) {
   const sql = getSql();
-  const { component_id, brand_id, component_type, label, html_template, placeholder_schema, design_notes, source, is_default } = args;
+  const {
+    component_id,
+    brand_id,
+    component_type,
+    variant_name,
+    label,
+    html_template,
+    placeholder_schema,
+    design_notes,
+    source,
+    is_default,
+    extraction_id,
+    is_public,
+    unsplash_query,
+    reference_page_numbers,
+  } = args;
   if (!brand_id || !component_type || !label || !html_template) {
     return errorResult("brand_id, component_type, label, and html_template are required.");
   }
+
+  const variantLabel = (variant_name && String(variant_name).trim()) || 'Default';
 
   // If marking as default, clear existing defaults for this type+brand
   if (is_default) {
@@ -1610,8 +1709,41 @@ async function handleSaveComponent(userId, args) {
     }
   }
 
-  // UPDATE existing component if component_id provided, otherwise INSERT
+  // UPDATE existing component if component_id provided, otherwise INSERT (or UPSERT on variant match)
   if (component_id) {
+    const rows = await sql`
+      UPDATE brand_components
+      SET label = ${label},
+          variant_name = ${variantLabel},
+          html_template = ${html_template},
+          placeholder_schema = ${JSON.stringify(placeholder_schema || [])}::jsonb,
+          design_notes = ${design_notes || null},
+          source = ${source || 'manual'},
+          is_default = ${is_default || false},
+          extraction_id = ${extraction_id || null},
+          is_public = ${is_public === true},
+          unsplash_query = ${unsplash_query || null},
+          reference_page_numbers = ${JSON.stringify(reference_page_numbers || [])}::jsonb,
+          version = version + 1,
+          updated_at = NOW()
+      WHERE id = ${component_id} AND brand_id = ${brand_id}
+      RETURNING id
+    `;
+    if (!rows.length) return errorResult(`Component ${component_id} not found for brand ${brand_id}.`);
+    return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, updated: true });
+  }
+
+  // If a variant with the same (brand, type, variant_name) already exists, update it in place
+  // rather than inserting a duplicate. Caller can explicitly pick a new variant_name to force a new row.
+  const existingSameVariant = await sql`
+    SELECT id FROM brand_components
+    WHERE brand_id = ${brand_id}
+      AND component_type = ${component_type}
+      AND variant_name = ${variantLabel}
+    LIMIT 1
+  `;
+  if (existingSameVariant.length) {
+    const existingId = existingSameVariant[0].id;
     const rows = await sql`
       UPDATE brand_components
       SET label = ${label},
@@ -1620,51 +1752,306 @@ async function handleSaveComponent(userId, args) {
           design_notes = ${design_notes || null},
           source = ${source || 'manual'},
           is_default = ${is_default || false},
+          extraction_id = ${extraction_id || null},
+          is_public = ${is_public === true},
+          unsplash_query = ${unsplash_query || null},
+          reference_page_numbers = ${JSON.stringify(reference_page_numbers || [])}::jsonb,
           version = version + 1,
           updated_at = NOW()
-      WHERE id = ${component_id} AND brand_id = ${brand_id}
+      WHERE id = ${existingId}
       RETURNING id
     `;
-    if (!rows.length) return errorResult(`Component ${component_id} not found for brand ${brand_id}.`);
-    return textResult({ component_id: rows[0].id, component_type, label, updated: true });
+    return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, updated: true });
   }
 
   const rows = await sql`
-    INSERT INTO brand_components (brand_id, component_type, label, html_template, placeholder_schema, design_notes, source, is_default)
+    INSERT INTO brand_components (
+      brand_id, component_type, variant_name, label, html_template, placeholder_schema,
+      design_notes, source, is_default,
+      extraction_id, is_public, unsplash_query, reference_page_numbers
+    )
     VALUES (
-      ${brand_id}, ${component_type}, ${label}, ${html_template},
+      ${brand_id}, ${component_type}, ${variantLabel}, ${label}, ${html_template},
       ${JSON.stringify(placeholder_schema || [])}::jsonb,
-      ${design_notes || null}, ${source || 'manual'}, ${is_default || false}
+      ${design_notes || null}, ${source || 'manual'}, ${is_default || false},
+      ${extraction_id || null}, ${is_public === true}, ${unsplash_query || null},
+      ${JSON.stringify(reference_page_numbers || [])}::jsonb
     )
     RETURNING id
   `;
 
-  return textResult({ component_id: rows[0].id, component_type, label });
+  return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label });
 }
 
 // ─── Handler: list_components ───────────────────────────────────────────────
 
 async function handleListComponents(userId, args) {
   const sql = getSql();
-  const { brand_id, component_type } = args;
+  const { brand_id, component_type, variant_name, include_public, extraction_id } = args;
   if (!brand_id) return errorResult("brand_id is required.");
 
-  let rows;
-  if (component_type) {
-    rows = await sql`
-      SELECT id, component_type, label, is_default, placeholder_schema, html_template, design_notes, source, version, created_at
-      FROM brand_components WHERE brand_id = ${brand_id} AND component_type = ${component_type}
-      ORDER BY is_default DESC, updated_at DESC
-    `;
-  } else {
-    rows = await sql`
-      SELECT id, component_type, label, is_default, placeholder_schema, html_template, design_notes, source, version, created_at
-      FROM brand_components WHERE brand_id = ${brand_id}
-      ORDER BY component_type, is_default DESC, updated_at DESC
+  const typeFilter = component_type || null;
+  const variantFilter = variant_name || null;
+  const extractionFilter = extraction_id || null;
+  const includePublic = include_public === true;
+
+  const rows = await sql`
+    SELECT id, brand_id, component_type, variant_name, label, is_default,
+           placeholder_schema, html_template, design_notes, source,
+           extraction_id, is_public, unsplash_query, reference_page_numbers,
+           version, created_at, updated_at
+    FROM brand_components
+    WHERE (brand_id = ${brand_id} OR (${includePublic} AND is_public = true))
+      AND (${typeFilter}::text IS NULL OR component_type = ${typeFilter})
+      AND (${variantFilter}::text IS NULL OR variant_name = ${variantFilter})
+      AND (${extractionFilter}::uuid IS NULL OR extraction_id = ${extractionFilter}::uuid)
+    ORDER BY component_type, is_default DESC, variant_name, updated_at DESC
+  `;
+
+  return textResult({ components: rows, count: rows.length });
+}
+
+// ─── Handler: fork_component ────────────────────────────────────────────────
+
+async function handleForkComponent(userId, args) {
+  const sql = getSql();
+  const { source_component_id, target_brand_id, label, is_default } = args;
+  if (!source_component_id || !target_brand_id) {
+    return errorResult("source_component_id and target_brand_id are required.");
+  }
+
+  const srcRows = await sql`
+    SELECT brand_id, component_type, label, html_template, placeholder_schema,
+           design_notes, source, extraction_id, is_public, unsplash_query,
+           reference_page_numbers
+    FROM brand_components
+    WHERE id = ${source_component_id}
+    LIMIT 1
+  `;
+  if (!srcRows.length) return errorResult(`Source component ${source_component_id} not found.`);
+  const src = srcRows[0];
+
+  // Access control: must be same brand OR public.
+  if (src.brand_id !== target_brand_id && src.is_public !== true) {
+    return errorResult("Source component is not public; cannot fork into a different brand.");
+  }
+
+  if (is_default) {
+    await sql`
+      UPDATE brand_components SET is_default = false
+      WHERE brand_id = ${target_brand_id} AND component_type = ${src.component_type} AND is_default = true
     `;
   }
 
-  return textResult({ components: rows, count: rows.length });
+  const rows = await sql`
+    INSERT INTO brand_components (
+      brand_id, component_type, label, html_template, placeholder_schema,
+      design_notes, source, is_default,
+      extraction_id, is_public, unsplash_query, reference_page_numbers
+    )
+    VALUES (
+      ${target_brand_id}, ${src.component_type}, ${label || src.label},
+      ${src.html_template},
+      ${JSON.stringify(src.placeholder_schema || [])}::jsonb,
+      ${src.design_notes}, 'fork', ${is_default === true},
+      ${null}, ${false}, ${src.unsplash_query},
+      ${JSON.stringify(src.reference_page_numbers || [])}::jsonb
+    )
+    RETURNING id
+  `;
+
+  return textResult({
+    component_id: rows[0].id,
+    source_component_id,
+    target_brand_id,
+    component_type: src.component_type,
+    forked: true,
+  });
+}
+
+// ─── Handler: create_design_extraction ──────────────────────────────────────
+
+async function handleCreateDesignExtraction(userId, args) {
+  const sql = getSql();
+  const { brand_id, label, source_description, suggested_tokens, inventory, reference_pages } = args;
+  if (!brand_id || !label) {
+    return errorResult("brand_id and label are required.");
+  }
+
+  // Look up tenant_id for the brand so the extraction inherits it.
+  const brandRows = await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`;
+  if (!brandRows.length) return errorResult(`Brand ${brand_id} not found.`);
+  const tenantId = brandRows[0].tenant_id || null;
+
+  const rows = await sql`
+    INSERT INTO design_extractions (
+      brand_id, tenant_id, label, source_description,
+      suggested_tokens, inventory, reference_pages, status
+    )
+    VALUES (
+      ${brand_id}, ${tenantId}, ${label}, ${source_description || null},
+      ${JSON.stringify(suggested_tokens || {})}::jsonb,
+      ${JSON.stringify(inventory || [])}::jsonb,
+      ${JSON.stringify(reference_pages || [])}::jsonb,
+      'draft'
+    )
+    RETURNING id, brand_id, label, status, created_at
+  `;
+
+  return textResult({
+    extraction_id: rows[0].id,
+    ...rows[0],
+    note: "Reference-derived tokens are stored on this extraction — they do NOT overwrite the brand. Use apply_design_extraction explicitly if the user wants to promote them.",
+  });
+}
+
+// ─── Handler: update_design_extraction ──────────────────────────────────────
+
+async function handleUpdateDesignExtraction(userId, args) {
+  const sql = getSql();
+  const { extraction_id, label, source_description, suggested_tokens, inventory, reference_pages, status } = args;
+  if (!extraction_id) return errorResult("extraction_id is required.");
+
+  const existing = await sql`SELECT * FROM design_extractions WHERE id = ${extraction_id} LIMIT 1`;
+  if (!existing.length) return errorResult(`Extraction ${extraction_id} not found.`);
+  const cur = existing[0];
+
+  // Merge tokens if provided (overlay, not replace).
+  const mergedTokens = suggested_tokens
+    ? { ...(cur.suggested_tokens || {}), ...suggested_tokens }
+    : (cur.suggested_tokens || {});
+
+  const newLabel = label ?? cur.label;
+  const newSource = source_description ?? cur.source_description;
+  const newInventory = inventory ?? (cur.inventory || []);
+  const newReferencePages = reference_pages ?? (cur.reference_pages || []);
+  const newStatus = status ?? cur.status;
+
+  const rows = await sql`
+    UPDATE design_extractions
+    SET label = ${newLabel},
+        source_description = ${newSource},
+        suggested_tokens = ${JSON.stringify(mergedTokens)}::jsonb,
+        inventory = ${JSON.stringify(newInventory)}::jsonb,
+        reference_pages = ${JSON.stringify(newReferencePages)}::jsonb,
+        status = ${newStatus},
+        updated_at = NOW()
+    WHERE id = ${extraction_id}
+    RETURNING id, brand_id, label, status, suggested_tokens, inventory, reference_pages, updated_at
+  `;
+
+  return textResult(rows[0]);
+}
+
+// ─── Handler: get_design_extraction ─────────────────────────────────────────
+
+async function handleGetDesignExtraction(userId, args) {
+  const sql = getSql();
+  const { extraction_id } = args;
+  if (!extraction_id) return errorResult("extraction_id is required.");
+
+  const rows = await sql`
+    SELECT id, brand_id, tenant_id, label, source_description,
+           suggested_tokens, inventory, reference_pages, status,
+           created_at, updated_at
+    FROM design_extractions
+    WHERE id = ${extraction_id}
+    LIMIT 1
+  `;
+  if (!rows.length) return errorResult(`Extraction ${extraction_id} not found.`);
+
+  // Also pull the component ids that reference this extraction so Claude
+  // can see what's been designed so far.
+  const components = await sql`
+    SELECT id, component_type, label, is_default, is_public, reference_page_numbers
+    FROM brand_components
+    WHERE extraction_id = ${extraction_id}
+    ORDER BY component_type, updated_at DESC
+  `;
+
+  return textResult({ ...rows[0], components });
+}
+
+// ─── Handler: list_design_extractions ───────────────────────────────────────
+
+async function handleListDesignExtractions(userId, args) {
+  const sql = getSql();
+  const { brand_id, status } = args;
+  if (!brand_id) return errorResult("brand_id is required.");
+
+  const statusFilter = status || null;
+  const rows = await sql`
+    SELECT id, brand_id, label, source_description, status,
+           jsonb_array_length(COALESCE(inventory, '[]'::jsonb)) AS inventory_count,
+           jsonb_array_length(COALESCE(reference_pages, '[]'::jsonb)) AS reference_page_count,
+           created_at, updated_at
+    FROM design_extractions
+    WHERE brand_id = ${brand_id}
+      AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
+    ORDER BY updated_at DESC
+  `;
+
+  return textResult({ extractions: rows, count: rows.length });
+}
+
+// ─── Handler: apply_design_extraction ───────────────────────────────────────
+
+async function handleApplyDesignExtraction(userId, args) {
+  const sql = getSql();
+  const { extraction_id, token_keys } = args;
+  if (!extraction_id) return errorResult("extraction_id is required.");
+
+  const rows = await sql`
+    SELECT brand_id, suggested_tokens
+    FROM design_extractions
+    WHERE id = ${extraction_id}
+    LIMIT 1
+  `;
+  if (!rows.length) return errorResult(`Extraction ${extraction_id} not found.`);
+  const { brand_id, suggested_tokens } = rows[0];
+  const suggestion = suggested_tokens || {};
+
+  // Select which keys to apply.
+  let overlay;
+  if (Array.isArray(token_keys) && token_keys.length > 0) {
+    overlay = {};
+    for (const key of token_keys) {
+      if (key in suggestion) overlay[key] = suggestion[key];
+    }
+  } else {
+    overlay = suggestion;
+  }
+
+  if (Object.keys(overlay).length === 0) {
+    return errorResult("No tokens to apply (suggested_tokens empty or token_keys filter matched nothing).");
+  }
+
+  // Merge into brand.tokens (do not blow away unrelated keys).
+  const brandRows = await sql`SELECT tokens FROM brands WHERE id = ${brand_id} LIMIT 1`;
+  if (!brandRows.length) return errorResult(`Brand ${brand_id} not found.`);
+  const current = brandRows[0].tokens || {};
+  const merged = { ...current, ...overlay };
+
+  await sql`
+    UPDATE brands
+    SET tokens = ${JSON.stringify(merged)}::jsonb,
+        updated_at = NOW()
+    WHERE id = ${brand_id}
+  `;
+
+  await sql`
+    UPDATE design_extractions
+    SET status = 'applied', updated_at = NOW()
+    WHERE id = ${extraction_id}
+  `;
+
+  return textResult({
+    applied: true,
+    extraction_id,
+    brand_id,
+    applied_keys: Object.keys(overlay),
+    new_tokens: merged,
+  });
 }
 
 // ─── Handler: get_component ─────────────────────────────────────────────────
@@ -1675,7 +2062,10 @@ async function handleGetComponent(userId, args) {
   if (!component_id) return errorResult("component_id is required.");
 
   const rows = await sql`
-    SELECT id, brand_id, component_type, label, html_template, placeholder_schema, design_notes, source, version, is_default, created_at
+    SELECT id, brand_id, component_type, variant_name, label, html_template, placeholder_schema,
+           design_notes, source, version, is_default,
+           extraction_id, is_public, unsplash_query, reference_page_numbers,
+           created_at, updated_at
     FROM brand_components WHERE id = ${component_id} LIMIT 1
   `;
   if (!rows.length) return errorResult(`Component ${component_id} not found.`);
@@ -2162,7 +2552,14 @@ const HANDLERS = {
   save_component:        handleSaveComponent,
   list_components:       handleListComponents,
   get_component:         handleGetComponent,
+  fork_component:        handleForkComponent,
   render_component_preview: handleRenderComponentPreview,
+  // Design extraction lifecycle
+  create_design_extraction: handleCreateDesignExtraction,
+  update_design_extraction: handleUpdateDesignExtraction,
+  get_design_extraction:    handleGetDesignExtraction,
+  list_design_extractions:  handleListDesignExtractions,
+  apply_design_extraction:  handleApplyDesignExtraction,
   rasterize_pdf:         handleRasterizePdf,
   request_upload:        handleRequestUpload,
   check_upload:          handleCheckUpload,

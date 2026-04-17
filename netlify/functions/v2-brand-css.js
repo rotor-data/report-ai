@@ -1,21 +1,26 @@
 /**
  * GET /api/v2-brand-css?report_id=<uuid>
  *
- * Returns the complete CSS bundle needed to render a report preview
- * in the editor shadow DOM so it matches what smyra-render produces.
+ * Returns a JSON bundle with everything the editor preview needs to
+ * render a module's html_cache so it matches smyra-render output:
  *
- * Bundle contents:
- *   1. @font-face declarations (base64 embedded, same as render.py _build_font_face_css)
- *   2. :root CSS custom properties from brand_tokens (same as _build_token_css)
- *   3. design-system.css utility classes (.page, .grid--N, .t-display, etc.)
+ *   {
+ *     css: "...",              // @font-face + :root tokens + design-system.css + template css_base
+ *     logos: [                 // brand_logos rows, data-URI baked
+ *       { variant, format, data_uri }
+ *     ],
+ *     assets: [                // v2_assets / design_assets for this report
+ *       { id, ref, url, data_uri? }
+ *     ]
+ *   }
  *
- * Auth: Hub JWT OR editor capability token. When an editor token is
- * used, the scoped report_id must match the query param.
+ * Auth: Hub JWT OR editor capability token. Editor tokens must match
+ * the report_id query param.
  */
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { json, noContent, getCorsHeaders } from "./cors.js";
+import { json, noContent } from "./cors.js";
 import { requireHubOrEditorAuth, editorScopeMismatch } from "./auth-middleware.js";
 import { getSql } from "./db.js";
 
@@ -45,7 +50,6 @@ function buildFontFaceCss(brandFonts) {
     const dataB64 = font.data_base64 || "";
     if (!dataB64) continue;
 
-    // brand_fonts stores `format` (not mime), e.g. 'woff2' | 'woff' | 'ttf' | 'otf'
     const fmt = (font.format || "woff2").toLowerCase();
     const mimeMap = {
       woff2: "font/woff2",
@@ -86,6 +90,16 @@ function buildTokenCss(brandTokens) {
   return `:root {\n${props.join("\n")}\n}`;
 }
 
+function logoMime(format) {
+  const fmt = String(format || "").toLowerCase();
+  if (fmt === "svg" || fmt === "svg+xml") return "image/svg+xml";
+  if (fmt === "png") return "image/png";
+  if (fmt === "jpg" || fmt === "jpeg") return "image/jpeg";
+  if (fmt === "webp") return "image/webp";
+  if (fmt === "gif") return "image/gif";
+  return "image/png";
+}
+
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return noContent(event);
   if (event.httpMethod !== "GET") return json(event, 405, { error: "Method Not Allowed" });
@@ -104,13 +118,14 @@ export const handler = async (event) => {
 
   try {
     const [report] = await sql`
-      SELECT id, brand_id, template_id FROM v2_reports WHERE id = ${reportId} LIMIT 1
+      SELECT id, brand_id, template_id, tenant_id FROM v2_reports WHERE id = ${reportId} LIMIT 1
     `;
     if (!report) return json(event, 404, { error: "Report not found" });
 
-    // Brand tokens + fonts
+    // Brand tokens + fonts + logos
     let tokens = {};
     let fonts = [];
+    let logoRows = [];
     if (report.brand_id) {
       const brands = await sql`SELECT tokens FROM brands WHERE id = ${report.brand_id} LIMIT 1`;
       tokens = brands[0]?.tokens || {};
@@ -118,13 +133,26 @@ export const handler = async (event) => {
         SELECT family, weight, style, format, data_base64
         FROM brand_fonts WHERE brand_id = ${report.brand_id}
       `;
+      try {
+        logoRows = await sql`
+          SELECT variant, format, data_base64
+          FROM brand_logos WHERE brand_id = ${report.brand_id}
+        `;
+      } catch (err) {
+        console.warn("[v2-brand-css] brand_logos query failed:", err.message);
+        logoRows = [];
+      }
     }
 
-    // Template css_base (optional — some templates ship extra CSS)
+    // Template css_base (optional)
     let cssBase = "";
     if (report.template_id) {
-      const [tpl] = await sql`SELECT css_base FROM report_templates WHERE id = ${report.template_id} LIMIT 1`;
-      cssBase = tpl?.css_base || "";
+      try {
+        const [tpl] = await sql`SELECT css_base FROM report_templates WHERE id = ${report.template_id} LIMIT 1`;
+        cssBase = tpl?.css_base || "";
+      } catch {
+        /* template table may not exist in all envs */
+      }
     }
 
     const fontFaceCss = buildFontFaceCss(fonts);
@@ -142,15 +170,43 @@ export const handler = async (event) => {
       cssBase,
     ].join("\n\n");
 
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "text/css; charset=utf-8",
-        "Cache-Control": "private, max-age=60",
-        ...getCorsHeaders(event),
-      },
-      body: bundle,
-    };
+    const logos = logoRows.map((row) => ({
+      variant: row.variant || "default",
+      format: row.format || "png",
+      data_uri: row.data_base64
+        ? `data:${logoMime(row.format)};base64,${row.data_base64}`
+        : null,
+    }));
+
+    // Assets referenced from module HTML via data-asset-ref="<id>".
+    // tenant_assets (see migration 008) resolves to a storage URL the
+    // editor iframe/shadow DOM can load directly.
+    let assets = [];
+    try {
+      const rows = await sql`
+        SELECT id, filename, mime_type, storage_url, asset_class
+        FROM tenant_assets
+        WHERE tenant_id = ${report.tenant_id}
+        ORDER BY created_at DESC
+        LIMIT 500
+      `;
+      assets = rows.map((r) => ({
+        id: r.id,
+        filename: r.filename,
+        mime_type: r.mime_type,
+        url: r.storage_url,
+        asset_class: r.asset_class,
+      }));
+    } catch (err) {
+      console.warn("[v2-brand-css] tenant_assets query failed:", err.message);
+      assets = [];
+    }
+
+    return json(event, 200, {
+      css: bundle,
+      logos,
+      assets,
+    });
   } catch (err) {
     console.error("[v2-brand-css]", err);
     return json(event, 500, { error: err.message });

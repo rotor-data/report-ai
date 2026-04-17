@@ -31,6 +31,8 @@ export default function EditorV2() {
   const [report, setReport] = useState(null);
   const [modules, setModules] = useState([]);
   const [brandCss, setBrandCss] = useState("");
+  const [logos, setLogos] = useState([]);
+  const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -68,12 +70,12 @@ export default function EditorV2() {
         setEditorAuth(token, scope);
         setSession(data);
 
-        // Load report + modules + brand CSS in parallel
-        const [r, css] = await Promise.all([
+        // Load report + modules + editor context (CSS + logos + assets) in parallel
+        const [r, ctx] = await Promise.all([
           api.getV2Report(data.report_id),
-          api.getV2BrandCss(data.report_id).catch((err) => {
-            console.warn("brand-css fetch failed:", err);
-            return "";
+          api.getV2EditorContext(data.report_id).catch((err) => {
+            console.warn("editor context fetch failed:", err);
+            return { css: "", logos: [], assets: [] };
           }),
         ]);
         if (cancelled) return;
@@ -81,7 +83,9 @@ export default function EditorV2() {
         setReport(r.item);
         const sorted = [...(r.modules || [])].sort((a, b) => a.order_index - b.order_index);
         setModules(sorted);
-        setBrandCss(css);
+        setBrandCss(ctx?.css || "");
+        setLogos(ctx?.logos || []);
+        setAssets(ctx?.assets || []);
         if (sorted.length > 0) setSelectedId(sorted[0].id);
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -366,6 +370,8 @@ export default function EditorV2() {
               <HtmlPreview
                 html={selectedModule.html_cache}
                 brandCss={brandCss}
+                logos={logos}
+                assets={assets}
                 onHtmlChange={(newHtml) => onLiveHtmlChange(selectedModule.id, newHtml)}
                 zoom={0.55}
               />
@@ -398,17 +404,77 @@ export default function EditorV2() {
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 function moduleDisplayName(mod) {
-  // Prefer content title / chapter_title, then first heading from html_cache, fallback to type.
+  // Prefer explicit title fields from content JSONB.
   const content = mod.content || {};
   if (content.title) return content.title;
   if (content.chapter_title) return content.chapter_title;
   if (content.headline) return content.headline;
 
+  // Then try to extract a heading from html_cache.
   const html = mod.html_cache || "";
-  const match = html.match(/<h[1-3][^>]*>([^<]{3,80})<\/h[1-3]>/i);
-  if (match) return match[1].trim();
+  const extracted = extractHeadlineFromHtml(html);
+  if (extracted) return extracted;
 
   return mod.module_type || "Modul";
+}
+
+/**
+ * Extract a probable headline from arbitrary HTML.
+ *
+ * Tries in order:
+ *   1. First <h1-3>
+ *   2. First styled block with font-size ≥ 18pt / ≥ 22px (heading component pattern)
+ *   3. First styled block with font-weight ≥ 600
+ *   4. First short text-bearing block (< 80 chars)
+ */
+function extractHeadlineFromHtml(html) {
+  if (!html) return "";
+
+  // 1. Real <h1-3>
+  const h = html.match(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i);
+  if (h) {
+    const text = stripTags(h[1]).trim();
+    if (text.length >= 3 && text.length <= 100) return text;
+  }
+
+  // 2. Styled block with large font-size
+  const fontSizeRe =
+    /<(div|p|span)[^>]*style="[^"]*font-size:\s*(\d+(?:\.\d+)?)(pt|px)[^"]*"[^>]*>([\s\S]*?)<\/\1>/gi;
+  let m;
+  while ((m = fontSizeRe.exec(html)) !== null) {
+    const value = parseFloat(m[2]);
+    const unit = m[3];
+    const isLarge = (unit === "pt" && value >= 18) || (unit === "px" && value >= 22);
+    if (!isLarge) continue;
+    const text = stripTags(m[4]).trim();
+    if (text.length >= 3 && text.length <= 100) return text;
+  }
+
+  // 3. Styled block with bold weight
+  const fontWeightRe =
+    /<(div|p|span)[^>]*style="[^"]*font-weight:\s*(\d+|bold)[^"]*"[^>]*>([\s\S]*?)<\/\1>/gi;
+  while ((m = fontWeightRe.exec(html)) !== null) {
+    const w = m[2] === "bold" ? 700 : parseInt(m[2], 10);
+    if (!Number.isFinite(w) || w < 600) continue;
+    const text = stripTags(m[3]).trim();
+    if (text.length >= 3 && text.length <= 80) return text;
+  }
+
+  // 4. First short <div> / <p> text
+  const firstBlock = html.match(/<(div|p)[^>]*>([\s\S]*?)<\/\1>/i);
+  if (firstBlock) {
+    const text = stripTags(firstBlock[2]).trim();
+    if (text.length >= 3 && text.length <= 80) return text;
+  }
+
+  return "";
+}
+
+function stripTags(s) {
+  return String(s)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function moduleThumbColor(type) {

@@ -52,6 +52,45 @@
   background: var(--bg-light);
 }
 
+/* ── Paper-size variants ─────────────────────────────────────────────
+   Combine with .page or .page--full-bleed to switch format.
+   Example: <div class="page page--landscape">…</div>               */
+.page.page--landscape,
+.page--full-bleed.page--landscape {
+  width: 297mm;
+  height: 210mm;
+}
+.page.page--a5,
+.page--full-bleed.page--a5 {
+  width: 148mm;
+  height: 210mm;
+}
+.page.page--a5-landscape,
+.page--full-bleed.page--a5-landscape {
+  width: 210mm;
+  height: 148mm;
+}
+.page.page--a3,
+.page--full-bleed.page--a3 {
+  width: 297mm;
+  height: 420mm;
+}
+.page.page--a3-landscape,
+.page--full-bleed.page--a3-landscape {
+  width: 420mm;
+  height: 297mm;
+}
+.page.page--letter,
+.page--full-bleed.page--letter {
+  width: 216mm;
+  height: 279mm;
+}
+.page.page--letter-landscape,
+.page--full-bleed.page--letter-landscape {
+  width: 279mm;
+  height: 216mm;
+}
+
 
 /* ================================================================
    2. GRID LAYOUT
