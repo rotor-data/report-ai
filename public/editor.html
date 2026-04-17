@@ -1020,6 +1020,28 @@ let state = {
 const ZOOM_LEVELS = [50, 75, 100, 150];
 
 // ─── API Client ───────────────────────────────────────────────────────────
+// Per-tool timeouts. Short for save/get (should return quickly), longer for
+// assemble + exports which run renders server-side. If any call exceeds its
+// timeout we abort via AbortController and surface an actionable error instead
+// of leaving the UI stuck on a spinner indefinitely.
+const RPC_TIMEOUTS = {
+  default: 30000,
+  get_document: 20000,
+  save_module_content: 15000,
+  save_module_html: 15000,
+  save_module_plan: 15000,
+  save_design_system: 15000,
+  assemble_document: 90000,
+  export_pdf: 120000,
+  export_idml: 120000,
+  export_docx: 90000,
+  export_pptx: 120000,
+};
+
+function humanReadableSeconds(ms) {
+  return Math.round(ms / 1000);
+}
+
 class ReportApi {
   constructor(docId, token) {
     this.docId = docId;
@@ -1027,24 +1049,47 @@ class ReportApi {
   }
 
   async rpc(toolName, args = {}) {
-    const res = await fetch('/.netlify/functions/mcp', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.token}`,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'tools/call',
-        params: { name: toolName, arguments: { document_id: this.docId, ...args } },
-        id: Date.now(),
-      }),
-    });
+    const timeoutMs = RPC_TIMEOUTS[toolName] ?? RPC_TIMEOUTS.default;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    let res;
+    try {
+      res = await fetch('/.netlify/functions/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.token}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'tools/call',
+          params: { name: toolName, arguments: { document_id: this.docId, ...args } },
+          id: Date.now(),
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if (err && err.name === 'AbortError') {
+        const secs = humanReadableSeconds(timeoutMs);
+        const msg = `Åtgärden "${toolName}" tog längre än ${secs} sek och avbröts. Försök igen om en stund — om felet kvarstår kan dokumentet vara för stort för den här åtgärden.`;
+        throw new Error(msg);
+      }
+      // Network error or other fetch failure
+      throw new Error(`Kunde inte nå servern (${toolName}): ${err?.message || err}`);
+    }
+    clearTimeout(timer);
+
     if (res.status === 401) {
       showSessionExpired();
       throw new Error('Session expired');
     }
-    const data = await res.json();
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Server returned ${res.status} ${res.statusText}: ${text.slice(0, 200)}`);
+    }
+    const data = await res.json().catch(() => ({ error: { message: 'Invalid JSON from server' } }));
     if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
     // MCP returns { result: { content: [{ type: "text", text: "..." }] } }
     const content = data.result?.content?.[0]?.text;
