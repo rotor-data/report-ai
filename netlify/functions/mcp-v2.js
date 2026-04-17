@@ -1799,6 +1799,7 @@ async function handleListComponents(userId, args) {
     SELECT id, brand_id, component_type, variant_name, label, is_default,
            placeholder_schema, html_template, design_notes, source,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
+           thumbnail_url, thumbnail_generated_at,
            version, created_at, updated_at
     FROM brand_components
     WHERE (brand_id = ${brand_id} OR (${includePublic} AND is_public = true))
