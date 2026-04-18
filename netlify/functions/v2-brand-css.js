@@ -79,15 +79,88 @@ function buildFontFaceCss(brandFonts) {
   return blocks.join("\n");
 }
 
+/**
+ * Translate brand token keys to the CSS custom property names the
+ * component templates actually reference (e.g. var(--primary), not
+ * var(--primary_color)). Mirrors the mapping in smyra-core
+ * compose-pages buildStyleBlock — both sides must agree.
+ */
 function buildTokenCss(brandTokens) {
   if (!brandTokens || typeof brandTokens !== "object") return "";
-  const entries = Object.entries(brandTokens);
-  if (!entries.length) return "";
-  const props = entries.map(([key, value]) => {
-    const cssKey = key.startsWith("--") ? key : `--${key}`;
-    return `  ${cssKey}: ${value};`;
-  });
-  return `:root {\n${props.join("\n")}\n}`;
+
+  const colorMap = {
+    primary_color: "--primary",
+    primary_dark_color: "--primary-dark",
+    accent_color: "--accent",
+    secondary_color: "--secondary",
+    text_color: "--text",
+    text_muted_color: "--text-muted",
+    bg_color: "--bg",
+    bg_light_color: "--bg-light",
+    surface_color: "--surface",
+    border_color: "--border",
+  };
+  const spacingMap = {
+    margin_top_mm: "--margin-top",
+    margin_bottom_mm: "--margin-bottom",
+    margin_inner_mm: "--margin-inner",
+    margin_outer_mm: "--margin-outer",
+    column_gap_mm: "--column-gap",
+    section_gap_mm: "--section-gap",
+  };
+
+  const lines = [];
+  for (const [key, value] of Object.entries(brandTokens)) {
+    if (key.startsWith("_")) continue; // internal flags
+    if (value == null || value === "") continue;
+    if (colorMap[key]) {
+      lines.push(`  ${colorMap[key]}: ${value};`);
+      continue;
+    }
+    if (spacingMap[key]) {
+      lines.push(`  ${spacingMap[key]}: ${value}mm;`);
+      continue;
+    }
+    if (key === "font_display") {
+      lines.push(`  --font-display: '${value}', system-ui, sans-serif;`);
+      continue;
+    }
+    if (key === "font_heading") {
+      lines.push(`  --font-heading: '${value}', system-ui, sans-serif;`);
+      continue;
+    }
+    if (key === "font_body") {
+      lines.push(`  --font-body: '${value}', system-ui, sans-serif;`);
+      continue;
+    }
+    // Pass-through for keys that are already CSS-style names, and for
+    // document-specific tokens that don't match any preset map.
+    const cssKey = key.startsWith("--") ? key : `--${key.replace(/_/g, "-")}`;
+    lines.push(`  ${cssKey}: ${value};`);
+  }
+
+  // Sensible defaults so templates don't render with raw tokens
+  const defaults = {
+    "--primary": "#1a1a2e",
+    "--accent": "#e94560",
+    "--text": "#1a1a1a",
+    "--text-muted": "#6b7280",
+    "--bg": "#ffffff",
+    "--bg-light": "#f5f5f5",
+    "--surface": "#ffffff",
+    "--border": "#e5e7eb",
+    "--font-display": "system-ui, sans-serif",
+    "--font-heading": "system-ui, sans-serif",
+    "--font-body": "system-ui, sans-serif",
+    "--radius": "4px",
+    "--section-gap": "6mm",
+  };
+  for (const [cssVar, fallback] of Object.entries(defaults)) {
+    const already = lines.some((l) => l.trim().startsWith(cssVar + ":"));
+    if (!already) lines.push(`  ${cssVar}: ${fallback};`);
+  }
+
+  return `:root {\n${lines.join("\n")}\n}`;
 }
 
 function logoMime(format) {
