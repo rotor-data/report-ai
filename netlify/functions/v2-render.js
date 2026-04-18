@@ -98,7 +98,7 @@ export const handler = async (event) => {
 
   try {
     const reports = await sql`
-      SELECT id, tenant_id, brand_id, title, template_id FROM v2_reports WHERE id = ${report_id} LIMIT 1
+      SELECT id, tenant_id, brand_id, title, template_id, page_format FROM v2_reports WHERE id = ${report_id} LIMIT 1
     `;
     if (!reports.length) return json(event, 404, { error: "Report not found" });
     const report = reports[0];
@@ -152,6 +152,7 @@ export const handler = async (event) => {
       report_id,
       title: report.title,
       mode,
+      page_format: report.page_format || 'a4_portrait',
       pages: pages.map((p) => ({
         ...p,
         modules: modules.filter((m) => m.page_id === p.id),

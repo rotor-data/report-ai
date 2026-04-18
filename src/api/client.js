@@ -89,6 +89,18 @@ export const api = {
   createV2FromBlueprint: (payload) =>
     request("/v2-blueprints/create-from", { method: "POST", body: JSON.stringify(payload) }),
 
+  // Brand component library — browse, inspect, and delete saved components
+  listV2Components: (brandId, componentType) => {
+    const qs = new URLSearchParams({ brand_id: brandId });
+    if (componentType) qs.set("component_type", componentType);
+    return request(`/v2-components?${qs.toString()}`);
+  },
+  getV2Component: (id) => request(`/v2-components/${id}`),
+  patchV2Component: (id, payload) =>
+    request(`/v2-components/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteV2Component: (id) =>
+    request(`/v2-components/${id}`, { method: "DELETE" }),
+
   // Note: AI generation (design system, module plan, HTML) is handled by
   // Claude via MCP tools — no frontend endpoints needed.
 };

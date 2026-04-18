@@ -24,7 +24,7 @@ function getIdFromPath(path = "") {
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return noContent(event);
-  if (event.httpMethod !== "GET") return json(event, 405, { error: "Method Not Allowed" });
+  if (!["GET", "DELETE", "PATCH"].includes(event.httpMethod)) return json(event, 405, { error: "Method Not Allowed" });
 
   const auth = requireHubOrEditorAuth(event);
   if (!auth.ok) return json(event, auth.status, { error: auth.error });
@@ -33,11 +33,49 @@ export const handler = async (event) => {
   const componentId = getIdFromPath(event.path);
 
   try {
+    // DELETE: remove a component by id. Editor-token requests are rejected —
+    // only Hub JWT holders (dashboard callers) may delete.
+    if (event.httpMethod === "DELETE") {
+      if (!componentId) return json(event, 400, { error: "Missing component id" });
+      if (auth.editorScope) return json(event, 403, { error: "Editor token cannot delete components" });
+      const deleted = await sql`DELETE FROM brand_components WHERE id = ${componentId} RETURNING id`;
+      if (!deleted.length) return json(event, 404, { error: "Component not found" });
+      return json(event, 200, { ok: true, id: componentId });
+    }
+
+    // PATCH: update status / variant_name / label. Hub JWT only.
+    if (event.httpMethod === "PATCH") {
+      if (!componentId) return json(event, 400, { error: "Missing component id" });
+      if (auth.editorScope) return json(event, 403, { error: "Editor token cannot update components" });
+      let body = {};
+      try { body = event.body ? JSON.parse(event.body) : {}; } catch { return json(event, 400, { error: "Invalid JSON" }); }
+      const { status, variant_name, label } = body;
+      if (!status && typeof variant_name === "undefined" && typeof label === "undefined") {
+        return json(event, 400, { error: "No updatable fields in body" });
+      }
+      if (status && !["draft", "ready", "deprecated"].includes(status)) {
+        return json(event, 400, { error: "Invalid status" });
+      }
+      const updated = await sql`
+        UPDATE brand_components SET
+          status = COALESCE(${status ?? null}, status),
+          variant_name = COALESCE(${typeof variant_name === "undefined" ? null : variant_name}, variant_name),
+          label = COALESCE(${typeof label === "undefined" ? null : label}, label),
+          updated_at = NOW()
+        WHERE id = ${componentId}
+        RETURNING id, status, variant_name, label
+      `;
+      if (!updated.length) return json(event, 404, { error: "Component not found" });
+      return json(event, 200, { ok: true, item: updated[0] });
+    }
+
     // Single component
     if (componentId) {
       const rows = await sql`
-        SELECT id, brand_id, component_type, label, html_template,
-               placeholder_schema, design_notes, source, version, is_default
+        SELECT id, brand_id, component_type, variant_name, page_format, status,
+               label, html_template,
+               placeholder_schema, design_notes, source, version, is_default,
+               created_at, updated_at
         FROM brand_components WHERE id = ${componentId} LIMIT 1
       `;
       if (!rows.length) return json(event, 404, { error: "Component not found" });
@@ -71,15 +109,19 @@ export const handler = async (event) => {
 
     const rows = componentType
       ? await sql`
-          SELECT id, brand_id, component_type, label, html_template,
-                 placeholder_schema, design_notes, source, version, is_default
+          SELECT id, brand_id, component_type, variant_name, page_format, status,
+                 label, html_template,
+                 placeholder_schema, design_notes, source, version, is_default,
+                 created_at, updated_at
           FROM brand_components
           WHERE brand_id = ${brandId} AND component_type = ${componentType}
           ORDER BY is_default DESC, updated_at DESC
         `
       : await sql`
-          SELECT id, brand_id, component_type, label, html_template,
-                 placeholder_schema, design_notes, source, version, is_default
+          SELECT id, brand_id, component_type, variant_name, page_format, status,
+                 label, html_template,
+                 placeholder_schema, design_notes, source, version, is_default,
+                 created_at, updated_at
           FROM brand_components
           WHERE brand_id = ${brandId}
           ORDER BY component_type, is_default DESC, updated_at DESC

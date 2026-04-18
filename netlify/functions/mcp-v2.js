@@ -121,6 +121,7 @@ const TOOLS = [
         title: { type: "string" },
         document_type: { type: "string" },
         template_id: { type: "string", description: "Optional template ID" },
+        page_format: { type: "string", description: "Page format: a4_portrait (default) | a4_landscape | presentation | us_letter | square | digital" },
       },
       required: ["tenant_id", "brand_id", "title", "document_type"],
     },
@@ -444,6 +445,18 @@ const TOOLS = [
     },
   },
   {
+    name: "list_reports",
+    description: "List existing v2 reports for a tenant or brand. Use when the user wants to reopen, re-render, or edit a previous report. Returns id, title, brand_id, tenant_id, template_id, updated_at, plus module count.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: { type: "string", description: "Filter by tenant (optional)" },
+        brand_id: { type: "string", description: "Filter by brand (optional)" },
+        limit: { type: "number", description: "Max rows (default 20, max 100)" },
+      },
+    },
+  },
+  {
     name: "delete_component",
     description: "Delete a component from a brand's library. Use when the user wants to clean up unused or bad variants. Cannot be undone. For soft-delete (keep for history but hide from pickers), use save_component with status='deprecated' instead.",
     inputSchema: {
@@ -652,15 +665,16 @@ const TOOLS = [
 
 async function handleCreate(userId, args) {
   const sql = getSql();
-  const { tenant_id, brand_id, title, document_type, template_id } = args;
+  const { tenant_id, brand_id, title, document_type, template_id, page_format } = args;
   if (!tenant_id || !brand_id || !title || !document_type) {
     return errorResult("tenant_id, brand_id, title, and document_type are required.");
   }
+  const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'a4_portrait';
 
   const rows = await sql`
-    INSERT INTO v2_reports (tenant_id, brand_id, template_id, title, document_type, status)
-    VALUES (${tenant_id}, ${brand_id}, ${template_id || null}, ${title}, ${document_type}, 'draft')
-    RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, created_at
+    INSERT INTO v2_reports (tenant_id, brand_id, template_id, title, document_type, status, page_format)
+    VALUES (${tenant_id}, ${brand_id}, ${template_id || null}, ${title}, ${document_type}, 'draft', ${pageFormatValue})
+    RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, created_at
   `;
   return textResult({ report_id: rows[0].id, ...rows[0], next_step: "Add modules with report2__add_module." });
 }
@@ -1846,6 +1860,29 @@ async function handleListComponents(userId, args) {
 
 // ─── Handler: fork_component ────────────────────────────────────────────────
 
+// ─── Handler: list_reports ──────────────────────────────────────────────────
+
+async function handleListReports(userId, args) {
+  const sql = getSql();
+  const { tenant_id, brand_id, limit } = args || {};
+  const cap = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  const tenantFilter = tenant_id || null;
+  const brandFilter = brand_id || null;
+
+  const rows = await sql`
+    SELECT r.id, r.title, r.brand_id, r.tenant_id, r.template_id, r.page_format,
+           r.created_at, r.updated_at,
+           (SELECT COUNT(*)::int FROM v2_report_modules m WHERE m.report_id = r.id) AS module_count,
+           (SELECT COUNT(*)::int FROM v2_report_pages p WHERE p.report_id = r.id) AS page_count
+    FROM v2_reports r
+    WHERE (${tenantFilter}::uuid IS NULL OR r.tenant_id = ${tenantFilter}::uuid)
+      AND (${brandFilter}::uuid IS NULL OR r.brand_id = ${brandFilter}::uuid)
+    ORDER BY r.updated_at DESC
+    LIMIT ${cap}
+  `;
+  return textResult({ reports: rows, count: rows.length });
+}
+
 // ─── Handler: delete_component ──────────────────────────────────────────────
 
 async function handleDeleteComponent(userId, args) {
@@ -2604,6 +2641,7 @@ const HANDLERS = {
   save_component:        handleSaveComponent,
   list_components:       handleListComponents,
   delete_component:      handleDeleteComponent,
+  list_reports:          handleListReports,
   get_component:         handleGetComponent,
   fork_component:        handleForkComponent,
   render_component_preview: handleRenderComponentPreview,

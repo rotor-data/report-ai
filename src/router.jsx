@@ -7,6 +7,7 @@ import FontManager from "./pages/FontManager";
 import V2Dashboard from "./pages/V2Dashboard";
 import V2ReportEditor from "./pages/V2ReportEditor";
 import V2AssetLibrary from "./pages/V2AssetLibrary";
+import V2ComponentLibrary from "./pages/V2ComponentLibrary";
 import EditorV2 from "./pages/EditorV2";
 
 export const router = createBrowserRouter([
@@ -24,6 +25,7 @@ export const router = createBrowserRouter([
       { path: "v2", element: <V2Dashboard /> },
       { path: "v2/reports/:id", element: <V2ReportEditor /> },
       { path: "v2/assets", element: <V2AssetLibrary /> },
+      { path: "v2/components", element: <V2ComponentLibrary /> },
     ],
   },
 ]);
