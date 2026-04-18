@@ -418,6 +418,7 @@ const TOOLS = [
         label: { type: "string", description: "Human-readable name, e.g. 'KPI-grupp med accent-border'" },
         html_template: { type: "string", description: "HTML with {{PLACEHOLDER}} tokens. Use component-name-prefixed CSS classes (e.g. '.fs-blocks .val', '.heading-split __word') — NOT inline styles. One stylesheet per document at render time, so classes must not collide with other components." },
         css_template: { type: "string", description: "The CSS rules for the classes used in html_template. Scoped naturally by class prefix (e.g. '.fs-blocks .val { ... }'). Included in the document-level stylesheet at compose time so editor + PDF render identically." },
+        splittable: { type: "boolean", description: "Can this variant be split across a page boundary? body_text / list DEFAULT true, other types DEFAULT false. Set true for plain lists / body text without per-item decoration. Set false for decorated variants (per-item backgrounds, gradients, borders) that look broken when split. Null/omitted = use the type default." },
         placeholder_schema: { type: "array", items: { type: "object" }, description: "Array of {name, required?, type?} describing placeholders" },
         design_notes: { type: "string", description: "Art director notes explaining the design choices" },
         source: { type: "string", enum: ["extraction", "report", "manual"] },
@@ -443,6 +444,33 @@ const TOOLS = [
         extraction_id: { type: "string", description: "Filter to one specific extraction session" },
       },
       required: ["brand_id"],
+    },
+  },
+  {
+    name: "render_brand_components",
+    description: "DEV: renders all saved brand_components for a brand into a single overview document (one card per component: name, variant, splittable flag, and the rendered preview). Returns a PDF URL so you can visually browse the entire library. Complements /v2/components dashboard.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brand_id: { type: "string" },
+        include_drafts: { type: "boolean", description: "Include draft/deprecated components (default false, ready only)" },
+      },
+      required: ["brand_id"],
+    },
+  },
+  {
+    name: "measure_height",
+    description: "Measure the rendered height (mm) of an HTML fragment at a given page width. Thin wrapper around smyra-render /render/measure. Used by page-compose to detect page overflow before writing modules.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        html_fragment: { type: "string" },
+        page_width_mm: { type: "number" },
+        brand_tokens: { type: "object" },
+        brand_fonts: { type: "array" },
+        document_css: { type: "string" },
+      },
+      required: ["html_fragment"],
     },
   },
   {
@@ -1731,6 +1759,7 @@ async function handleSaveComponent(userId, args) {
     label,
     html_template,
     css_template,
+    splittable,
     placeholder_schema,
     design_notes,
     source,
@@ -1773,6 +1802,7 @@ async function handleSaveComponent(userId, args) {
           variant_name = ${variantLabel},
           html_template = ${html_template},
           css_template = ${css_template ?? null},
+          splittable = ${typeof splittable === 'boolean' ? splittable : null},
           placeholder_schema = ${JSON.stringify(placeholder_schema || [])}::jsonb,
           design_notes = ${design_notes || null},
           source = ${source || 'manual'},
@@ -1808,6 +1838,7 @@ async function handleSaveComponent(userId, args) {
       SET label = ${label},
           html_template = ${html_template},
           css_template = ${css_template ?? null},
+          splittable = ${typeof splittable === 'boolean' ? splittable : null},
           placeholder_schema = ${JSON.stringify(placeholder_schema || [])}::jsonb,
           design_notes = ${design_notes || null},
           source = ${source || 'manual'},
@@ -1828,13 +1859,14 @@ async function handleSaveComponent(userId, args) {
 
   const rows = await sql`
     INSERT INTO brand_components (
-      brand_id, component_type, variant_name, label, html_template, css_template, placeholder_schema,
+      brand_id, component_type, variant_name, label, html_template, css_template, splittable, placeholder_schema,
       design_notes, source, is_default,
       extraction_id, is_public, unsplash_query, reference_page_numbers, status, page_format
     )
     VALUES (
       ${brand_id}, ${component_type}, ${variantLabel}, ${label}, ${html_template},
       ${css_template ?? null},
+      ${typeof splittable === 'boolean' ? splittable : null},
       ${JSON.stringify(placeholder_schema || [])}::jsonb,
       ${design_notes || null}, ${source || 'manual'}, ${is_default || false},
       ${extraction_id || null}, ${is_public === true}, ${unsplash_query || null},
@@ -1870,7 +1902,7 @@ async function handleListComponents(userId, args) {
 
   const rows = await sql`
     SELECT id, brand_id, component_type, variant_name, label, is_default,
-           placeholder_schema, html_template, css_template, design_notes, source,
+           placeholder_schema, html_template, css_template, splittable, design_notes, source,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
            thumbnail_url, thumbnail_generated_at, status, page_format,
            version, created_at, updated_at
@@ -1888,6 +1920,202 @@ async function handleListComponents(userId, args) {
 }
 
 // ─── Handler: fork_component ────────────────────────────────────────────────
+
+// ─── Handler: render_brand_components ───────────────────────────────────────
+
+async function handleRenderBrandComponents(userId, args) {
+  const sql = getSql();
+  const { brand_id, include_drafts } = args || {};
+  if (!brand_id) return errorResult("brand_id is required.");
+
+  const brands = await sql`SELECT id, tokens, tenant_id, name FROM brands WHERE id = ${brand_id} LIMIT 1`;
+  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
+  const brand = brands[0];
+
+  const components = include_drafts
+    ? await sql`SELECT * FROM brand_components WHERE brand_id = ${brand_id} ORDER BY component_type, is_default DESC, variant_name`
+    : await sql`SELECT * FROM brand_components WHERE brand_id = ${brand_id} AND status = 'ready' ORDER BY component_type, is_default DESC, variant_name`;
+
+  if (!components.length) {
+    return errorResult(`No components found for brand ${brand_id}.`);
+  }
+
+  // Build a single freeform HTML page listing every component with a preview.
+  const tokens = brand.tokens || {};
+  const fonts = await sql`SELECT family, weight, style, format, data_base64 FROM brand_fonts WHERE brand_id = ${brand_id}`;
+
+  // Assemble page CSS: brand vars + all component CSS + overview chrome
+  const cssLayers = [':root {'];
+  const colorMap = {
+    primary_color: '--primary', primary_dark_color: '--primary-dark', accent_color: '--accent',
+    secondary_color: '--secondary', text_color: '--text', text_muted_color: '--text-muted',
+    bg_color: '--bg', bg_light_color: '--bg-light', surface_color: '--surface', border_color: '--border',
+  };
+  for (const [k, v] of Object.entries(tokens)) {
+    if (k.startsWith('_') || v == null || v === '') continue;
+    if (colorMap[k]) { cssLayers.push(`  ${colorMap[k]}: ${v};`); continue; }
+    if (k === 'font_display') { cssLayers.push(`  --font-display: '${v}', system-ui, sans-serif;`); continue; }
+    if (k === 'font_heading') { cssLayers.push(`  --font-heading: '${v}', system-ui, sans-serif;`); continue; }
+    if (k === 'font_body')    { cssLayers.push(`  --font-body: '${v}', system-ui, sans-serif;`); continue; }
+    cssLayers.push(`  --${k.replace(/_/g, '-')}: ${v};`);
+  }
+  cssLayers.push('}');
+  cssLayers.push(`
+    .lib-page { padding: 15mm; font-family: var(--font-body, system-ui); color: var(--text, #111); background: var(--bg, #fff); }
+    .lib-title { font-family: var(--font-display, serif); font-size: 18pt; margin-bottom: 8mm; color: var(--primary, #222); }
+    .lib-card { margin-bottom: 12mm; padding: 6mm; border: 1px solid var(--border, #ddd); border-radius: 2mm; page-break-inside: avoid; }
+    .lib-card-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4mm; border-bottom: 1px dashed var(--border, #ddd); padding-bottom: 2mm; }
+    .lib-card-name { font-family: var(--font-heading, sans-serif); font-size: 11pt; font-weight: 600; color: var(--primary, #222); }
+    .lib-card-meta { font-size: 7pt; color: var(--text-muted, #666); }
+    .lib-card-badges { font-size: 7pt; }
+    .lib-card-preview { padding: 4mm; background: var(--bg-light, #f5f5f5); border-radius: 1mm; }
+    .lib-split-yes { color: #15803d; }
+    .lib-split-no { color: #b91c1c; }
+  `);
+  for (const c of components) {
+    if (c.css_template?.trim()) {
+      cssLayers.push(`/* ${c.component_type} — ${c.variant_name || 'Default'} */`);
+      cssLayers.push(c.css_template.trim());
+    }
+  }
+  const pageCss = cssLayers.join('\n');
+
+  const SPLIT_DEFAULTS_JS = {
+    body_text: true, list: true,
+  };
+  function isSplit(c) {
+    if (typeof c.splittable === 'boolean') return c.splittable;
+    return SPLIT_DEFAULTS_JS[c.component_type] ?? false;
+  }
+
+  const cards = components.map(c => {
+    // Fill placeholders with human-readable labels
+    const filled = (c.html_template || '').replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (_, k) => {
+      // Use short examples for preview
+      const labelMap = {
+        TITLE: c.label || c.component_type,
+        SUBTITLE: 'Exempeltext — undertitel',
+        OVERLINE: 'KAPITEL 1',
+        BODY: 'Detta är exempeltext för brödtextförhandsvisning. '.repeat(5).trim(),
+        INTRO: 'Kort introduktion som visar intro-stilen.',
+        DATE: new Date().getFullYear().toString(),
+        CHAPTER_NUMBER: '01',
+        FACT_VALUE_1: '15', FACT_LABEL_1: 'Kontor',
+        FACT_VALUE_2: '4',  FACT_LABEL_2: 'Länder',
+        FACT_VALUE_3: '342', FACT_LABEL_3: 'Anställda',
+        FACT_VALUE_4: '98%', FACT_LABEL_4: 'Nöjdhet',
+        KPI_VALUE_1: '15', KPI_LABEL_1: 'Kontor',
+        KPI_VALUE_2: '4',  KPI_LABEL_2: 'Länder',
+        KPI_VALUE_3: '342', KPI_LABEL_3: 'Anställda',
+        KPI_VALUE_4: '98%', KPI_LABEL_4: 'Nöjdhet',
+      };
+      return labelMap[k] || `[${k}]`;
+    });
+    const split = isSplit(c);
+    return `
+      <div class="lib-card">
+        <div class="lib-card-header">
+          <div>
+            <div class="lib-card-name">${escapeHtml(c.label || c.component_type)}</div>
+            <div class="lib-card-meta">${c.component_type} • ${c.variant_name || 'Default'}${c.is_default ? ' • default' : ''}${c.page_format && c.page_format !== 'universal' ? ` • ${c.page_format}` : ''} • v${c.version}</div>
+          </div>
+          <div class="lib-card-badges">
+            <span class="${split ? 'lib-split-yes' : 'lib-split-no'}">${split ? '✂ splittable' : '🔒 atomic'}</span>
+          </div>
+        </div>
+        <div class="lib-card-preview">${filled}</div>
+      </div>
+    `;
+  }).join('\n');
+
+  const bodyHtml = `
+    <div class="lib-page">
+      <div class="lib-title">${escapeHtml(brand.name || 'Brand')} — komponentbibliotek (${components.length} komponenter)</div>
+      ${cards}
+    </div>
+  `;
+
+  // Render via smyra-render as a freeform page
+  try {
+    const pdfResult = await callRenderService("/render/pdf", {
+      report_id: null,
+      title: `${brand.name || 'Brand'} — component library`,
+      mode: 'final',
+      page_format: 'a4_portrait',
+      pages: [{
+        page_type: 'content',
+        modules: [{
+          module_type: 'freeform',
+          html_content: bodyHtml,
+          html_cache: bodyHtml,
+        }],
+      }],
+      brand_tokens: tokens,
+      brand_fonts: fonts,
+      document_css: pageCss,
+    }, brand.tenant_id);
+
+    const { connectLambda, getStore } = await import("@netlify/blobs");
+    let store;
+    try { store = getStore("report-ai-pdfs"); } catch {
+      const siteID = process.env.NETLIFY_SITE_ID;
+      const token = process.env.NETLIFY_API_TOKEN;
+      store = getStore({ name: "report-ai-pdfs", siteID, token });
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const blobKey = `tenants/${brand.tenant_id}/brand-library/${brand_id}/${timestamp}.pdf`;
+    const pdfBuffer = pdfResult.pdf_bytes
+      ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+    if (!pdfBuffer) throw new Error("Render service returned no PDF bytes");
+    await store.set(blobKey, pdfBuffer, { contentType: "application/pdf" });
+
+    const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+    const pdfUrl = `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(blobKey)}`;
+
+    return textResult({
+      ok: true,
+      brand_id,
+      brand_name: brand.name,
+      components_rendered: components.length,
+      pdf_url: pdfUrl,
+      blob_key: blobKey,
+      size_bytes: pdfBuffer.length,
+    });
+  } catch (err) {
+    return errorResult(`render_brand_components failed: ${err.message}`);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ─── Handler: measure_height ────────────────────────────────────────────────
+
+async function handleMeasureHeight(userId, args) {
+  const { html_fragment, page_width_mm, brand_tokens, brand_fonts, document_css } = args || {};
+  if (typeof html_fragment !== "string" || !html_fragment.trim()) {
+    return errorResult("html_fragment is required.");
+  }
+  // Tenant for the render JWT is derived from the caller's user; pick their
+  // primary tenant. Falls back to 'default' if none resolved — /render/measure
+  // only cares that the JWT parses, not that the tenant is meaningful.
+  const sql = getSql();
+  const tenantRow = await sql`SELECT tenant_id FROM v2_reports WHERE id IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
+  const tenantId = tenantRow[0]?.tenant_id || "default";
+  try {
+    const res = await callRenderService("/render/measure", {
+      html_fragment,
+      page_width_mm: typeof page_width_mm === "number" ? page_width_mm : 170,
+      brand_tokens: brand_tokens || {},
+      brand_fonts: brand_fonts || [],
+      document_css: typeof document_css === "string" ? document_css : undefined,
+    }, tenantId);
+    return textResult({ height_mm: res?.height_mm ?? null });
+  } catch (err) {
+    return errorResult(`measure_height failed: ${err.message}`);
+  }
+}
 
 // ─── Handler: test_run_report ───────────────────────────────────────────────
 //
@@ -2418,7 +2646,7 @@ async function handleGetComponent(userId, args) {
   if (!component_id) return errorResult("component_id is required.");
 
   const rows = await sql`
-    SELECT id, brand_id, component_type, variant_name, label, html_template, css_template, placeholder_schema,
+    SELECT id, brand_id, component_type, variant_name, label, html_template, css_template, splittable, placeholder_schema,
            design_notes, source, version, is_default,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
            created_at, updated_at
@@ -2910,7 +3138,9 @@ const HANDLERS = {
   delete_component:      handleDeleteComponent,
   list_reports:          handleListReports,
   save_document_css:     handleSaveDocumentCss,
+  measure_height:        handleMeasureHeight,
   test_run_report:       handleTestRunReport,
+  render_brand_components: handleRenderBrandComponents,
   get_component:         handleGetComponent,
   fork_component:        handleForkComponent,
   render_component_preview: handleRenderComponentPreview,

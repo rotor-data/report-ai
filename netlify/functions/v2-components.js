@@ -72,12 +72,18 @@ export const handler = async (event) => {
       if (auth.editorScope) return json(event, 403, { error: "Editor token cannot update components" });
       let body = {};
       try { body = event.body ? JSON.parse(event.body) : {}; } catch { return json(event, 400, { error: "Invalid JSON" }); }
-      const { status, variant_name, label } = body;
-      if (!status && typeof variant_name === "undefined" && typeof label === "undefined") {
+      const { status, variant_name, label, splittable } = body;
+      if (!status
+          && typeof variant_name === "undefined"
+          && typeof label === "undefined"
+          && typeof splittable === "undefined") {
         return json(event, 400, { error: "No updatable fields in body" });
       }
       if (status && !["draft", "ready", "deprecated"].includes(status)) {
         return json(event, 400, { error: "Invalid status" });
+      }
+      if (typeof splittable !== "undefined" && splittable !== null && typeof splittable !== "boolean") {
+        return json(event, 400, { error: "splittable must be boolean or null" });
       }
       // Tenant scope for PATCH
       {
@@ -91,14 +97,23 @@ export const handler = async (event) => {
           }
         }
       }
+      // splittable needs dedicated handling: null is a legitimate stored value
+      // ("use type default"), so we can't use COALESCE against it.
+      let splittableSet;
+      if (typeof splittable === "undefined") {
+        splittableSet = null; // sentinel meaning "don't touch"
+      } else {
+        splittableSet = { value: splittable };
+      }
       const updated = await sql`
         UPDATE brand_components SET
           status = COALESCE(${status ?? null}, status),
           variant_name = COALESCE(${typeof variant_name === "undefined" ? null : variant_name}, variant_name),
           label = COALESCE(${typeof label === "undefined" ? null : label}, label),
+          splittable = CASE WHEN ${splittableSet !== null} THEN ${splittableSet?.value ?? null}::boolean ELSE splittable END,
           updated_at = NOW()
         WHERE id = ${componentId}
-        RETURNING id, status, variant_name, label
+        RETURNING id, status, variant_name, label, splittable
       `;
       if (!updated.length) return json(event, 404, { error: "Component not found" });
       return json(event, 200, { ok: true, item: updated[0] });
@@ -108,7 +123,7 @@ export const handler = async (event) => {
     if (componentId) {
       const rows = await sql`
         SELECT id, brand_id, component_type, variant_name, page_format, status,
-               label, html_template, css_template,
+               label, html_template, css_template, splittable,
                placeholder_schema, design_notes, source, version, is_default,
                created_at, updated_at
         FROM brand_components WHERE id = ${componentId} LIMIT 1
@@ -164,7 +179,7 @@ export const handler = async (event) => {
     const rows = componentType
       ? await sql`
           SELECT id, brand_id, component_type, variant_name, page_format, status,
-                 label, html_template, css_template,
+                 label, html_template, css_template, splittable,
                  placeholder_schema, design_notes, source, version, is_default,
                  created_at, updated_at
           FROM brand_components
@@ -173,7 +188,7 @@ export const handler = async (event) => {
         `
       : await sql`
           SELECT id, brand_id, component_type, variant_name, page_format, status,
-                 label, html_template, css_template,
+                 label, html_template, css_template, splittable,
                  placeholder_schema, design_notes, source, version, is_default,
                  created_at, updated_at
           FROM brand_components

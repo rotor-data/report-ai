@@ -62,6 +62,15 @@ export default function V2ComponentLibrary() {
     }
   };
 
+  const onSplittableChange = async (id, splittable) => {
+    try {
+      const res = await api.patchV2Component(id, { splittable });
+      setItems((prev) => prev.map((x) => (x.id === id ? { ...x, ...res.item } : x)));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const filtered = useMemo(() => {
     return items.filter((x) => {
       if (typeFilter && x.component_type !== typeFilter) return false;
@@ -157,6 +166,7 @@ export default function V2ComponentLibrary() {
                 {c.variant_name && <span>• {c.variant_name}</span>}
                 {c.page_format && <span>• {c.page_format}</span>}
                 <StatusChip status={c.status || "ready"} />
+                <SplitChip splittable={c.splittable} type={c.component_type} />
               </div>
             </button>
           ))}
@@ -171,6 +181,7 @@ export default function V2ComponentLibrary() {
             item={selected}
             onDelete={() => onDelete(selected.id, selected.label)}
             onStatusChange={(s) => onStatusChange(selected.id, s)}
+            onSplittableChange={(v) => onSplittableChange(selected.id, v)}
           />
         ) : (
           <div style={{ padding: 40, color: "#6b7280" }}>
@@ -182,7 +193,7 @@ export default function V2ComponentLibrary() {
   );
 }
 
-function ComponentDetail({ item, onDelete, onStatusChange }) {
+function ComponentDetail({ item, onDelete, onStatusChange, onSplittableChange }) {
   const previewSrc = useMemo(() => {
     // Render html_template with placeholders hinted as "[TOKEN]" so previews
     // show their shape even without live content.
@@ -255,6 +266,29 @@ ${componentCss}
         </div>
       </div>
 
+      <div style={{
+        display: "flex", gap: 12, alignItems: "center", marginBottom: 12,
+        padding: "8px 12px", background: "#f9fafb",
+        border: "1px solid #e5e7eb", borderRadius: 4, fontSize: 13,
+      }}>
+        <strong style={{ fontSize: 12, color: "#6b7280" }}>Kan delas över sidor:</strong>
+        <select
+          value={item.splittable === true ? "true" : item.splittable === false ? "false" : "default"}
+          onChange={(e) => {
+            const v = e.target.value === "true" ? true : e.target.value === "false" ? false : null;
+            onSplittableChange(v);
+          }}
+          style={{ padding: "4px 6px", border: "1px solid #d1d5db", borderRadius: 4 }}
+        >
+          <option value="default">Typ-default</option>
+          <option value="true">✂ Ja — kan splittas</option>
+          <option value="false">🔒 Nej — atomär</option>
+        </select>
+        <span style={{ fontSize: 11, color: "#9ca3af" }}>
+          body_text/list default = kan delas. Alla andra = atomär.
+        </span>
+      </div>
+
       {item.design_notes && (
         <div style={{ background: "#fef3c7", border: "1px solid #fde68a", padding: 10, borderRadius: 4, marginBottom: 12, fontSize: 13 }}>
           <strong>Design notes:</strong> {item.design_notes}
@@ -299,6 +333,14 @@ function StatusChip({ status }) {
   return (
     <span style={{ color, fontWeight: 500 }}>• {status}</span>
   );
+}
+
+const SPLIT_DEFAULTS = { body_text: true, list: true };
+function SplitChip({ splittable, type }) {
+  const effective = typeof splittable === "boolean" ? splittable : (SPLIT_DEFAULTS[type] ?? false);
+  const icon = effective ? "✂" : "🔒";
+  const color = effective ? "#15803d" : "#9ca3af";
+  return <span style={{ color, fontWeight: 500 }}>{icon}</span>;
 }
 
 const btn = {
