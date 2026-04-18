@@ -3167,13 +3167,21 @@ export const handler = async (event) => {
 
   const token = readBearerToken(event);
 
-  // Auth: Hub JWT (RS256)
+  // Auth: Hub JWT (RS256). Hub mints with aud=<module_slug>, so v2 users come
+  // through with aud='report-ai-v2'. Accept the legacy 'report-ai' audience
+  // too so any still-provisioned v1 tokens don't break during migration.
   const publicPem = process.env.HUB_JWT_PUBLIC_KEY_PEM;
   const issuer = process.env.HUB_JWT_ISSUER ?? "hub.rotor-platform.com";
-  const audience = process.env.MODULE_AUDIENCE ?? "report-ai";
+  const acceptedAudiences = process.env.MODULE_AUDIENCE
+    ? [process.env.MODULE_AUDIENCE]
+    : ["report-ai-v2", "report-ai"];
   if (!publicPem) return jsonResponse(500, { error: "HUB_JWT_PUBLIC_KEY_PEM not configured" });
 
-  const auth = verifyHubJwt(token, { publicPem, issuer, audience });
+  let auth;
+  for (const audience of acceptedAudiences) {
+    auth = verifyHubJwt(token, { publicPem, issuer, audience });
+    if (auth.ok) break;
+  }
   if (!auth.ok) return jsonResponse(401, { error: auth.error });
 
   const hubUserId = auth.payload.sub ?? auth.payload.user_id ?? auth.payload.tenant_id;
