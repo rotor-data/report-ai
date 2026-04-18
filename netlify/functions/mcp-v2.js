@@ -444,6 +444,18 @@ const TOOLS = [
     },
   },
   {
+    name: "delete_component",
+    description: "Delete a component from a brand's library. Use when the user wants to clean up unused or bad variants. Cannot be undone. For soft-delete (keep for history but hide from pickers), use save_component with status='deprecated' instead.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        component_id: { type: "string", description: "Component to delete" },
+        brand_id: { type: "string", description: "Must match — guards against cross-brand deletion" },
+      },
+      required: ["component_id", "brand_id"],
+    },
+  },
+  {
     name: "fork_component",
     description: "Copy a component from any brand's library (must be is_public=true if the source brand differs) into the target brand's library. Returns the new component_id. Use this to reuse a McKinsey-style pullquote designed for brand A in brand B's reports.",
     inputSchema: {
@@ -1688,8 +1700,10 @@ async function handleSaveComponent(userId, args) {
     unsplash_query,
     reference_page_numbers,
     status,
+    page_format,
   } = args;
   const statusValue = ['draft', 'ready', 'deprecated'].includes(status) ? status : 'ready';
+  const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'universal';
   if (!brand_id || !component_type || !label || !html_template) {
     return errorResult("brand_id, component_type, label, and html_template are required.");
   }
@@ -1727,6 +1741,7 @@ async function handleSaveComponent(userId, args) {
           unsplash_query = ${unsplash_query || null},
           reference_page_numbers = ${JSON.stringify(reference_page_numbers || [])}::jsonb,
           status = ${statusValue},
+          page_format = ${pageFormatValue},
           version = version + 1,
           updated_at = NOW()
       WHERE id = ${component_id} AND brand_id = ${brand_id}
@@ -1760,6 +1775,7 @@ async function handleSaveComponent(userId, args) {
           unsplash_query = ${unsplash_query || null},
           reference_page_numbers = ${JSON.stringify(reference_page_numbers || [])}::jsonb,
           status = ${statusValue},
+          page_format = ${pageFormatValue},
           version = version + 1,
           updated_at = NOW()
       WHERE id = ${existingId}
@@ -1772,7 +1788,7 @@ async function handleSaveComponent(userId, args) {
     INSERT INTO brand_components (
       brand_id, component_type, variant_name, label, html_template, placeholder_schema,
       design_notes, source, is_default,
-      extraction_id, is_public, unsplash_query, reference_page_numbers, status
+      extraction_id, is_public, unsplash_query, reference_page_numbers, status, page_format
     )
     VALUES (
       ${brand_id}, ${component_type}, ${variantLabel}, ${label}, ${html_template},
@@ -1780,19 +1796,19 @@ async function handleSaveComponent(userId, args) {
       ${design_notes || null}, ${source || 'manual'}, ${is_default || false},
       ${extraction_id || null}, ${is_public === true}, ${unsplash_query || null},
       ${JSON.stringify(reference_page_numbers || [])}::jsonb,
-      ${statusValue}
+      ${statusValue}, ${pageFormatValue}
     )
     RETURNING id
   `;
 
-  return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue });
+  return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue, page_format: pageFormatValue });
 }
 
 // ─── Handler: list_components ───────────────────────────────────────────────
 
 async function handleListComponents(userId, args) {
   const sql = getSql();
-  const { brand_id, component_type, variant_name, include_public, extraction_id, include_drafts, status } = args;
+  const { brand_id, component_type, variant_name, include_public, extraction_id, include_drafts, status, page_format } = args;
   if (!brand_id) return errorResult("brand_id is required.");
 
   const typeFilter = component_type || null;
@@ -1804,12 +1820,16 @@ async function handleListComponents(userId, args) {
   const statusFilter = status === 'all'
     ? null
     : (status && ['draft', 'ready', 'deprecated'].includes(status) ? status : (include_drafts ? null : 'ready'));
+  // page_format: when caller specifies a format, return components
+  // tagged with that format OR 'universal' (format-agnostic). Pass
+  // page_format='all' to skip the filter entirely.
+  const pageFormatFilter = (page_format && page_format !== 'all' && typeof page_format === 'string') ? page_format : null;
 
   const rows = await sql`
     SELECT id, brand_id, component_type, variant_name, label, is_default,
            placeholder_schema, html_template, design_notes, source,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
-           thumbnail_url, thumbnail_generated_at, status,
+           thumbnail_url, thumbnail_generated_at, status, page_format,
            version, created_at, updated_at
     FROM brand_components
     WHERE (brand_id = ${brand_id} OR (${includePublic} AND is_public = true))
@@ -1817,6 +1837,7 @@ async function handleListComponents(userId, args) {
       AND (${variantFilter}::text IS NULL OR variant_name = ${variantFilter})
       AND (${extractionFilter}::uuid IS NULL OR extraction_id = ${extractionFilter}::uuid)
       AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
+      AND (${pageFormatFilter}::text IS NULL OR page_format = ${pageFormatFilter} OR page_format = 'universal')
     ORDER BY component_type, is_default DESC, variant_name, updated_at DESC
   `;
 
@@ -1824,6 +1845,25 @@ async function handleListComponents(userId, args) {
 }
 
 // ─── Handler: fork_component ────────────────────────────────────────────────
+
+// ─── Handler: delete_component ──────────────────────────────────────────────
+
+async function handleDeleteComponent(userId, args) {
+  const sql = getSql();
+  const { component_id, brand_id } = args;
+  if (!component_id || !brand_id) {
+    return errorResult("component_id and brand_id are required.");
+  }
+  const rows = await sql`
+    DELETE FROM brand_components
+    WHERE id = ${component_id} AND brand_id = ${brand_id}
+    RETURNING id, component_type, variant_name, label
+  `;
+  if (!rows.length) {
+    return errorResult(`Component ${component_id} not found for brand ${brand_id}.`);
+  }
+  return textResult({ deleted: true, component_id: rows[0].id, component_type: rows[0].component_type, variant_name: rows[0].variant_name, label: rows[0].label });
+}
 
 async function handleForkComponent(userId, args) {
   const sql = getSql();
@@ -2563,6 +2603,7 @@ const HANDLERS = {
   create_from_blueprint: handleCreateFromBlueprint,
   save_component:        handleSaveComponent,
   list_components:       handleListComponents,
+  delete_component:      handleDeleteComponent,
   get_component:         handleGetComponent,
   fork_component:        handleForkComponent,
   render_component_preview: handleRenderComponentPreview,
