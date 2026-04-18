@@ -38,6 +38,29 @@ export const handler = async (event) => {
     if (event.httpMethod === "DELETE") {
       if (!componentId) return json(event, 400, { error: "Missing component id" });
       if (auth.editorScope) return json(event, 403, { error: "Editor token cannot delete components" });
+      // is_default components are load-bearing for design_missing runs. Refuse
+      // to delete them straight — caller must first demote to a non-default
+      // (or another entry has to be promoted in its place).
+      const target = await sql`
+        SELECT id, is_default, component_type, brand_id FROM brand_components WHERE id = ${componentId} LIMIT 1
+      `;
+      if (!target.length) return json(event, 404, { error: "Component not found" });
+      // Tenant scope
+      {
+        const tenantId = auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id;
+        if (tenantId) {
+          const owners = await sql`SELECT tenant_id FROM brands WHERE id = ${target[0].brand_id} LIMIT 1`;
+          if (!owners.length || owners[0].tenant_id !== tenantId) {
+            return json(event, 403, { error: "Component not accessible in this tenant" });
+          }
+        }
+      }
+      if (target[0].is_default) {
+        return json(event, 409, {
+          error: "Cannot delete the default variant — promote another variant to default first, or mark this one deprecated.",
+          hint: "PATCH /api/v2-components/<id> { status: 'deprecated' } is usually the right move.",
+        });
+      }
       const deleted = await sql`DELETE FROM brand_components WHERE id = ${componentId} RETURNING id`;
       if (!deleted.length) return json(event, 404, { error: "Component not found" });
       return json(event, 200, { ok: true, id: componentId });
@@ -55,6 +78,18 @@ export const handler = async (event) => {
       }
       if (status && !["draft", "ready", "deprecated"].includes(status)) {
         return json(event, 400, { error: "Invalid status" });
+      }
+      // Tenant scope for PATCH
+      {
+        const existing = await sql`SELECT brand_id FROM brand_components WHERE id = ${componentId} LIMIT 1`;
+        if (!existing.length) return json(event, 404, { error: "Component not found" });
+        const tenantId = auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id;
+        if (tenantId) {
+          const owners = await sql`SELECT tenant_id FROM brands WHERE id = ${existing[0].brand_id} LIMIT 1`;
+          if (!owners.length || owners[0].tenant_id !== tenantId) {
+            return json(event, 403, { error: "Component not accessible in this tenant" });
+          }
+        }
       }
       const updated = await sql`
         UPDATE brand_components SET
@@ -89,6 +124,14 @@ export const handler = async (event) => {
         if (!reports.length || reports[0].brand_id !== rows[0].brand_id) {
           return json(event, 403, { error: "Editor token does not match component brand" });
         }
+      } else {
+        const tenantId = auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id;
+        if (tenantId) {
+          const owners = await sql`SELECT tenant_id FROM brands WHERE id = ${rows[0].brand_id} LIMIT 1`;
+          if (!owners.length || owners[0].tenant_id !== tenantId) {
+            return json(event, 403, { error: "Component not accessible in this tenant" });
+          }
+        }
       }
       return json(event, 200, { item: rows[0] });
     }
@@ -104,6 +147,17 @@ export const handler = async (event) => {
       `;
       if (!reports.length || reports[0].brand_id !== brandId) {
         return json(event, 403, { error: "Editor token does not match brand" });
+      }
+    } else {
+      // Hub JWT — enforce that the requested brand lives in the caller's
+      // tenant. Without this any Hub user who knows a brand_id could read
+      // another tenant's component library.
+      const tenantId = auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id;
+      if (tenantId) {
+        const owners = await sql`SELECT tenant_id FROM brands WHERE id = ${brandId} LIMIT 1`;
+        if (!owners.length || owners[0].tenant_id !== tenantId) {
+          return json(event, 403, { error: "Brand not accessible in this tenant" });
+        }
       }
     }
 
