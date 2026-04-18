@@ -1687,7 +1687,9 @@ async function handleSaveComponent(userId, args) {
     is_public,
     unsplash_query,
     reference_page_numbers,
+    status,
   } = args;
+  const statusValue = ['draft', 'ready', 'deprecated'].includes(status) ? status : 'ready';
   if (!brand_id || !component_type || !label || !html_template) {
     return errorResult("brand_id, component_type, label, and html_template are required.");
   }
@@ -1724,13 +1726,14 @@ async function handleSaveComponent(userId, args) {
           is_public = ${is_public === true},
           unsplash_query = ${unsplash_query || null},
           reference_page_numbers = ${JSON.stringify(reference_page_numbers || [])}::jsonb,
+          status = ${statusValue},
           version = version + 1,
           updated_at = NOW()
       WHERE id = ${component_id} AND brand_id = ${brand_id}
       RETURNING id
     `;
     if (!rows.length) return errorResult(`Component ${component_id} not found for brand ${brand_id}.`);
-    return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, updated: true });
+    return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue, updated: true });
   }
 
   // If a variant with the same (brand, type, variant_name) already exists, update it in place
@@ -1756,56 +1759,64 @@ async function handleSaveComponent(userId, args) {
           is_public = ${is_public === true},
           unsplash_query = ${unsplash_query || null},
           reference_page_numbers = ${JSON.stringify(reference_page_numbers || [])}::jsonb,
+          status = ${statusValue},
           version = version + 1,
           updated_at = NOW()
       WHERE id = ${existingId}
       RETURNING id
     `;
-    return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, updated: true });
+    return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue, updated: true });
   }
 
   const rows = await sql`
     INSERT INTO brand_components (
       brand_id, component_type, variant_name, label, html_template, placeholder_schema,
       design_notes, source, is_default,
-      extraction_id, is_public, unsplash_query, reference_page_numbers
+      extraction_id, is_public, unsplash_query, reference_page_numbers, status
     )
     VALUES (
       ${brand_id}, ${component_type}, ${variantLabel}, ${label}, ${html_template},
       ${JSON.stringify(placeholder_schema || [])}::jsonb,
       ${design_notes || null}, ${source || 'manual'}, ${is_default || false},
       ${extraction_id || null}, ${is_public === true}, ${unsplash_query || null},
-      ${JSON.stringify(reference_page_numbers || [])}::jsonb
+      ${JSON.stringify(reference_page_numbers || [])}::jsonb,
+      ${statusValue}
     )
     RETURNING id
   `;
 
-  return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label });
+  return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue });
 }
 
 // ─── Handler: list_components ───────────────────────────────────────────────
 
 async function handleListComponents(userId, args) {
   const sql = getSql();
-  const { brand_id, component_type, variant_name, include_public, extraction_id } = args;
+  const { brand_id, component_type, variant_name, include_public, extraction_id, include_drafts, status } = args;
   if (!brand_id) return errorResult("brand_id is required.");
 
   const typeFilter = component_type || null;
   const variantFilter = variant_name || null;
   const extractionFilter = extraction_id || null;
   const includePublic = include_public === true;
+  // Default: only 'ready' components. Caller can pass include_drafts=true
+  // or status='all' / status='<specific>' to widen the query.
+  const statusFilter = status === 'all'
+    ? null
+    : (status && ['draft', 'ready', 'deprecated'].includes(status) ? status : (include_drafts ? null : 'ready'));
 
   const rows = await sql`
     SELECT id, brand_id, component_type, variant_name, label, is_default,
            placeholder_schema, html_template, design_notes, source,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
-           thumbnail_url, thumbnail_generated_at,
+           thumbnail_url, thumbnail_generated_at, status,
            version, created_at, updated_at
     FROM brand_components
     WHERE (brand_id = ${brand_id} OR (${includePublic} AND is_public = true))
       AND (${typeFilter}::text IS NULL OR component_type = ${typeFilter})
       AND (${variantFilter}::text IS NULL OR variant_name = ${variantFilter})
       AND (${extractionFilter}::uuid IS NULL OR extraction_id = ${extractionFilter}::uuid)
+      AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
     ORDER BY component_type, is_default DESC, variant_name, updated_at DESC
   `;
 
