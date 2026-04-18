@@ -191,7 +191,7 @@ export const handler = async (event) => {
 
   try {
     const [report] = await sql`
-      SELECT id, brand_id, template_id, tenant_id FROM v2_reports WHERE id = ${reportId} LIMIT 1
+      SELECT id, brand_id, template_id, tenant_id, document_css FROM v2_reports WHERE id = ${reportId} LIMIT 1
     `;
     if (!report) return json(event, 404, { error: "Report not found" });
 
@@ -230,18 +230,36 @@ export const handler = async (event) => {
 
     const fontFaceCss = buildFontFaceCss(fonts);
     const tokenCss = buildTokenCss(tokens);
-    const designSystemCss = await loadDesignSystemCss();
 
-    const bundle = [
-      "/* ========== @font-face ========== */",
-      fontFaceCss,
-      "/* ========== :root tokens ========== */",
-      tokenCss,
-      "/* ========== design-system.css ========== */",
-      designSystemCss,
-      "/* ========== template css_base ========== */",
-      cssBase,
-    ].join("\n\n");
+    // Preferred path: the compose step has snapshotted a single document_css
+    // that already contains brand vars + design-system + per-component CSS in
+    // deterministic layer order. Serve that straight to the editor so its
+    // preview matches the PDF exactly. @font-face blocks still need to be
+    // prepended — those are per-brand, not per-report.
+    let bundle;
+    if (report.document_css && report.document_css.trim()) {
+      bundle = [
+        "/* ========== @font-face (brand fonts) ========== */",
+        fontFaceCss,
+        "/* ========== document_css snapshot (compose_pages) ========== */",
+        report.document_css,
+        "/* ========== template css_base ========== */",
+        cssBase,
+      ].join("\n\n");
+    } else {
+      // Legacy path for reports composed before 019_document_css landed.
+      const designSystemCss = await loadDesignSystemCss();
+      bundle = [
+        "/* ========== @font-face ========== */",
+        fontFaceCss,
+        "/* ========== :root tokens ========== */",
+        tokenCss,
+        "/* ========== design-system.css ========== */",
+        designSystemCss,
+        "/* ========== template css_base ========== */",
+        cssBase,
+      ].join("\n\n");
+    }
 
     const logos = logoRows.map((row) => ({
       variant: row.variant || "default",

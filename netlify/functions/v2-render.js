@@ -98,7 +98,7 @@ export const handler = async (event) => {
 
   try {
     const reports = await sql`
-      SELECT id, tenant_id, brand_id, title, template_id, page_format FROM v2_reports WHERE id = ${report_id} LIMIT 1
+      SELECT id, tenant_id, brand_id, title, template_id, page_format, document_css FROM v2_reports WHERE id = ${report_id} LIMIT 1
     `;
     if (!reports.length) return json(event, 404, { error: "Report not found" });
     const report = reports[0];
@@ -161,6 +161,11 @@ export const handler = async (event) => {
       brand_fonts: brand.fonts,
       brand_logos: brand.logos,
       css_base: cssBase,
+      // document_css is the authoritative stylesheet snapshot written by
+      // compose_pages — brand vars + design-system + per-component CSS.
+      // When present, smyra-render layers it over its generic defaults so
+      // WeasyPrint output matches the editor preview exactly.
+      document_css: report.document_css ?? null,
     }, report.tenant_id);
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

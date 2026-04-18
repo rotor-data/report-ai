@@ -416,7 +416,8 @@ const TOOLS = [
         component_type: { type: "string", description: "Canonical component type id (validated in application code, DB constraint relaxed)." },
         variant_name: { type: "string", description: "Named variant of this component_type (e.g. 'Bold', 'Minimal', 'Editorial'). Defaults to 'Default'. Two components with the same (component_type, variant_name) for the same brand are NOT allowed — use component_id to update existing." },
         label: { type: "string", description: "Human-readable name, e.g. 'KPI-grupp med accent-border'" },
-        html_template: { type: "string", description: "HTML with {{PLACEHOLDER}} tokens using design system CSS classes" },
+        html_template: { type: "string", description: "HTML with {{PLACEHOLDER}} tokens. Use component-name-prefixed CSS classes (e.g. '.fs-blocks .val', '.heading-split __word') — NOT inline styles. One stylesheet per document at render time, so classes must not collide with other components." },
+        css_template: { type: "string", description: "The CSS rules for the classes used in html_template. Scoped naturally by class prefix (e.g. '.fs-blocks .val { ... }'). Included in the document-level stylesheet at compose time so editor + PDF render identically." },
         placeholder_schema: { type: "array", items: { type: "object" }, description: "Array of {name, required?, type?} describing placeholders" },
         design_notes: { type: "string", description: "Art director notes explaining the design choices" },
         source: { type: "string", enum: ["extraction", "report", "manual"] },
@@ -442,6 +443,30 @@ const TOOLS = [
         extraction_id: { type: "string", description: "Filter to one specific extraction session" },
       },
       required: ["brand_id"],
+    },
+  },
+  {
+    name: "test_run_report",
+    description: "DEV DIAGNOSTIC: runs a battery of checks on an existing report and returns a structured report of everything that looks wrong. Use after a workflow run to inspect: missing text content, unfilled {{placeholder}} tokens, empty module html_cache, document_css missing or tiny, brand_fonts mismatch vs tokens, un-inlined picsum/Unsplash URLs, per-module warnings. Output is a markdown diagnostic — paste it back to start fixing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        report_id: { type: "string" },
+        verbose: { type: "boolean", description: "Include per-module HTML dumps (large output; default false)" },
+      },
+      required: ["report_id"],
+    },
+  },
+  {
+    name: "save_document_css",
+    description: "Persist the assembled document-level stylesheet on v2_reports.document_css. Used by compose_pages after components are chosen; the editor and PDF render both load this exact string so preview and output match.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        report_id: { type: "string" },
+        document_css: { type: "string" },
+      },
+      required: ["report_id", "document_css"],
     },
   },
   {
@@ -1705,6 +1730,7 @@ async function handleSaveComponent(userId, args) {
     variant_name,
     label,
     html_template,
+    css_template,
     placeholder_schema,
     design_notes,
     source,
@@ -1746,6 +1772,7 @@ async function handleSaveComponent(userId, args) {
       SET label = ${label},
           variant_name = ${variantLabel},
           html_template = ${html_template},
+          css_template = ${css_template ?? null},
           placeholder_schema = ${JSON.stringify(placeholder_schema || [])}::jsonb,
           design_notes = ${design_notes || null},
           source = ${source || 'manual'},
@@ -1780,6 +1807,7 @@ async function handleSaveComponent(userId, args) {
       UPDATE brand_components
       SET label = ${label},
           html_template = ${html_template},
+          css_template = ${css_template ?? null},
           placeholder_schema = ${JSON.stringify(placeholder_schema || [])}::jsonb,
           design_notes = ${design_notes || null},
           source = ${source || 'manual'},
@@ -1800,12 +1828,13 @@ async function handleSaveComponent(userId, args) {
 
   const rows = await sql`
     INSERT INTO brand_components (
-      brand_id, component_type, variant_name, label, html_template, placeholder_schema,
+      brand_id, component_type, variant_name, label, html_template, css_template, placeholder_schema,
       design_notes, source, is_default,
       extraction_id, is_public, unsplash_query, reference_page_numbers, status, page_format
     )
     VALUES (
       ${brand_id}, ${component_type}, ${variantLabel}, ${label}, ${html_template},
+      ${css_template ?? null},
       ${JSON.stringify(placeholder_schema || [])}::jsonb,
       ${design_notes || null}, ${source || 'manual'}, ${is_default || false},
       ${extraction_id || null}, ${is_public === true}, ${unsplash_query || null},
@@ -1841,7 +1870,7 @@ async function handleListComponents(userId, args) {
 
   const rows = await sql`
     SELECT id, brand_id, component_type, variant_name, label, is_default,
-           placeholder_schema, html_template, design_notes, source,
+           placeholder_schema, html_template, css_template, design_notes, source,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
            thumbnail_url, thumbnail_generated_at, status, page_format,
            version, created_at, updated_at
@@ -1859,6 +1888,244 @@ async function handleListComponents(userId, args) {
 }
 
 // ─── Handler: fork_component ────────────────────────────────────────────────
+
+// ─── Handler: test_run_report ───────────────────────────────────────────────
+//
+// Dev-mode pipeline smoke test. Creates a mini-report from the brand's saved
+// component library, composes it with document_css, and returns a markdown
+// diagnostic of everything that looked wrong. Purpose: stop manually
+// reproducing bugs — press a button, read the findings.
+
+function fillTestTemplate(template, values) {
+  if (!template) return '';
+  return template.replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (_, k) => {
+    const v = values?.[k];
+    return v != null ? String(v) : `{{${k}}}`;
+  });
+}
+
+async function handleTestRunReport(userId, args) {
+  const sql = getSql();
+  const { brand_id, title: titleIn, verbose } = args || {};
+  if (!brand_id) return errorResult("brand_id is required.");
+
+  const title = titleIn || `Test run ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+  const warnings = [];
+  const errors = [];
+  const details = [];
+
+  // ── 1. Brand + tokens + fonts
+  const brands = await sql`SELECT id, tokens, tenant_id, name FROM brands WHERE id = ${brand_id} LIMIT 1`;
+  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
+  const brand = brands[0];
+  const tokens = brand.tokens || {};
+
+  const fonts = await sql`SELECT family, weight FROM brand_fonts WHERE brand_id = ${brand_id}`;
+  const loadedFamilies = new Set(fonts.map(f => String(f.family).toLowerCase()));
+  const expectedFamilies = [tokens.font_display, tokens.font_heading, tokens.font_body]
+    .filter(Boolean)
+    .map(String);
+  const missingFonts = [...new Set(expectedFamilies)]
+    .filter(f => !loadedFamilies.has(f.toLowerCase()));
+  if (missingFonts.length) {
+    warnings.push(`Brand tokens reference **${missingFonts.join(', ')}** but no rows in \`brand_fonts\` match. Editor + PDF will fall back to system-ui for those.`);
+  }
+
+  // ── 2. Library picks
+  const allComponents = await sql`
+    SELECT id, component_type, variant_name, html_template, css_template, is_default, status, page_format
+    FROM brand_components
+    WHERE brand_id = ${brand_id} AND status = 'ready'
+    ORDER BY is_default DESC, updated_at DESC
+  `;
+  const byType = new Map();
+  for (const c of allComponents) {
+    if (!byType.has(c.component_type)) byType.set(c.component_type, c);
+  }
+
+  const requiredTypes = ['cover', 'heading', 'body_text', 'kpi_group', 'back_cover'];
+  const missing = requiredTypes.filter(t => !byType.has(t));
+  if (missing.length) {
+    warnings.push(`Brand library missing components: **${missing.join(', ')}**. Skeletons will be used for those.`);
+  }
+
+  const componentsWithoutCss = [...byType.values()].filter(c => !c.css_template?.trim());
+  if (componentsWithoutCss.length) {
+    warnings.push(`**${componentsWithoutCss.length}** library components have no \`css_template\` (saved before 019 migration). They'll render with their legacy inline styles only.`);
+  }
+
+  // ── 3. Canned plan — exercises all key paths
+  const plan = [
+    { type: 'cover',      content: { TITLE: title, SUBTITLE: 'Auto-generated pipeline test', DATE: new Date().getFullYear().toString() } },
+    { type: 'heading',    content: { TITLE: 'Introduktion', OVERLINE: 'Kapitel 1' } },
+    { type: 'body_text',  content: { INTRO: 'Detta är en auto-genererad testrapport som täcker pipelinen från plan till render.', BODY: 'Brödtext i två spalter. '.repeat(20).trim() } },
+    { type: 'kpi_group',  content: { KPI_VALUE_1: '15', KPI_LABEL_1: 'Offices', KPI_VALUE_2: '4', KPI_LABEL_2: 'Countries', KPI_VALUE_3: '342', KPI_LABEL_3: 'Employees', KPI_VALUE_4: '98%', KPI_LABEL_4: 'Satisfaction' } },
+    { type: 'back_cover', content: { TITLE: 'Slut.', SUBTITLE: 'Test run complete.' } },
+  ];
+
+  // ── 4. Create report
+  let reportId;
+  try {
+    const rows = await sql`
+      INSERT INTO v2_reports (tenant_id, brand_id, title, document_type, status, page_format)
+      VALUES (${brand.tenant_id}, ${brand_id}, ${title}, 'test_run', 'draft', 'a4_portrait')
+      RETURNING id
+    `;
+    reportId = rows[0].id;
+  } catch (err) {
+    errors.push(`Failed to create report: ${err.message}`);
+    return textResult({ ok: false, errors, warnings, diagnostic_markdown: `❌ ${errors[0]}` });
+  }
+
+  // ── 5. Assemble document_css
+  const cssLayers = [];
+  cssLayers.push('/* ===== brand tokens (:root) ===== */');
+  cssLayers.push(':root {');
+  const colorMap = {
+    primary_color: '--primary', primary_dark_color: '--primary-dark', accent_color: '--accent',
+    secondary_color: '--secondary', text_color: '--text', text_muted_color: '--text-muted',
+    bg_color: '--bg', bg_light_color: '--bg-light', surface_color: '--surface', border_color: '--border',
+  };
+  for (const [k, v] of Object.entries(tokens)) {
+    if (k.startsWith('_') || v == null || v === '') continue;
+    if (colorMap[k]) { cssLayers.push(`  ${colorMap[k]}: ${v};`); continue; }
+    if (k === 'font_display') { cssLayers.push(`  --font-display: '${v}', system-ui, sans-serif;`); continue; }
+    if (k === 'font_heading') { cssLayers.push(`  --font-heading: '${v}', system-ui, sans-serif;`); continue; }
+    if (k === 'font_body')    { cssLayers.push(`  --font-body: '${v}', system-ui, sans-serif;`); continue; }
+    cssLayers.push(`  --${k.replace(/_/g, '-')}: ${v};`);
+  }
+  cssLayers.push('}');
+  cssLayers.push('');
+  cssLayers.push('/* ===== component CSS ===== */');
+  for (const c of byType.values()) {
+    if (!c.css_template?.trim()) continue;
+    cssLayers.push(`/* ${c.component_type} — ${c.variant_name || 'Default'} */`);
+    cssLayers.push(c.css_template.trim());
+    cssLayers.push('');
+  }
+  const documentCss = cssLayers.join('\n');
+  await sql`UPDATE v2_reports SET document_css = ${documentCss}, updated_at = NOW() WHERE id = ${reportId}`;
+
+  // ── 6. Insert modules + pages
+  let unfilledCount = 0;
+  let emptyTextNodes = 0;
+  for (let i = 0; i < plan.length; i++) {
+    const { type, content } = plan[i];
+    const comp = byType.get(type);
+    let htmlCache;
+    if (comp?.html_template) {
+      htmlCache = fillTestTemplate(comp.html_template, content);
+      const unfilled = htmlCache.match(/\{\{\s*[A-Z_][A-Z0-9_]*\s*\}\}/g);
+      if (unfilled?.length) {
+        unfilledCount += unfilled.length;
+        warnings.push(`Module ${i + 1} (${type}): **${unfilled.length} unfilled placeholders**: ${unfilled.slice(0, 3).join(', ')}${unfilled.length > 3 ? '…' : ''}. Plan content doesn't cover the template's tokens.`);
+      }
+      const emptyMatches = htmlCache.match(/<(div|span|p)[^>]*>\s*<\/\1>/g);
+      if (emptyMatches?.length) {
+        emptyTextNodes += emptyMatches.length;
+      }
+    } else {
+      htmlCache = `<div class="t-skeleton" style="padding:10mm;background:#fef3c7;border:1px dashed #d97706;color:#92400e;">[skeleton: no library component for <strong>${type}</strong>]</div>`;
+    }
+
+    const pageType = (type === 'cover' || type === 'back_cover' || type === 'chapter_break') ? type : 'content';
+    try {
+      const pageRows = await sql`
+        INSERT INTO v2_report_pages (report_id, page_number, page_type)
+        VALUES (${reportId}, ${i + 1}, ${pageType})
+        RETURNING id
+      `;
+      const pageId = pageRows[0].id;
+      await sql`
+        INSERT INTO v2_report_modules (report_id, page_id, module_type, order_index, content, html_content, html_cache, content_mapping)
+        VALUES (${reportId}, ${pageId}, ${'freeform'}, ${i},
+                ${JSON.stringify(content)}::jsonb, ${htmlCache}, ${htmlCache}, ${JSON.stringify(content)}::jsonb)
+      `;
+      details.push(`- ✅ Page ${i + 1} \`${type}\` (${htmlCache.length} bytes html_cache)`);
+    } catch (err) {
+      errors.push(`Module ${i + 1} (${type}) insert failed: ${err.message}`);
+    }
+  }
+
+  if (emptyTextNodes > 0) {
+    warnings.push(`Found **${emptyTextNodes}** empty text nodes across modules after placeholder fill. Likely cause: html_template has \`<div></div>\` shells waiting for content that doesn't exist in the plan.`);
+  }
+
+  // ── 7. Build diagnostic
+  const lines = [];
+  lines.push(`# Test run: ${title}`);
+  lines.push('');
+  lines.push(`- **Report id:** \`${reportId}\``);
+  lines.push(`- **Brand:** ${brand.name || brand_id}`);
+  lines.push(`- **Library:** ${byType.size} component types saved, ${[...byType.values()].filter(c => c.css_template).length} with css_template`);
+  lines.push(`- **document_css:** ${documentCss.length} bytes`);
+  lines.push(`- **Fonts uploaded:** ${fonts.length}${missingFonts.length ? ` (missing ${missingFonts.length})` : ''}`);
+  lines.push(`- **Modules written:** ${plan.length - errors.length}/${plan.length}`);
+  lines.push(`- **Unfilled placeholders:** ${unfilledCount}`);
+  lines.push(`- **Empty text nodes after fill:** ${emptyTextNodes}`);
+  lines.push('');
+
+  if (errors.length) {
+    lines.push('## ❌ Errors');
+    for (const e of errors) lines.push(`- ${e}`);
+    lines.push('');
+  }
+  if (warnings.length) {
+    lines.push('## ⚠️ Warnings');
+    for (const w of warnings) lines.push(`- ${w}`);
+    lines.push('');
+  }
+  if (!errors.length && !warnings.length) {
+    lines.push('## ✅ No issues found');
+    lines.push('Pipeline wrote everything cleanly. Next: open the editor to eyeball the visual result.');
+    lines.push('');
+  }
+
+  lines.push('## 🔍 How to inspect');
+  lines.push(`- **Editor preview:** open the SPA at \`/v2/reports/${reportId}\` and verify each page renders with brand fonts + component styles.`);
+  lines.push(`- **Render PDF:** \`POST /api/v2-render\` with \`{ "report_id": "${reportId}", "mode": "draft" }\` — compare against editor preview (they MUST match).`);
+  lines.push(`- **Component library:** \`/v2/components\` (filter by this brand) to inspect saved components and their css_template.`);
+  lines.push(`- **Delete test report when done:** \`DELETE /api/v2-reports/${reportId}\`.`);
+  lines.push('');
+
+  if (verbose && details.length) {
+    lines.push('## 📋 Per-module trace');
+    for (const d of details) lines.push(d);
+    lines.push('');
+  }
+
+  return textResult({
+    ok: errors.length === 0,
+    report_id: reportId,
+    warnings_count: warnings.length,
+    errors_count: errors.length,
+    unfilled_placeholders: unfilledCount,
+    empty_text_nodes: emptyTextNodes,
+    document_css_bytes: documentCss.length,
+    components_used: byType.size,
+    missing_components: missing,
+    missing_fonts: missingFonts,
+    diagnostic_markdown: lines.join('\n'),
+  });
+}
+
+// ─── Handler: save_document_css ─────────────────────────────────────────────
+
+async function handleSaveDocumentCss(userId, args) {
+  const sql = getSql();
+  const { report_id, document_css } = args || {};
+  if (!report_id) return errorResult("report_id is required.");
+  if (typeof document_css !== "string") return errorResult("document_css must be a string.");
+
+  const rows = await sql`
+    UPDATE v2_reports
+    SET document_css = ${document_css}, updated_at = NOW()
+    WHERE id = ${report_id}
+    RETURNING id
+  `;
+  if (!rows.length) return errorResult(`Report ${report_id} not found.`);
+  return textResult({ ok: true, report_id, bytes: document_css.length });
+}
 
 // ─── Handler: list_reports ──────────────────────────────────────────────────
 
@@ -1910,7 +2177,7 @@ async function handleForkComponent(userId, args) {
   }
 
   const srcRows = await sql`
-    SELECT brand_id, component_type, label, html_template, placeholder_schema,
+    SELECT brand_id, component_type, label, html_template, css_template, placeholder_schema,
            design_notes, source, extraction_id, is_public, unsplash_query,
            reference_page_numbers
     FROM brand_components
@@ -1934,13 +2201,13 @@ async function handleForkComponent(userId, args) {
 
   const rows = await sql`
     INSERT INTO brand_components (
-      brand_id, component_type, label, html_template, placeholder_schema,
+      brand_id, component_type, label, html_template, css_template, placeholder_schema,
       design_notes, source, is_default,
       extraction_id, is_public, unsplash_query, reference_page_numbers
     )
     VALUES (
       ${target_brand_id}, ${src.component_type}, ${label || src.label},
-      ${src.html_template},
+      ${src.html_template}, ${src.css_template ?? null},
       ${JSON.stringify(src.placeholder_schema || [])}::jsonb,
       ${src.design_notes}, 'fork', ${is_default === true},
       ${null}, ${false}, ${src.unsplash_query},
@@ -2151,7 +2418,7 @@ async function handleGetComponent(userId, args) {
   if (!component_id) return errorResult("component_id is required.");
 
   const rows = await sql`
-    SELECT id, brand_id, component_type, variant_name, label, html_template, placeholder_schema,
+    SELECT id, brand_id, component_type, variant_name, label, html_template, css_template, placeholder_schema,
            design_notes, source, version, is_default,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
            created_at, updated_at
@@ -2642,6 +2909,8 @@ const HANDLERS = {
   list_components:       handleListComponents,
   delete_component:      handleDeleteComponent,
   list_reports:          handleListReports,
+  save_document_css:     handleSaveDocumentCss,
+  test_run_report:       handleTestRunReport,
   get_component:         handleGetComponent,
   fork_component:        handleForkComponent,
   render_component_preview: handleRenderComponentPreview,

@@ -108,7 +108,7 @@ export const handler = async (event) => {
     if (componentId) {
       const rows = await sql`
         SELECT id, brand_id, component_type, variant_name, page_format, status,
-               label, html_template,
+               label, html_template, css_template,
                placeholder_schema, design_notes, source, version, is_default,
                created_at, updated_at
         FROM brand_components WHERE id = ${componentId} LIMIT 1
@@ -164,7 +164,7 @@ export const handler = async (event) => {
     const rows = componentType
       ? await sql`
           SELECT id, brand_id, component_type, variant_name, page_format, status,
-                 label, html_template,
+                 label, html_template, css_template,
                  placeholder_schema, design_notes, source, version, is_default,
                  created_at, updated_at
           FROM brand_components
@@ -173,7 +173,7 @@ export const handler = async (event) => {
         `
       : await sql`
           SELECT id, brand_id, component_type, variant_name, page_format, status,
-                 label, html_template,
+                 label, html_template, css_template,
                  placeholder_schema, design_notes, source, version, is_default,
                  created_at, updated_at
           FROM brand_components

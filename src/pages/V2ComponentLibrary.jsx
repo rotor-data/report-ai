@@ -184,13 +184,35 @@ export default function V2ComponentLibrary() {
 
 function ComponentDetail({ item, onDelete, onStatusChange }) {
   const previewSrc = useMemo(() => {
-    // Render html_template with placeholders hinted as "Exempel"
+    // Render html_template with placeholders hinted as "[TOKEN]" so previews
+    // show their shape even without live content.
     const html = (item.html_template || "")
       .replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (_, k) => `[${k}]`);
+    // Include the component's own css_template (if present) so the preview
+    // matches what the editor and PDF pipeline will render. Brand vars are
+    // kept as neutral defaults — component CSS resolves them via var().
+    const componentCss = item.css_template || "";
     const doc = `<!doctype html><html><head><meta charset="utf-8"><style>
 body{font-family:system-ui,sans-serif;margin:0;padding:20px;color:#111}
 *{box-sizing:border-box}
-:root{--primary:#222;--accent:#666;--text:#111;--bg:#fff;--font-heading:sans-serif;--font-body:sans-serif;--column-gap:8mm;--section-gap:6mm}
+:root{
+  --primary:#004549;
+  --primary-dark:#003034;
+  --accent:#e070be;
+  --secondary:#9FE1CB;
+  --text:#051C2C;
+  --text-muted:#6b7280;
+  --bg:#ffffff;
+  --bg-light:#f4f4f2;
+  --surface:#ffffff;
+  --border:#e5e7eb;
+  --font-display:'DM Serif Display',serif;
+  --font-heading:'Space Grotesk',sans-serif;
+  --font-body:'Inter',sans-serif;
+  --column-gap:8mm;
+  --section-gap:6mm;
+}
+${componentCss}
 </style></head><body>${html}</body></html>`;
     return `data:text/html;charset=utf-8,${encodeURIComponent(doc)}`;
   }, [item]);
@@ -256,6 +278,18 @@ body{font-family:system-ui,sans-serif;margin:0;padding:20px;color:#111}
           {item.html_template}
         </pre>
       </details>
+
+      {item.css_template && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: "pointer", fontSize: 13, color: "#6b7280" }}>CSS-regler</summary>
+          <pre style={{
+            background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 4,
+            padding: 12, fontSize: 12, marginTop: 8, maxHeight: 320, overflow: "auto",
+          }}>
+            {item.css_template}
+          </pre>
+        </details>
+      )}
     </div>
   );
 }
