@@ -8,11 +8,24 @@ export function requireHubAuth(event) {
 
   if (!token) return { ok: false, status: 401, error: "Unauthorized" };
 
-  const jwt = verifyHubJwt(token, {
-    publicPem: process.env.HUB_JWT_PUBLIC_KEY_PEM,
-    issuer: process.env.HUB_JWT_ISSUER ?? "hub.rotor-platform.com",
-    audience: process.env.MODULE_AUDIENCE ?? "report-ai",
-  });
+  // The hub mints JWTs with `aud: <module_slug>`, so report-ai-v2 modules
+  // come through with aud='report-ai-v2' while older report-ai subscriptions
+  // (now deprecated) still use aud='report-ai'. Accept both during the
+  // deprecation window. Can be tightened to just 'report-ai-v2' once v1
+  // subscriptions are fully gone.
+  const acceptedAudiences = process.env.MODULE_AUDIENCE
+    ? [process.env.MODULE_AUDIENCE]
+    : ["report-ai-v2", "report-ai"];
+  let jwt;
+  for (const audience of acceptedAudiences) {
+    const attempt = verifyHubJwt(token, {
+      publicPem: process.env.HUB_JWT_PUBLIC_KEY_PEM,
+      issuer: process.env.HUB_JWT_ISSUER ?? "hub.rotor-platform.com",
+      audience,
+    });
+    if (attempt.ok) { jwt = attempt; break; }
+    jwt = attempt; // keep last error
+  }
 
   if (!jwt.ok) return { ok: false, status: 401, error: jwt.error };
 
