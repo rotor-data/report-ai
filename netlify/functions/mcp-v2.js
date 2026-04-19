@@ -474,8 +474,8 @@ const TOOLS = [
     },
   },
   {
-    name: "test_run_report",
-    description: "DEV DIAGNOSTIC: runs a battery of checks on an existing report and returns a structured report of everything that looks wrong. Use after a workflow run to inspect: missing text content, unfilled {{placeholder}} tokens, empty module html_cache, document_css missing or tiny, brand_fonts mismatch vs tokens, un-inlined picsum/Unsplash URLs, per-module warnings. Output is a markdown diagnostic — paste it back to start fixing.",
+    name: "test_pipeline_smoke",
+    description: "DEV (low-level pipeline test): creates a mini-report by inserting modules directly from the brand's existing library — SKIPS the workflow. Use to test compose/render/CSS pipeline in isolation. For a full workflow run (setup → plan → design → render, driven with canned inputs), use `workflow__test_run_report` instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3139,7 +3139,7 @@ const HANDLERS = {
   list_reports:          handleListReports,
   save_document_css:     handleSaveDocumentCss,
   measure_height:        handleMeasureHeight,
-  test_run_report:       handleTestRunReport,
+  test_pipeline_smoke:   handleTestRunReport,
   render_brand_components: handleRenderBrandComponents,
   get_component:         handleGetComponent,
   fork_component:        handleForkComponent,
