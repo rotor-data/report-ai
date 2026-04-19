@@ -24,15 +24,20 @@ import { json, noContent } from "./cors.js";
 import { requireHubOrEditorAuth, editorScopeMismatch } from "./auth-middleware.js";
 import { getSql } from "./db.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// NOTE: can't use `__filename` / `__dirname` as identifiers here —
+// esbuild (Netlify's bundler) auto-emits shims with those names on ESM
+// modules, which collides with explicit `const` declarations and crashes
+// the function at load time with "Identifier '__filename' has already
+// been declared". Use unique names.
+const MODULE_FILE = fileURLToPath(import.meta.url);
+const MODULE_DIR = dirname(MODULE_FILE);
 
 // Cache design-system.css across invocations (small file, rarely changes)
 let _designSystemCache = null;
 async function loadDesignSystemCss() {
   if (_designSystemCache !== null) return _designSystemCache;
   try {
-    const p = join(__dirname, "assets", "design-system.css");
+    const p = join(MODULE_DIR, "assets", "design-system.css");
     _designSystemCache = await readFile(p, "utf8");
   } catch (err) {
     console.warn("[v2-brand-css] design-system.css not found:", err.message);
