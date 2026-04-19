@@ -17,34 +17,21 @@
  * Auth: Hub JWT OR editor capability token. Editor tokens must match
  * the report_id query param.
  */
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { json, noContent } from "./cors.js";
 import { requireHubOrEditorAuth, editorScopeMismatch } from "./auth-middleware.js";
 import { getSql } from "./db.js";
 
-// NOTE: can't use `__filename` / `__dirname` as identifiers here —
-// esbuild (Netlify's bundler) auto-emits shims with those names on ESM
-// modules, which collides with explicit `const` declarations and crashes
-// the function at load time with "Identifier '__filename' has already
-// been declared". Use unique names.
-const MODULE_FILE = fileURLToPath(import.meta.url);
-const MODULE_DIR = dirname(MODULE_FILE);
-
-// Cache design-system.css across invocations (small file, rarely changes)
-let _designSystemCache = null;
-async function loadDesignSystemCss() {
-  if (_designSystemCache !== null) return _designSystemCache;
-  try {
-    const p = join(MODULE_DIR, "assets", "design-system.css");
-    _designSystemCache = await readFile(p, "utf8");
-  } catch (err) {
-    console.warn("[v2-brand-css] design-system.css not found:", err.message);
-    _designSystemCache = "/* design-system.css missing */";
-  }
-  return _designSystemCache;
-}
+// Legacy design-system.css file loading removed: all reports composed after
+// migration 019 carry document_css which already bundles the design-system
+// classes inline (see smyra-core compose-pages buildDocumentCss). The
+// filesystem load + esbuild ESM-shim collision (__filename / import.meta.url)
+// was crashing this function at load time with 502 → editor never received
+// any CSS bundle. Removing the load path also removes the failure mode.
+//
+// Legacy reports (pre-019) without document_css fall back to a degraded
+// bundle of brand tokens + font-face only. Those reports are either
+// already-archived or not actively rendered; re-rendering them will
+// generate a fresh document_css and restore full styling.
 
 function buildFontFaceCss(brandFonts) {
   const blocks = [];
@@ -252,15 +239,17 @@ export const handler = async (event) => {
         cssBase,
       ].join("\n\n");
     } else {
-      // Legacy path for reports composed before 019_document_css landed.
-      const designSystemCss = await loadDesignSystemCss();
+      // Legacy degraded fallback — tokens + @font-face + css_base only.
+      // Reports composed before migration 019 don't carry document_css.
+      // Re-compose the report to regenerate a full document_css bundle
+      // (recommended). design-system.css is no longer loaded from disk
+      // because esbuild's __filename / import.meta.url shim collision
+      // crashes this function at module load.
       bundle = [
         "/* ========== @font-face ========== */",
         fontFaceCss,
         "/* ========== :root tokens ========== */",
         tokenCss,
-        "/* ========== design-system.css ========== */",
-        designSystemCss,
         "/* ========== template css_base ========== */",
         cssBase,
       ].join("\n\n");
