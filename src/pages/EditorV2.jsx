@@ -1657,6 +1657,16 @@ function InspectorPanels({
               <option value="justify">Marginaljust.</option>
             </select>
 
+            <label className="ins-style-label">Marginaler</label>
+            <input
+              type="text"
+              className="ins-number-value"
+              style={{ width: "100%" }}
+              placeholder="t.ex. 16px 0 24px"
+              value={sel.style?.margin || ""}
+              onChange={(e) => onSetStyle("margin", e.target.value)}
+            />
+
             <label className="ins-style-label">Padding</label>
             <input
               type="text"
@@ -1665,6 +1675,26 @@ function InspectorPanels({
               placeholder="t.ex. 12px 16px"
               value={sel.style?.padding || ""}
               onChange={(e) => onSetStyle("padding", e.target.value)}
+            />
+
+            <label className="ins-style-label">Bredd</label>
+            <input
+              type="text"
+              className="ins-number-value"
+              style={{ width: "100%" }}
+              placeholder="auto / 50% / 240px"
+              value={sel.style?.width || ""}
+              onChange={(e) => onSetStyle("width", e.target.value)}
+            />
+
+            <label className="ins-style-label">Höjd</label>
+            <input
+              type="text"
+              className="ins-number-value"
+              style={{ width: "100%" }}
+              placeholder="auto / 120px"
+              value={sel.style?.height || ""}
+              onChange={(e) => onSetStyle("height", e.target.value)}
             />
           </div>
         </InsSection>

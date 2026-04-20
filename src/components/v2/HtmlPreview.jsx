@@ -469,6 +469,9 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   const containerRef = useRef(null);
   const [selected, setSelected] = useState(null);
   const [barPos, setBarPos] = useState(null);
+  // Selection bounding rect in container coordinates. Drives the
+  // resize handles so they track the selected element's size.
+  const [selRect, setSelRect] = useState(null);
   // Floating format toolbar for contenteditable text selections.
   const [formatBar, setFormatBar] = useState(null); // { left, top, el } | null
   // Image picker — open when the user clicks an <img> or picks "Replace
@@ -585,6 +588,9 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         fontWeight: readStyle("fontWeight"),
         textAlign: readStyle("textAlign"),
         padding: readStyle("padding"),
+        margin: readStyle("margin"),
+        width: readStyle("width"),
+        height: readStyle("height"),
       },
       inlineStyle,
     });
@@ -604,7 +610,7 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       clone.classList.remove("el-selected");
       selected.after(clone);
       setSelected(null);
-      setBarPos(null);
+      setBarPos(null); setSelRect(null);
       notifyRef.current();
     },
     deleteSelected: () => {
@@ -612,7 +618,7 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       pushUndoSnapshot();
       selected.remove();
       setSelected(null);
-      setBarPos(null);
+      setBarPos(null); setSelRect(null);
       notifyRef.current();
     },
     openImagePicker: () => {
@@ -1096,7 +1102,7 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       if (!el) {
         clearSelection(shadow);
         setSelected(null);
-        setBarPos(null);
+        setBarPos(null); setSelRect(null);
         return;
       }
       // If clicking an already-editable element, let the caret land naturally.
@@ -1117,6 +1123,12 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       setBarPos({
         left: rect.left - containerRect.left + rect.width / 2 - 80,
         top: rect.top - containerRect.top - 36,
+      });
+      setSelRect({
+        left: rect.left - containerRect.left,
+        top: rect.top - containerRect.top,
+        width: rect.width,
+        height: rect.height,
       });
     });
 
@@ -1482,7 +1494,7 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     pushUndoSnapshot();
     selected.remove();
     setSelected(null);
-    setBarPos(null);
+    setBarPos(null); setSelRect(null);
 
     const newHtml = getUpdatedHtml();
     if (newHtml !== null && onHtmlChange) onHtmlChange(newHtml);
@@ -1496,7 +1508,7 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     selected.after(clone);
 
     setSelected(null);
-    setBarPos(null);
+    setBarPos(null); setSelRect(null);
 
     const newHtml = getUpdatedHtml();
     if (newHtml !== null && onHtmlChange) onHtmlChange(newHtml);
@@ -1505,6 +1517,56 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   if (!html) {
     return <div className="hint">Ingen HTML-cache — spara modulen för att generera preview.</div>;
   }
+
+  // Drag-resize: the handles are simple absolute-positioned divs that
+  // sit on the outside of the selection rect. On pointerdown they start
+  // tracking movement and set inline width / height via selected.style.
+  // Commits + notifies after pointerup so we don't spam htmlChange.
+  const resizeStartRef = useRef(null);
+  const startResize = useCallback((e, edge) => {
+    if (!selected) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startW = selected.getBoundingClientRect().width;
+    const startH = selected.getBoundingClientRect().height;
+    resizeStartRef.current = { edge, startX: e.clientX, startY: e.clientY, startW, startH };
+    pushUndoSnapshot();
+    const onMove = (ev) => {
+      const s = resizeStartRef.current;
+      if (!s) return;
+      const dx = ev.clientX - s.startX;
+      const dy = ev.clientY - s.startY;
+      // zoom scales the page frame — undo it so drag feels 1:1.
+      const z = zoom || 1;
+      if (s.edge === "e" || s.edge === "se") {
+        selected.style.width = `${Math.max(20, Math.round((s.startW + dx) / z))}px`;
+      }
+      if (s.edge === "s" || s.edge === "se") {
+        selected.style.height = `${Math.max(20, Math.round((s.startH + dy) / z))}px`;
+      }
+      // Keep the selection rect overlay in sync while dragging.
+      const r = selected.getBoundingClientRect();
+      const host = containerRef.current?.getBoundingClientRect();
+      if (host) {
+        setSelRect({
+          left: r.left - host.left,
+          top: r.top - host.top,
+          width: r.width,
+          height: r.height,
+        });
+      }
+    };
+    const onUp = () => {
+      resizeStartRef.current = null;
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      const cb = onHtmlChangeRef.current;
+      const newHtml = getUpdatedHtml();
+      if (newHtml !== null && cb) cb(newHtml);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  }, [selected, zoom, pushUndoSnapshot]);
 
   return (
     <div style={{ position: "relative" }}>
@@ -1517,6 +1579,64 @@ const HtmlPreview = forwardRef(function HtmlPreview({
           maxHeight: "calc(100vh - 220px)",
         }}
       />
+      {interactive && selected && selRect && (
+        <>
+          {/* Right edge: drag to resize width */}
+          <div
+            onPointerDown={(e) => startResize(e, "e")}
+            title="Dra för att ändra bredd"
+            style={{
+              position: "absolute",
+              left: selRect.left + selRect.width - 4,
+              top: selRect.top + selRect.height / 2 - 14,
+              width: 8,
+              height: 28,
+              background: "#b85a73",
+              borderRadius: 3,
+              border: "1px solid #fff",
+              cursor: "ew-resize",
+              zIndex: 9,
+              boxShadow: "0 1px 4px rgba(0,0,0,.2)",
+            }}
+          />
+          {/* Bottom edge: drag to resize height */}
+          <div
+            onPointerDown={(e) => startResize(e, "s")}
+            title="Dra för att ändra höjd"
+            style={{
+              position: "absolute",
+              left: selRect.left + selRect.width / 2 - 14,
+              top: selRect.top + selRect.height - 4,
+              width: 28,
+              height: 8,
+              background: "#b85a73",
+              borderRadius: 3,
+              border: "1px solid #fff",
+              cursor: "ns-resize",
+              zIndex: 9,
+              boxShadow: "0 1px 4px rgba(0,0,0,.2)",
+            }}
+          />
+          {/* Bottom-right corner: both axes */}
+          <div
+            onPointerDown={(e) => startResize(e, "se")}
+            title="Dra för att ändra bredd + höjd"
+            style={{
+              position: "absolute",
+              left: selRect.left + selRect.width - 6,
+              top: selRect.top + selRect.height - 6,
+              width: 12,
+              height: 12,
+              background: "#94445b",
+              borderRadius: 2,
+              border: "1px solid #fff",
+              cursor: "nwse-resize",
+              zIndex: 10,
+              boxShadow: "0 1px 4px rgba(0,0,0,.25)",
+            }}
+          />
+        </>
+      )}
       {interactive && selected && barPos && (
         <div
           style={{
