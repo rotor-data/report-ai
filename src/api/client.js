@@ -80,6 +80,12 @@ export const api = {
 
   renderV2Pdf: (payload) => request("/v2-render", { method: "POST", body: JSON.stringify(payload) }),
 
+  // Unsplash photo search — requires UNSPLASH_ACCESS_KEY on the server.
+  // Uses the same auth wrapper as other v2 endpoints so editor tokens
+  // reach the function (raw fetch was returning 401 because it never
+  // attached X-Editor-Token).
+  unsplashSearch: (query) => request(`/unsplash-search?q=${encodeURIComponent(query)}`),
+
   // Editor render context — CSS bundle + brand logos + tenant assets so
   // the editor preview can resolve data-logo / data-asset-ref references.
   // Returns { css, logos, assets }.

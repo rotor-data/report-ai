@@ -104,9 +104,10 @@ export default function ImagePickerDialog({
     setUnsplashLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/unsplash-search?q=${encodeURIComponent(query)}`);
-      if (!res.ok) throw new Error(`Unsplash: HTTP ${res.status}`);
-      const data = await res.json();
+      // Route through api.request so the editor auth token is attached.
+      // Without it the endpoint returns 401 before even calling Unsplash.
+      const data = await api.unsplashSearch(query);
+      if (data?.warning) setError(data.warning);
       setUnsplash(Array.isArray(data?.results) ? data.results : []);
     } catch (e) {
       setError(e?.message || "Unsplash-sökning misslyckades");
