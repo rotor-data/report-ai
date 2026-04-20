@@ -172,10 +172,20 @@ export default function HtmlPreview({
 
     const pageSize = detectPageSize(html);
 
-    // 1. Brand CSS bundle (fonts, tokens, design-system classes)
+    // 1. Brand CSS bundle (fonts, tokens, design-system classes).
+    //
+    // IMPORTANT: this CSS lives inside a shadow root. `:root` inside a
+    // shadow tree doesn't match anything — it only matches document
+    // root, which is outside this shadow. If buildStyleBlock emitted
+    // `:root{--primary:#004549;...}`, those variables would be defined
+    // on document root, not inside the shadow, and `var(--primary)` in
+    // every component rule would resolve to undefined (transparent /
+    // initial). Rewrite `:root` to `:host` so the custom-property scope
+    // lands on the shadow host element and cascades to every descendant
+    // inside the shadow.
     if (brandCss) {
       const brandStyle = document.createElement("style");
-      brandStyle.textContent = brandCss;
+      brandStyle.textContent = brandCss.replace(/(^|[^:\w-])(:root)\b/g, "$1:host");
       shadow.appendChild(brandStyle);
     }
 
