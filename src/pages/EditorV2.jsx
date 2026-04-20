@@ -1324,12 +1324,14 @@ const TOKEN_CSS_VAR = {
   surface_color: "--surface",
   border_color: "--border",
   link_color: "--link",
+  font_display: "--font-display",
   font_heading: "--font-heading",
   font_body: "--font-body",
+  base_font_size: "--base-font-size",
 };
 // Which keys store fonts (affects how values are serialised — fonts
 // are wrapped in quotes server-side).
-const FONT_KEYS = new Set(["font_heading", "font_body"]);
+const FONT_KEYS = new Set(["font_display", "font_heading", "font_body"]);
 
 /**
  * Rewrite a single `--foo: <value>;` line inside the brand CSS string
@@ -1340,11 +1342,18 @@ function rewriteTokenInCss(css, tokenKey, newValue) {
   if (!css) return css;
   const varName = TOKEN_CSS_VAR[tokenKey];
   if (!varName) return css;
-  // Font values need to be passed as-is (already include quoted
-  // family names + fallbacks). Colors are pasted raw. Empty string
-  // = remove override — append a `unset` rule so the cascade reverts
-  // to brand defaults.
-  const cssValue = newValue || "unset";
+  // Format value per token type:
+  //  - base_font_size: bare number → "11pt"
+  //  - empty → "unset" so cascade reverts to brand defaults
+  //  - everything else (colors, fonts): pasted raw
+  let cssValue;
+  if (!newValue && newValue !== 0) {
+    cssValue = "unset";
+  } else if (tokenKey === "base_font_size" && /^\d+(\.\d+)?$/.test(String(newValue).trim())) {
+    cssValue = `${newValue}pt`;
+  } else {
+    cssValue = newValue;
+  }
   const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`(${escaped}\\s*:\\s*)[^;\\n]*`, "g");
   // Always append a late :host rule so overrides win the cascade even
@@ -1500,6 +1509,14 @@ function InspectorPanels({
             onReset={() => onResetOverride("link_color")}
           />
 
+          <label className="ins-style-label">Display</label>
+          <FontField
+            value={tokens?.font_display || ""}
+            isOverride={!!overrides?.font_display}
+            onChange={(v) => onStyleOverride("font_display", v)}
+            onReset={() => onResetOverride("font_display")}
+          />
+
           <label className="ins-style-label">Rubriker</label>
           <FontField
             value={tokens?.font_heading || ""}
@@ -1514,6 +1531,14 @@ function InspectorPanels({
             isOverride={!!overrides?.font_body}
             onChange={(v) => onStyleOverride("font_body", v)}
             onReset={() => onResetOverride("font_body")}
+          />
+
+          <label className="ins-style-label">Basstorlek</label>
+          <BaseFontSizeField
+            value={tokens?.base_font_size || ""}
+            isOverride={!!overrides?.base_font_size}
+            onChange={(v) => onStyleOverride("base_font_size", v)}
+            onReset={() => onResetOverride("base_font_size")}
           />
         </div>
         {Object.keys(overrides || {}).length > 0 && (
@@ -1879,9 +1904,14 @@ function BackgroundControls({ background, tenantAssets, tenantId, onPatch, onCle
           initialTab={tenantAssets?.length ? "library" : "upload"}
           onClose={() => setPickerOpen(false)}
           onPick={({ assetId, url }) => {
+            // Save BOTH asset_id (canonical reference for re-render)
+            // and image_url (direct src so the editor preview doesn't
+            // have to look up a freshly-uploaded asset in the cached
+            // assets list). HtmlPreview tries asset_id first, falls
+            // back to image_url.
             onPatch({
               asset_id: assetId || null,
-              image_url: assetId ? null : (url || null),
+              image_url: url || null,
               size: background?.size || "cover",
               position: background?.position || "center",
             });
@@ -2059,6 +2089,34 @@ function ColorField({ value, brandDefault, isOverride, onChange, onReset }) {
         <button type="button" className="ins-color-reset" onClick={onReset} title="Återställ till brand">
           ↺
         </button>
+      ) : null}
+    </div>
+  );
+}
+
+function BaseFontSizeField({ value, isOverride, onChange, onReset }) {
+  // Accept "11pt", "14px", or bare "11". When reading, strip unit for
+  // the numeric stepper so ±1 works. On save, preserve the original
+  // unit if present; default to pt.
+  const raw = String(value || "");
+  const match = raw.match(/^(\d+(?:\.\d+)?)(px|pt|em|rem)?$/);
+  const num = match ? parseFloat(match[1]) : 11;
+  const unit = (match && match[2]) || "pt";
+  const step = (delta) => onChange(`${Math.max(6, Math.min(36, num + delta))}${unit}`);
+  return (
+    <div className={`ins-color-row${isOverride ? " is-override" : ""}`}>
+      <button type="button" className="ins-number-btn" onClick={() => step(-1)} title="−">−</button>
+      <input
+        type="text"
+        className="ins-number-value"
+        style={{ flex: 1, minWidth: 0, textAlign: "center" }}
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="11pt"
+      />
+      <button type="button" className="ins-number-btn" onClick={() => step(1)} title="+">+</button>
+      {isOverride ? (
+        <button type="button" className="ins-color-reset" onClick={onReset} title="Återställ">↺</button>
       ) : null}
     </div>
   );

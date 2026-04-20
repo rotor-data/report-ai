@@ -114,6 +114,16 @@ function buildTokenCss(brandTokens) {
       lines.push(`  ${spacingMap[key]}: ${value}mm;`);
       continue;
     }
+    if (key === "base_font_size") {
+      // Accept bare numbers ("11") or CSS lengths ("11pt", "14px").
+      const v = /^\d+(\.\d+)?$/.test(String(value).trim()) ? `${value}pt` : value;
+      lines.push(`  --base-font-size: ${v};`);
+      continue;
+    }
+    if (key === "heading_scale") {
+      lines.push(`  --heading-scale: ${value};`);
+      continue;
+    }
     if (key === "font_display") {
       lines.push(`  --font-display: '${value}', system-ui, sans-serif;`);
       continue;
@@ -146,6 +156,7 @@ function buildTokenCss(brandTokens) {
     "--font-display": "system-ui, sans-serif",
     "--font-heading": "system-ui, sans-serif",
     "--font-body": "system-ui, sans-serif",
+    "--base-font-size": "11pt",
     "--radius": "4px",
     "--section-gap": "6mm",
   };
@@ -263,6 +274,10 @@ export const handler = async (event) => {
         // Default <a> rule so link color actually applies — brand
         // stylesheets often forget this.
         `a { color: var(--link, var(--primary)); }`,
+        // Apply base font size to the page root so body/paragraph text
+        // responds to the Rapport-stil slider without waiting for a
+        // re-compose. em-based rules in design-system.css cascade.
+        `.preview-root, .page { font-size: var(--base-font-size, 11pt); }`,
       ].join("\n\n");
     } else {
       // Legacy degraded fallback — tokens + @font-face + css_base only.

@@ -788,13 +788,22 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         box-shadow: 0 4px 24px rgba(0,0,0,0.15);
         transform-origin: top center;
         position: relative;
+        overflow: hidden; /* clip bg image to page bounds */
+      }
+      /* When a background layer is present, lift content layers above
+         and make the module's internal .page wrapper transparent so
+         the image can show through. */
+      .page-frame.has-bg > .preview-root,
+      .page-frame.has-bg > .preview-root > .page,
+      .page-frame.has-bg > .preview-root > * > .page {
+        background: transparent !important;
       }
       .page-frame > .preview-root {
         width: 100%;
         min-height: ${pageSize.h}mm;
         box-sizing: border-box;
         position: relative;
-        z-index: 1;
+        z-index: 2;
       }
       /* Per-module background image + filter layer */
       .page-frame > .page-bg {
@@ -802,12 +811,15 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         inset: 0;
         z-index: 0;
         pointer-events: none;
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
       }
       /* Gradient overlay + vignette layer sits above image but below content */
       .page-frame > .page-bg-overlay {
         position: absolute;
         inset: 0;
-        z-index: 0;
+        z-index: 1;
         pointer-events: none;
       }
       /* When the module HTML already contains a .page wrapper, let it drive
@@ -965,17 +977,29 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // Per-module background layer — sits behind the preview content.
     // Rendered as two stacked divs: image (with CSS filter) on bottom,
     // overlay+vignette gradients on top. All optional.
-    if (background && typeof background === "object" && Object.keys(background).length) {
+    const hasBackground = background && typeof background === "object" && Object.keys(background).length > 0;
+    if (hasBackground) frame.classList.add("has-bg");
+    if (hasBackground) {
       const bg = document.createElement("div");
       bg.className = "page-bg";
       bg.setAttribute("aria-hidden", "true");
-      // Resolve image source
-      let imageUrl = "";
-      if (background.asset_id) {
+      // Resolve image source. Prefer image_url when present (direct src
+      // that works even if the asset cache hasn't been refreshed after
+      // an upload). Falls back to asset_id lookup in the tenant assets
+      // list that ships with v2-brand-css.
+      let imageUrl = background.image_url || "";
+      if (!imageUrl && background.asset_id) {
         const asset = (assets || []).find((a) => String(a.id) === String(background.asset_id));
         imageUrl = asset?.url || asset?.data_uri || "";
       }
-      if (!imageUrl && background.image_url) imageUrl = background.image_url;
+      // DEBUG: log so we can see why an image didn't surface
+      if (background.asset_id && !imageUrl) {
+        console.warn("[HtmlPreview] Background asset_id set but url not resolved:", {
+          asset_id: background.asset_id,
+          tenantAssets: (assets || []).length,
+          sample: (assets || []).slice(0, 3).map((a) => ({ id: a.id, hasUrl: !!a.url })),
+        });
+      }
       if (imageUrl) {
         bg.style.backgroundImage = `url("${imageUrl}")`;
         bg.style.backgroundSize = background.size === "contain" ? "contain" : "cover";
