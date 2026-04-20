@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useUiStore } from "../stores/uiStore";
 import HtmlPreview from "../components/v2/HtmlPreview";
-import ModuleInspector from "../components/v2/ModuleInspector";
 import "./EditorV2.css";
 
 const MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout"];
@@ -241,10 +240,9 @@ export default function EditorV2() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const selectedModule = useMemo(
-    () => modules.find((m) => m.id === selectedId) || null,
-    [modules, selectedId]
-  );
+  // (selectedModule lookup no longer needed — canvas renders every
+  // module via ModuleCard. selectedId is still used as the "active"
+  // card highlight and scroll anchor.)
 
   // ──────────────── module operations ────────────────
 
@@ -686,8 +684,8 @@ export default function EditorV2() {
 
       {error ? <div className="error" style={{ margin: "12px 24px" }}>{error}</div> : null}
 
-      <div className="editor-v2-body">
-        {/* ─── Left: module navigator ─── */}
+      <div className="editor-v2-body editor-v2-body--stacked">
+        {/* ─── Left: page navigator (thumbnails, click = scroll) ─── */}
         <aside className="editor-sidebar">
           <div className="sidebar-header">
             <span className="sidebar-title">Sidor</span>
@@ -702,13 +700,14 @@ export default function EditorV2() {
                 selected={selectedId === mod.id}
                 isDropTarget={dropBeforeId === mod.id}
                 isDragging={dragId === mod.id}
-                isComponentDropTarget={
-                  dropBeforeId === mod.id &&
-                  componentDrag &&
-                  componentDrag.sourceModuleId !== mod.id
-                }
+                isComponentDropTarget={false /* drop-targets now live on each page card */}
                 variants={variants[mod.module_type] || []}
-                onSelect={() => setSelectedId(mod.id)}
+                onSelect={() => {
+                  setSelectedId(mod.id);
+                  // Scroll the matching card into view.
+                  const el = document.getElementById(`module-card-${mod.id}`);
+                  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}
                 onDragStart={(e) => handleDragStart(e, mod.id)}
                 onDragOver={(e) => handleDragOver(e, mod.id)}
                 onDrop={(e) => handleDrop(e, mod.id)}
@@ -746,54 +745,192 @@ export default function EditorV2() {
           </div>
         </aside>
 
-        {/* ─── Middle: live preview ─── */}
-        <main className="editor-canvas">
-          {selectedModule ? (
-            <>
-              <div className="canvas-meta">
-                <span className="canvas-badge">
-                  {(selectedModule.order_index ?? 0) + 1}
-                </span>
-                <span className="canvas-title">{moduleDisplayName(selectedModule)}</span>
-                <span className="canvas-hint">Klicka på ett element för att välja · ✎ redigerar text · ⋮⋮ drar till annan sida · 🗑 tar bort</span>
-              </div>
-              <HtmlPreview
-                html={selectedModule.html_cache}
+        {/* ─── Middle: stacked page cards ─── */}
+        <main className="editor-canvas editor-canvas--stack">
+          {modules.length === 0 ? (
+            <div className="canvas-empty">
+              <p>Inga moduler ännu. Skapa en från sidolistan till vänster.</p>
+            </div>
+          ) : (
+            modules.map((mod) => (
+              <ModuleCard
+                key={mod.id}
+                module={mod}
+                active={selectedId === mod.id}
                 brandCss={brandCss}
                 logos={logos}
                 assets={assets}
                 tenantId={session?.report?.tenant_id || null}
-                moduleId={selectedModule.id}
-                onHtmlChange={(newHtml) => onLiveHtmlChange(selectedModule.id, newHtml)}
-                onComponentDragStart={(info) => setComponentDrag(info)}
-                onComponentDragEnd={() => setComponentDrag(null)}
                 zoom={zoom}
                 showGrid={showGrid}
                 showOverflow={showOverflow}
+                variants={variants[mod.module_type] || []}
+                componentDrag={componentDrag}
+                busy={!!busy[mod.id]}
+                onActivate={() => setSelectedId(mod.id)}
+                onLiveHtmlChange={(html) => onLiveHtmlChange(mod.id, html)}
+                onComponentDragStart={(info) => setComponentDrag(info)}
+                onComponentDragEnd={() => setComponentDrag(null)}
+                onMoveComponentHere={(info) => onMoveComponentToModule(info, mod.id)}
+                onDuplicate={() => onDuplicateModule(mod)}
+                onDelete={() => onDeleteModule(mod)}
+                onSwapVariant={(vId) => onSwapVariant(mod, vId)}
+                onSaveContent={(patch) => onSaveContent(mod.id, patch)}
               />
-            </>
-          ) : (
-            <div className="canvas-empty">
-              <p>Ingen modul vald. Välj en från listan till vänster.</p>
-            </div>
+            ))
           )}
         </main>
-
-        {/* ─── Right: inspector ─── */}
-        <aside className="editor-inspector">
-          {selectedModule ? (
-            <ModuleInspector
-              module={selectedModule}
-              busy={!!busy[selectedModule.id]}
-              onSaveContent={(patch) => onSaveContent(selectedModule.id, patch)}
-              onDelete={() => onDeleteModule(selectedModule)}
-            />
-          ) : (
-            <p className="hint">Välj en modul för att se fält och åtgärder.</p>
-          )}
-        </aside>
       </div>
     </div>
+  );
+}
+
+// ─── ModuleCard ────────────────────────────────────────────────────────
+/**
+ * A single page in the stacked canvas. Owns:
+ *  - a sticky header with index, type badge, inline title, variant swap,
+ *    duplicate and delete actions
+ *  - the live preview (HtmlPreview)
+ *  - the drop target for cross-page component moves — the card's body
+ *    highlights rose when a component drag from another module is in
+ *    flight.
+ */
+function ModuleCard({
+  module: mod,
+  active,
+  brandCss,
+  logos,
+  assets,
+  tenantId,
+  zoom,
+  showGrid,
+  showOverflow,
+  variants,
+  componentDrag,
+  busy,
+  onActivate,
+  onLiveHtmlChange,
+  onComponentDragStart,
+  onComponentDragEnd,
+  onMoveComponentHere,
+  onDuplicate,
+  onDelete,
+  onSwapVariant,
+  onSaveContent,
+}) {
+  const [hoverDrop, setHoverDrop] = useState(false);
+  const isComponentDropCandidate =
+    componentDrag && componentDrag.sourceModuleId !== mod.id;
+
+  const onDragOver = (e) => {
+    const types = Array.from(e.dataTransfer?.types || []);
+    if (!types.includes("application/x-smyra-component")) return;
+    if (!isComponentDropCandidate) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setHoverDrop(true);
+  };
+  const onDragLeave = () => setHoverDrop(false);
+  const onDrop = (e) => {
+    setHoverDrop(false);
+    const types = Array.from(e.dataTransfer?.types || []);
+    if (!types.includes("application/x-smyra-component")) return;
+    e.preventDefault();
+    try {
+      const raw = e.dataTransfer.getData("application/x-smyra-component");
+      if (!raw) return;
+      const info = JSON.parse(raw);
+      onMoveComponentHere(info);
+    } catch { /* noop */ }
+  };
+
+  return (
+    <section
+      id={`module-card-${mod.id}`}
+      className={[
+        "module-card",
+        active && "is-active",
+        hoverDrop && "is-drop-target",
+      ].filter(Boolean).join(" ")}
+      onClick={onActivate}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <header className="module-card-head">
+        <span className="module-card-index">
+          {(mod.order_index ?? 0) + 1}
+        </span>
+        <span className={`module-card-type type-${mod.module_type}`}>
+          {mod.module_type}
+        </span>
+        <span className="module-card-title">{moduleDisplayName(mod)}</span>
+        <div className="module-card-actions">
+          {variants.length > 1 ? (
+            <select
+              className="module-card-variant"
+              defaultValue=""
+              title="Byt variant"
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                const id = e.target.value;
+                if (id) onSwapVariant(id);
+                e.target.selectedIndex = 0;
+              }}
+            >
+              <option value="" disabled>Byt variant…</option>
+              {variants.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.variant_name || v.label || v.id.slice(0, 6)}
+                  {v.is_default ? " ★" : ""}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <button
+            className="module-card-btn"
+            type="button"
+            title="Duplicera modul"
+            onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
+            disabled={busy}
+          >
+            ⎘
+          </button>
+          <button
+            className="module-card-btn module-card-btn--danger"
+            type="button"
+            title="Ta bort modul"
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            disabled={busy}
+          >
+            ×
+          </button>
+        </div>
+      </header>
+
+      {isComponentDropCandidate && (
+        <div className="module-card-drop-hint">
+          Släpp här för att flytta komponenten till sida {(mod.order_index ?? 0) + 1}
+        </div>
+      )}
+
+      <div className="module-card-preview">
+        <HtmlPreview
+          html={mod.html_cache}
+          brandCss={brandCss}
+          logos={logos}
+          assets={assets}
+          tenantId={tenantId}
+          moduleId={mod.id}
+          onHtmlChange={onLiveHtmlChange}
+          onComponentDragStart={onComponentDragStart}
+          onComponentDragEnd={onComponentDragEnd}
+          zoom={zoom}
+          showGrid={showGrid}
+          showOverflow={showOverflow}
+        />
+      </div>
+    </section>
   );
 }
 

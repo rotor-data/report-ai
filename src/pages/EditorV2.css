@@ -440,6 +440,11 @@
   min-height: 0;
   overflow: hidden;
 }
+/* Stacked layout — drops the right-side inspector and widens the
+   canvas so every page fits with a healthy margin. */
+.smyra-editor .editor-v2-body--stacked {
+  grid-template-columns: 260px 1fr;
+}
 
 /* ── Save pill ── */
 .smyra-editor .save-pill {
@@ -731,6 +736,146 @@
 .smyra-editor .editor-canvas > :not(.canvas-meta):not(.canvas-empty) {
   flex: 1;
   overflow: auto;
+}
+
+/* Stacked canvas — all pages scroll together as a single column. */
+.smyra-editor .editor-canvas--stack {
+  overflow: auto;
+  padding: 24px 24px 120px;
+  gap: 24px;
+  background: #eeeaec;
+}
+.smyra-editor .editor-canvas--stack .canvas-empty {
+  padding: 60px 0;
+}
+
+/* ── ModuleCard (one per page in the stack) ── */
+.smyra-editor .module-card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 4px 12px rgba(126, 68, 90, 0.04);
+  overflow: hidden;
+  transition: box-shadow .14s, border-color .14s, transform .14s;
+  scroll-margin-top: 88px;
+}
+.smyra-editor .module-card.is-active {
+  border-color: var(--rose-500);
+  box-shadow: 0 0 0 2px rgba(199, 115, 137, 0.15), 0 6px 16px rgba(126, 68, 90, 0.08);
+}
+.smyra-editor .module-card.is-drop-target {
+  border-color: var(--rose-600);
+  box-shadow: 0 0 0 3px rgba(184, 90, 115, 0.22), 0 8px 22px rgba(126, 68, 90, 0.15);
+  transform: scale(1.003);
+}
+
+.smyra-editor .module-card-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.smyra-editor .module-card-index {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: linear-gradient(160deg, #f8edf2, #f0dce8);
+  border: 1px solid var(--line-strong);
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.smyra-editor .module-card-type {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: #f5eef1;
+  border: 1px solid var(--line);
+}
+.smyra-editor .module-card-type.type-cover { background: #fbeaf2; color: #94445b; }
+.smyra-editor .module-card-type.type-back_cover { background: #efe1f3; color: #6f4a88; }
+.smyra-editor .module-card-type.type-chapter_break { background: #fff0dd; color: #9a6113; }
+.smyra-editor .module-card-type.type-layout { background: #eaf5ea; color: #2e7b58; }
+.smyra-editor .module-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+.smyra-editor .module-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.smyra-editor .module-card-variant {
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  max-width: 140px;
+}
+.smyra-editor .module-card-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background .1s, color .1s;
+}
+.smyra-editor .module-card-btn:hover {
+  background: #faeef3;
+  color: var(--rose-700);
+}
+.smyra-editor .module-card-btn--danger:hover {
+  background: #fceff3;
+  color: var(--danger);
+}
+
+.smyra-editor .module-card-drop-hint {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--rose-700);
+  background: repeating-linear-gradient(
+    45deg,
+    #fff2f7,
+    #fff2f7 6px,
+    #fce6ed 6px,
+    #fce6ed 12px
+  );
+  border-bottom: 1px dashed var(--rose-500);
+  text-align: center;
+}
+
+.smyra-editor .module-card-preview {
+  background: #eeeaec;
+  padding: 16px;
+}
+.smyra-editor .module-card-preview > div {
+  max-height: none !important; /* override HtmlPreview's internal scroll */
 }
 
 /* ── Inspector (right pane) ── */
