@@ -73,12 +73,118 @@ export default function EditorV2() {
   const [showOverflow, setShowOverflow] = useState(() => {
     try { return localStorage.getItem("smyra-editor-overflow") !== "0"; } catch { return true; }
   });
+  // Page zoom for the preview. Persisted so the author's preferred
+  // level survives reloads. Clamped 0.25 – 1.20 to keep the shadow
+  // root within sensible transform bounds.
+  const [zoom, setZoom] = useState(() => {
+    try {
+      const raw = parseFloat(localStorage.getItem("smyra-editor-zoom") || "");
+      if (Number.isFinite(raw) && raw >= 0.25 && raw <= 1.2) return raw;
+    } catch {}
+    return 0.55;
+  });
   useEffect(() => {
     try { localStorage.setItem("smyra-editor-grid", showGrid ? "1" : "0"); } catch {}
   }, [showGrid]);
   useEffect(() => {
     try { localStorage.setItem("smyra-editor-overflow", showOverflow ? "1" : "0"); } catch {}
   }, [showOverflow]);
+  useEffect(() => {
+    try { localStorage.setItem("smyra-editor-zoom", String(zoom)); } catch {}
+  }, [zoom]);
+
+  // Cross-page component drag state — used to tell the sidebar which
+  // drop type to visualise. `null` = no component drag in progress.
+  const [componentDrag, setComponentDrag] = useState(null); // { sourceModuleId, tempId, outerHTML }
+
+  // Move a component subtree between modules. Source and target are
+  // PATCHed in parallel. Uses html_cache as the source of truth (the
+  // user is moving the *rendered* element they see, not the template);
+  // saving back through html_content ensures smyra-render passes the
+  // rendered markup through untouched on re-render.
+  const onMoveComponentToModule = async (dragInfo, targetModuleId) => {
+    if (!dragInfo || !targetModuleId) return;
+    const { sourceModuleId, tempId, outerHTML } = dragInfo;
+    if (sourceModuleId === targetModuleId) return;
+
+    const source = modules.find((m) => m.id === sourceModuleId);
+    const target = modules.find((m) => m.id === targetModuleId);
+    if (!source || !target) return;
+
+    // Strip the moved element from the source's html_cache by locating
+    // the [data-editor-moving="tempId"] attribute we set on dragstart.
+    const marker = `data-editor-moving="${tempId}"`;
+    const srcCache = source.html_cache || "";
+    const pos = srcCache.indexOf(marker);
+    if (pos === -1) {
+      setError("Kunde inte hitta komponenten att flytta — försök igen.");
+      return;
+    }
+    // Walk backwards to the opening `<` of the tag carrying the marker.
+    let tagStart = pos;
+    while (tagStart > 0 && srcCache[tagStart] !== "<") tagStart--;
+    // Identify the tag name so we can find the matching close.
+    const tagNameMatch = srcCache.slice(tagStart).match(/^<\s*([a-zA-Z0-9-]+)/);
+    if (!tagNameMatch) {
+      setError("Kunde inte analysera taggen för att flytta.");
+      return;
+    }
+    const tagName = tagNameMatch[1];
+    // Find the closing </tagName> by counting nested opens of the same tag.
+    const openRe = new RegExp(`<\\s*${tagName}\\b`, "gi");
+    const closeRe = new RegExp(`</\\s*${tagName}\\s*>`, "gi");
+    openRe.lastIndex = tagStart + 1;
+    let depth = 1;
+    let cursor = tagStart + 1;
+    let end = -1;
+    while (depth > 0) {
+      openRe.lastIndex = cursor;
+      closeRe.lastIndex = cursor;
+      const o = openRe.exec(srcCache);
+      const c = closeRe.exec(srcCache);
+      if (!c) { break; }
+      if (o && o.index < c.index) { depth++; cursor = openRe.lastIndex; }
+      else { depth--; cursor = closeRe.lastIndex; if (depth === 0) end = cursor; }
+    }
+    if (end === -1) {
+      setError("Kunde inte matcha avslutande tagg vid flytt.");
+      return;
+    }
+    const newSourceHtml = srcCache.slice(0, tagStart) + srcCache.slice(end);
+    const newTargetHtml = (target.html_cache || "") + outerHTML;
+
+    setBusy((b) => ({ ...b, [sourceModuleId]: true, [targetModuleId]: true }));
+    setError("");
+    try {
+      const [srcRes, tgtRes] = await Promise.all([
+        api.updateV2Module(sourceModuleId, { html_content: newSourceHtml }),
+        api.updateV2Module(targetModuleId, { html_content: newTargetHtml }),
+      ]);
+      setModules((prev) =>
+        prev.map((m) => {
+          if (m.id === sourceModuleId) return srcRes.item;
+          if (m.id === targetModuleId) return tgtRes.item;
+          return m;
+        })
+      );
+      // Optional: jump to the target so the author sees the moved block.
+      setSelectedId(targetModuleId);
+      pushUndo({
+        kind: "move-component",
+        payload: {
+          sourceModuleId,
+          targetModuleId,
+          priorSourceHtml: source.html_cache || "",
+          priorTargetHtml: target.html_cache || "",
+        },
+      });
+    } catch (err) {
+      setError(`Kunde inte flytta komponenten: ${err.message}`);
+    } finally {
+      setBusy((b) => ({ ...b, [sourceModuleId]: false, [targetModuleId]: false }));
+      setComponentDrag(null);
+    }
+  };
 
   // Verify token + load report + brand CSS
   useEffect(() => {
@@ -295,6 +401,19 @@ export default function EditorV2() {
         const r = await api.getV2Report(session.report_id);
         const sorted = [...(r.modules || [])].sort((a, b) => a.order_index - b.order_index);
         setModules(sorted);
+      } else if (entry.kind === "move-component") {
+        const { sourceModuleId, targetModuleId, priorSourceHtml, priorTargetHtml } = entry.payload;
+        const [srcRes, tgtRes] = await Promise.all([
+          api.updateV2Module(sourceModuleId, { html_content: priorSourceHtml }),
+          api.updateV2Module(targetModuleId, { html_content: priorTargetHtml }),
+        ]);
+        setModules((prev) =>
+          prev.map((m) => {
+            if (m.id === sourceModuleId) return srcRes.item;
+            if (m.id === targetModuleId) return tgtRes.item;
+            return m;
+          })
+        );
       }
     } catch (err) {
       setError(`Kunde inte ångra: ${err.message}`);
@@ -354,6 +473,24 @@ export default function EditorV2() {
   };
 
   const handleDrop = async (e, targetId) => {
+    // Component drops (cross-module move) use their own mime type;
+    // reorder-drops use text/plain. Check dataTransfer first and
+    // branch before the module-reorder path.
+    const types = Array.from(e.dataTransfer?.types || []);
+    if (types.includes("application/x-smyra-component")) {
+      e.preventDefault();
+      setDropBeforeId(null);
+      try {
+        const raw = e.dataTransfer.getData("application/x-smyra-component");
+        if (!raw) return;
+        const info = JSON.parse(raw);
+        await onMoveComponentToModule(info, targetId);
+      } catch (err) {
+        setError(`Kunde inte flytta komponenten: ${err.message}`);
+      }
+      return;
+    }
+
     e.preventDefault();
     const sourceId = dragId;
     setDragId(null);
@@ -466,6 +603,42 @@ export default function EditorV2() {
         <div className="editor-topbar-actions">
           {saveStatus === "saving" && <span className="save-pill saving">Sparar…</span>}
           {saveStatus === "saved" && <span className="save-pill saved">✓ Sparat</span>}
+          <div className="zoom-group" title="Zooma förhandsgranskning">
+            <button
+              className="btn-ghost zoom-btn"
+              type="button"
+              onClick={() => setZoom((z) => Math.max(0.25, Math.round((z - 0.05) * 100) / 100))}
+              aria-label="Zooma ut"
+            >
+              −
+            </button>
+            <input
+              className="zoom-slider"
+              type="range"
+              min="0.25"
+              max="1.2"
+              step="0.05"
+              value={zoom}
+              onChange={(e) => setZoom(parseFloat(e.target.value))}
+              aria-label="Zoom-reglage"
+            />
+            <button
+              className="btn-ghost zoom-btn"
+              type="button"
+              onClick={() => setZoom((z) => Math.min(1.2, Math.round((z + 0.05) * 100) / 100))}
+              aria-label="Zooma in"
+            >
+              +
+            </button>
+            <button
+              className="btn-ghost zoom-value"
+              type="button"
+              onClick={() => setZoom(0.55)}
+              title="Återställ zoom till 55%"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+          </div>
           <button
             className="btn-ghost"
             type="button"
@@ -529,6 +702,11 @@ export default function EditorV2() {
                 selected={selectedId === mod.id}
                 isDropTarget={dropBeforeId === mod.id}
                 isDragging={dragId === mod.id}
+                isComponentDropTarget={
+                  dropBeforeId === mod.id &&
+                  componentDrag &&
+                  componentDrag.sourceModuleId !== mod.id
+                }
                 variants={variants[mod.module_type] || []}
                 onSelect={() => setSelectedId(mod.id)}
                 onDragStart={(e) => handleDragStart(e, mod.id)}
@@ -585,8 +763,11 @@ export default function EditorV2() {
                 logos={logos}
                 assets={assets}
                 tenantId={session?.report?.tenant_id || null}
+                moduleId={selectedModule.id}
                 onHtmlChange={(newHtml) => onLiveHtmlChange(selectedModule.id, newHtml)}
-                zoom={0.55}
+                onComponentDragStart={(info) => setComponentDrag(info)}
+                onComponentDragEnd={() => setComponentDrag(null)}
+                zoom={zoom}
                 showGrid={showGrid}
                 showOverflow={showOverflow}
               />
@@ -710,6 +891,7 @@ function SidebarItem({
   selected,
   isDropTarget,
   isDragging,
+  isComponentDropTarget,
   variants,
   onSelect,
   onDragStart,
@@ -727,6 +909,7 @@ function SidebarItem({
         selected && "is-selected",
         isDropTarget && "is-drop-target",
         isDragging && "is-dragging",
+        isComponentDropTarget && "is-component-drop-target",
       ].filter(Boolean).join(" ")}
       draggable
       onDragStart={onDragStart}

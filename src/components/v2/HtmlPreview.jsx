@@ -341,6 +341,12 @@ export default function HtmlPreview({
   tenantId = null,
   showGrid = false,
   showOverflow = true,
+  moduleId = null,
+  // Fired on dragstart of a selected component. The parent listens so
+  // it can react on sidebar drop (cross-module move). Signature:
+  //   ({ sourceModuleId, tempId, outerHTML })
+  onComponentDragStart,
+  onComponentDragEnd,
 }) {
   const containerRef = useRef(null);
   const [selected, setSelected] = useState(null);
@@ -601,6 +607,8 @@ export default function HtmlPreview({
       const el = findSelectable(e.target, root);
       if (!el) {
         clearSelection(shadow);
+        // Unmark any previously draggable element
+        root.querySelectorAll("[draggable=\"true\"]").forEach((n) => n.removeAttribute("draggable"));
         setSelected(null);
         setBarPos(null);
         return;
@@ -609,7 +617,12 @@ export default function HtmlPreview({
       if (el.getAttribute("contenteditable") === "true") return;
 
       clearSelection(shadow);
+      // Strip draggable on the previously selected element, then mark the
+      // new one. draggable=true only on the selected subtree so text
+      // selection elsewhere stays usable.
+      root.querySelectorAll("[draggable=\"true\"]").forEach((n) => n.removeAttribute("draggable"));
       el.classList.add("el-selected");
+      if (moduleId) el.setAttribute("draggable", "true");
       setSelected(el);
 
       const rect = el.getBoundingClientRect();
@@ -618,6 +631,46 @@ export default function HtmlPreview({
         left: rect.left - containerRect.left + rect.width / 2 - 60,
         top: rect.top - containerRect.top - 36,
       });
+    });
+
+    // Component drag — fires when the user drags the selected element
+    // out of the preview (typically onto a sidebar item to move it to
+    // another page). We tag the source node with a short-lived
+    // data-editor-moving attribute so the parent can locate and strip
+    // it from html_cache after the server PATCHes commit.
+    frame.addEventListener("dragstart", (e) => {
+      if (!moduleId) return;
+      // Only honor drags that originate on a selected, draggable node.
+      const dragEl = e.target?.closest?.("[draggable=\"true\"]");
+      if (!dragEl) return;
+      const tempId = `drag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      dragEl.setAttribute("data-editor-moving", tempId);
+      const outerHTML = dragEl.outerHTML;
+      // Remove the temp attribute from the serialized copy so the
+      // destination page doesn't inherit it.
+      const cleanHtml = outerHTML.replace(
+        new RegExp(`\\sdata-editor-moving="${tempId}"`),
+        ""
+      );
+      try {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData(
+          "application/x-smyra-component",
+          JSON.stringify({ sourceModuleId: moduleId, tempId, outerHTML: cleanHtml })
+        );
+        // Set a text fallback so some sidebars show a drag image / tooltip.
+        e.dataTransfer.setData("text/plain", `[komponent: ${dragEl.tagName.toLowerCase()}]`);
+      } catch {
+        /* dataTransfer is read-only in some edge cases — bail silently */
+      }
+      dragEl.style.opacity = "0.4";
+      if (onComponentDragStart) onComponentDragStart({ sourceModuleId: moduleId, tempId, outerHTML: cleanHtml });
+    });
+
+    frame.addEventListener("dragend", (e) => {
+      const dragEl = e.target?.closest?.("[data-editor-moving]");
+      if (dragEl) dragEl.style.opacity = "";
+      if (onComponentDragEnd) onComponentDragEnd();
     });
 
     // Double-click text → inline edit
@@ -761,7 +814,7 @@ export default function HtmlPreview({
     // shadow (e.g. user just clicked a toolbar button that blurred the
     // contenteditable).
     node.ownerDocument.addEventListener("keydown", onDocKey);
-  }, [html, brandCss, logos, assets, zoom, interactive, onHtmlChange, showGrid, showOverflow]);
+  }, [html, brandCss, logos, assets, zoom, interactive, onHtmlChange, showGrid, showOverflow, moduleId, onComponentDragStart, onComponentDragEnd]);
 
   // Re-run injection when html/brandCss/logos/assets/inspect-flags change
   useEffect(() => {

@@ -619,6 +619,46 @@
   outline-offset: 1px;
 }
 
+/* Cross-module component drop target — distinct from the reorder-drop
+   highlight so the user can tell a component move from a page reorder. */
+.smyra-editor .sidebar-item.is-component-drop-target {
+  box-shadow: 0 0 0 2px var(--rose-500), 0 0 0 6px rgba(199, 115, 137, 0.18);
+  background: #fff7fa;
+  transform: scale(1.015);
+  transition: transform .08s ease, box-shadow .08s ease;
+}
+
+/* Zoom slider group in the topbar */
+.smyra-editor .zoom-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+}
+.smyra-editor .zoom-btn {
+  padding: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  font-size: 15px;
+  line-height: 1;
+}
+.smyra-editor .zoom-slider {
+  width: 110px;
+  accent-color: var(--rose-600);
+  cursor: pointer;
+}
+.smyra-editor .zoom-value {
+  min-width: 46px;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+
 .smyra-editor .sidebar-footer {
   padding: 12px 16px 16px;
   border-top: 1px solid var(--line);
