@@ -1,9 +1,10 @@
 /**
  * REST endpoints for Report Engine v2 modules.
  *
- * POST   /api/v2-modules            → add module (mirrors mcp-v2 add_module)
- * PATCH  /api/v2-modules/:id        → update content/style, re-renders html_cache
- * DELETE /api/v2-modules/:id        → delete module
+ * POST   /api/v2-modules                    → add module (mirrors mcp-v2 add_module)
+ * POST   /api/v2-modules/:id/duplicate      → clone module directly after the source
+ * PATCH  /api/v2-modules/:id                → update content/style, re-renders html_cache
+ * DELETE /api/v2-modules/:id                → delete module
  *
  * Auth: Hub JWT.
  */
@@ -51,6 +52,16 @@ function getIdFromPath(path = "") {
   const idx = parts.lastIndexOf("v2-modules");
   if (idx === -1) return null;
   return parts[idx + 1] ?? null;
+}
+
+// Detects the trailing segment after the module id — used for action
+// endpoints like /v2-modules/:id/duplicate.
+function getActionFromPath(path = "") {
+  const clean = path.split("?")[0];
+  const parts = clean.split("/").filter(Boolean);
+  const idx = parts.lastIndexOf("v2-modules");
+  if (idx === -1) return null;
+  return parts[idx + 2] ?? null;
 }
 
 async function callRenderService(path, body, tenantId) {
@@ -106,6 +117,7 @@ export const handler = async (event) => {
 
   const sql = getSql();
   const moduleId = getIdFromPath(event.path);
+  const action = getActionFromPath(event.path);
 
   // Helper: verify editor token scope matches the report that owns a module/payload
   async function assertEditorScopeForReport(reportId) {
@@ -190,6 +202,50 @@ export const handler = async (event) => {
 
       const rows = await sql`
         SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, created_at, updated_at
+        FROM v2_report_modules WHERE id = ${newId}
+      `;
+      return json(event, 201, { item: rows[0] });
+    }
+
+    // Duplicate: clone the source module, place it directly after the
+    // original, shift subsequent siblings down one slot. No re-render —
+    // we copy html_cache + height_mm from the source so the duplicate
+    // shows up in the preview instantly.
+    if (event.httpMethod === "POST" && moduleId && action === "duplicate") {
+      const srcRows = await sql`
+        SELECT id, report_id, module_type, order_index, content, style,
+               html_content, html_cache, height_mm
+        FROM v2_report_modules WHERE id = ${moduleId} LIMIT 1
+      `;
+      if (!srcRows.length) return json(event, 404, { error: "Module not found" });
+      const src = srcRows[0];
+
+      const scopeErr = await assertEditorScopeForReport(src.report_id);
+      if (scopeErr) return scopeErr;
+
+      await sql`
+        UPDATE v2_report_modules SET order_index = order_index + 1
+        WHERE report_id = ${src.report_id} AND order_index > ${src.order_index}
+      `;
+
+      const newId = randomUUID();
+      await sql`
+        INSERT INTO v2_report_modules (
+          id, report_id, module_type, order_index,
+          content, style, html_content, html_cache, height_mm
+        ) VALUES (
+          ${newId}, ${src.report_id}, ${src.module_type}, ${src.order_index + 1},
+          ${JSON.stringify(src.content || {})}::jsonb,
+          ${JSON.stringify(src.style || {})}::jsonb,
+          ${src.html_content || null},
+          ${src.html_cache || null},
+          ${src.height_mm || null}
+        )
+      `;
+
+      const rows = await sql`
+        SELECT id, report_id, page_id, module_type, order_index, content, style,
+               html_cache, height_mm, created_at, updated_at
         FROM v2_report_modules WHERE id = ${newId}
       `;
       return json(event, 201, { item: rows[0] });

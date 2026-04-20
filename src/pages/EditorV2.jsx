@@ -47,6 +47,24 @@ export default function EditorV2() {
   // Debounced save timer for contentEditable live edits
   const saveTimerRef = useRef(null);
 
+  // Module-level undo stack. Snapshots a reversible action, NOT the
+  // full state. Each entry has { kind, payload } and the inverse is
+  // applied via the regular API calls. Capped at 30.
+  //   kind='restore'  — undo a delete; payload carries the deleted row.
+  //   kind='delete'   — undo an add or duplicate; payload = { id }.
+  //   kind='reorder'  — undo a reorder; payload = { id, originalIdx }.
+  const undoRef = useRef([]);
+  const [undoCount, setUndoCount] = useState(0);
+  const pushUndo = (entry) => {
+    undoRef.current.push(entry);
+    if (undoRef.current.length > 30) undoRef.current.shift();
+    setUndoCount(undoRef.current.length);
+  };
+
+  // Available variants per component_type (for inline swap).
+  // Cached once per brand so the dropdown is instant.
+  const [variants, setVariants] = useState({}); // { [component_type]: [{id, variant_name, label, is_default}] }
+
   // Verify token + load report + brand CSS
   useEffect(() => {
     let cancelled = false;
@@ -153,12 +171,47 @@ export default function EditorV2() {
   const onDeleteModule = async (mod) => {
     if (!confirm(`Ta bort modul "${mod.module_type}"?`)) return;
     try {
+      // Locate predecessor so undo can reinsert at the same position.
+      const idx = modules.findIndex((m) => m.id === mod.id);
+      const afterModuleId = idx > 0 ? modules[idx - 1].id : null;
       await api.deleteV2Module(mod.id);
+      pushUndo({
+        kind: "restore",
+        payload: {
+          mod: {
+            module_type: mod.module_type,
+            content: mod.content || {},
+            style: mod.style || {},
+            html_content: mod.html_content || null,
+          },
+          after_module_id: afterModuleId,
+        },
+      });
       setModules((prev) => {
         const next = prev.filter((m) => m.id !== mod.id);
         if (selectedId === mod.id) setSelectedId(next[0]?.id ?? null);
         return next;
       });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const onDuplicateModule = async (mod) => {
+    try {
+      const res = await api.duplicateV2Module(mod.id);
+      pushUndo({ kind: "delete", payload: { id: res.item.id } });
+      setModules((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((m) => m.id === mod.id);
+        // Server already renumbered order_index server-side; re-sort
+        // for safety, but optimistically splice in for instant feedback.
+        next.splice(idx + 1, 0, res.item);
+        return next
+          .map((m, i) => ({ ...m, order_index: i }))
+          .sort((a, b) => a.order_index - b.order_index);
+      });
+      setSelectedId(res.item.id);
     } catch (err) {
       setError(err.message);
     }
@@ -179,12 +232,79 @@ export default function EditorV2() {
         content: defaultContent,
         after_module_id: lastId,
       });
+      pushUndo({ kind: "delete", payload: { id: res.item.id } });
       setModules((prev) => [...prev, res.item]);
       setSelectedId(res.item.id);
     } catch (err) {
       setError(err.message);
     } finally {
       setAdding(false);
+    }
+  };
+
+  // Pop the undo stack and apply the reverse operation. Errors bubble
+  // up as banner text rather than silently swallowing.
+  const onUndoModuleAction = async () => {
+    const entry = undoRef.current.pop();
+    setUndoCount(undoRef.current.length);
+    if (!entry) return;
+    setError("");
+    try {
+      if (entry.kind === "restore") {
+        const { mod, after_module_id } = entry.payload;
+        const res = await api.addV2Module({
+          report_id: session.report_id,
+          module_type: mod.module_type,
+          content: mod.content,
+          style: mod.style,
+          html_content: mod.html_content,
+          after_module_id,
+        });
+        // Re-fetch the full module list so order_index stays in sync
+        // with the server (restore shifts other modules).
+        const r = await api.getV2Report(session.report_id);
+        const sorted = [...(r.modules || [])].sort((a, b) => a.order_index - b.order_index);
+        setModules(sorted);
+        setSelectedId(res.item.id);
+      } else if (entry.kind === "delete") {
+        const { id } = entry.payload;
+        await api.deleteV2Module(id);
+        setModules((prev) => {
+          const next = prev.filter((m) => m.id !== id);
+          if (selectedId === id) setSelectedId(next[0]?.id ?? null);
+          return next;
+        });
+      } else if (entry.kind === "reorder") {
+        const { id, originalIdx } = entry.payload;
+        await api.reorderV2Module(id, originalIdx);
+        const r = await api.getV2Report(session.report_id);
+        const sorted = [...(r.modules || [])].sort((a, b) => a.order_index - b.order_index);
+        setModules(sorted);
+      }
+    } catch (err) {
+      setError(`Kunde inte ångra: ${err.message}`);
+    }
+  };
+
+  // Variant swap — replace a module's html_content with a different
+  // library variant of the same component_type. Pulls the component's
+  // template and renders with whatever placeholder values we can extract
+  // from the current content JSONB.
+  const onSwapVariant = async (mod, componentId) => {
+    if (!componentId) return;
+    setBusy((b) => ({ ...b, [mod.id]: true }));
+    setError("");
+    try {
+      const comp = await api.getV2Component(componentId);
+      // Pass as html_content — server will re-render on PATCH.
+      const res = await api.updateV2Module(mod.id, {
+        html_content: comp.item?.html_template || "",
+      });
+      setModules((prev) => prev.map((m) => (m.id === mod.id ? res.item : m)));
+    } catch (err) {
+      setError(`Kunde inte byta variant: ${err.message}`);
+    } finally {
+      setBusy((b) => ({ ...b, [mod.id]: false }));
     }
   };
 
@@ -241,12 +361,57 @@ export default function EditorV2() {
       const res = await api.reorderV2Module(sourceId, targetIdx);
       // Server returns authoritative row — keep other rows as-is
       setModules((prev) => prev.map((m) => (m.id === sourceId ? { ...m, ...res.item } : m)));
+      pushUndo({
+        kind: "reorder",
+        payload: { id: sourceId, originalIdx: sourceIdx },
+      });
     } catch (err) {
       setError(`Kunde inte flytta modul: ${err.message}`);
       // Roll back on failure
       setModules(modules);
     }
   };
+
+  // Load component library for variant picker, once per brand. We
+  // bucket by component_type → array of variants so the dropdown
+  // doesn't need to fetch per-module.
+  useEffect(() => {
+    const brandId = session?.report?.brand_id;
+    if (!brandId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.listV2Components(brandId);
+        if (cancelled) return;
+        const byType = {};
+        for (const comp of res.items || []) {
+          const t = comp.component_type || "unknown";
+          if (!byType[t]) byType[t] = [];
+          byType[t].push(comp);
+        }
+        setVariants(byType);
+      } catch (err) {
+        console.warn("variant fetch failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session?.report?.brand_id]);
+
+  // Module-level Cmd/Ctrl+Shift+Z → undo module action. Split-key
+  // avoids colliding with HtmlPreview's text-edit undo (Cmd+Z), which
+  // runs inside the shadow root on its own stack.
+  useEffect(() => {
+    const onKey = (e) => {
+      const cmd = e.metaKey || e.ctrlKey;
+      if (cmd && e.shiftKey && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        onUndoModuleAction();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.report_id, modules, selectedId]);
 
   // ──────────────── render ────────────────
 
@@ -286,6 +451,15 @@ export default function EditorV2() {
         <div className="editor-topbar-actions">
           {saveStatus === "saving" && <span className="save-pill saving">Sparar…</span>}
           {saveStatus === "saved" && <span className="save-pill saved">✓ Sparat</span>}
+          <button
+            className="btn-ghost"
+            type="button"
+            disabled={undoCount === 0}
+            onClick={onUndoModuleAction}
+            title="Ångra senaste modul-ändring (⌘⇧Z)"
+          >
+            ↶ Ångra {undoCount > 0 ? `(${undoCount})` : ""}
+          </button>
           {pdfUrl && (
             <a className="btn-ghost" href={pdfUrl} target="_blank" rel="noopener noreferrer">
               Öppna PDF ↗
@@ -320,11 +494,14 @@ export default function EditorV2() {
                 selected={selectedId === mod.id}
                 isDropTarget={dropBeforeId === mod.id}
                 isDragging={dragId === mod.id}
+                variants={variants[mod.module_type] || []}
                 onSelect={() => setSelectedId(mod.id)}
                 onDragStart={(e) => handleDragStart(e, mod.id)}
                 onDragOver={(e) => handleDragOver(e, mod.id)}
                 onDrop={(e) => handleDrop(e, mod.id)}
                 onDelete={() => onDeleteModule(mod)}
+                onDuplicate={() => onDuplicateModule(mod)}
+                onSwapVariant={(id) => onSwapVariant(mod, id)}
               />
             ))}
           </div>
@@ -496,12 +673,16 @@ function SidebarItem({
   selected,
   isDropTarget,
   isDragging,
+  variants,
   onSelect,
   onDragStart,
   onDragOver,
   onDrop,
   onDelete,
+  onDuplicate,
+  onSwapVariant,
 }) {
+  const hasVariants = Array.isArray(variants) && variants.length > 1;
   return (
     <div
       className={[
@@ -525,18 +706,54 @@ function SidebarItem({
       <div className="sidebar-meta">
         <div className="sidebar-name">{moduleDisplayName(mod)}</div>
         <div className="sidebar-type">{mod.module_type}</div>
+        {hasVariants && selected ? (
+          <select
+            className="sidebar-variant-select"
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              const id = e.target.value;
+              if (id) onSwapVariant(id);
+              e.target.selectedIndex = 0; // reset to placeholder
+            }}
+            defaultValue=""
+            title="Byt variant"
+          >
+            <option value="" disabled>
+              Byt variant…
+            </option>
+            {variants.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.variant_name || v.label || v.id.slice(0, 6)}
+                {v.is_default ? " ★" : ""}
+              </option>
+            ))}
+          </select>
+        ) : null}
       </div>
-      <button
-        className="sidebar-delete"
-        type="button"
-        title="Ta bort modul"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        ×
-      </button>
+      <div className="sidebar-actions">
+        <button
+          className="sidebar-dup"
+          type="button"
+          title="Duplicera modul"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDuplicate();
+          }}
+        >
+          ⎘
+        </button>
+        <button
+          className="sidebar-delete"
+          type="button"
+          title="Ta bort modul"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          ×
+        </button>
+      </div>
     </div>
   );
 }

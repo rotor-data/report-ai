@@ -71,6 +71,8 @@ export const api = {
   updateV2Module: (id, payload) => request(`/v2-modules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   reorderV2Module: (id, newIndex) =>
     request(`/v2-modules/${id}`, { method: "PATCH", body: JSON.stringify({ order_index: newIndex }) }),
+  duplicateV2Module: (id) =>
+    request(`/v2-modules/${id}/duplicate`, { method: "POST", body: "{}" }),
   deleteV2Module: (id) => request(`/v2-modules/${id}`, { method: "DELETE" }),
 
   listV2Assets: (tenantId) => request(`/v2-assets?tenant_id=${encodeURIComponent(tenantId)}`),
