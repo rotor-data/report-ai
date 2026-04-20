@@ -394,6 +394,21 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   // the latest onHtmlChange prop.
   const notifyRef = useRef(() => {});
 
+  // Stabilize callback identities — parent passes inline arrows that
+  // change every render. Without these refs, injectHtml's useCallback
+  // sees new identities on every EditorV2 re-render (which happens
+  // whenever any state changes), which forces the shadow DOM to be
+  // wiped and re-built. That destroyed any active selection before
+  // the user could interact with it — the "nothing works" symptom.
+  const onHtmlChangeRef = useRef(onHtmlChange);
+  const onComponentDragStartRef = useRef(onComponentDragStart);
+  const onComponentDragEndRef = useRef(onComponentDragEnd);
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  useEffect(() => { onHtmlChangeRef.current = onHtmlChange; });
+  useEffect(() => { onComponentDragStartRef.current = onComponentDragStart; });
+  useEffect(() => { onComponentDragEndRef.current = onComponentDragEnd; });
+  useEffect(() => { onSelectionChangeRef.current = onSelectionChange; });
+
   // Emit selection info to the parent whenever `selected` changes so
   // the inspector panel can render the right actions.
   useEffect(() => {
@@ -751,7 +766,11 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         el.removeEventListener("keyup", onMouseup);
         setFormatBar(null);
         const newHtml = getUpdatedHtml();
-        if (newHtml !== null && onHtmlChange) onHtmlChange(newHtml);
+        // Use ref so the latest onHtmlChange is reached — injectHtml's
+        // useCallback intentionally doesn't depend on onHtmlChange,
+        // which means the closure here captures the first-render value.
+        const cb = onHtmlChangeRef.current;
+        if (newHtml !== null && cb) cb(newHtml);
       };
       const onKey = (ev) => {
         if (ev.key === "Escape") { ev.preventDefault(); finish(); return; }
@@ -859,9 +878,11 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // shadow (e.g. user just clicked a toolbar button that blurred the
     // contenteditable).
     node.ownerDocument.addEventListener("keydown", onDocKey);
-  }, [html, brandCss, logos, assets, zoom, interactive, onHtmlChange, showGrid, showOverflow, moduleId, onComponentDragStart, onComponentDragEnd]);
+  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleId]);
 
-  // Re-run injection when html/brandCss/logos/assets/inspect-flags change
+  // Re-run injection when structural props change. Callback props are
+  // intentionally NOT in this list (they're read via refs above), so
+  // parent-driven rerenders don't nuke the shadow DOM + selection.
   useEffect(() => {
     if (containerRef.current) injectHtml(containerRef.current);
   }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, injectHtml]);
