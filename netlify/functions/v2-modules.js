@@ -203,6 +203,14 @@ export const handler = async (event) => {
       } catch (e) {
         console.warn("[v2-modules] render failed:", e.message);
       }
+      // Fallback so the module always renders SOMETHING rather than a
+      // blank card when the render service is slow / down / rejecting.
+      if (!htmlCache && html_content) {
+        await sql`
+          UPDATE v2_report_modules SET html_cache = ${html_content}
+          WHERE id = ${newId} AND html_cache IS NULL
+        `;
+      }
 
       const rows = await sql`
         SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, background, created_at, updated_at
@@ -372,18 +380,33 @@ export const handler = async (event) => {
         WHERE id = ${moduleId}
       `;
 
+      let renderOk = false;
       try {
         const brand = await fetchBrandContext(sql, mod.brand_id);
         const renderPayload = newHtmlContent
           ? { html_content: newHtmlContent, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: "draft" }
           : { module_id: moduleId, module_type: mod.module_type, content: newContent, style: newStyle, brand_tokens: brand.tokens, brand_fonts: brand.fonts };
         const rr = await callRenderService("/render/module", renderPayload, mod.tenant_id);
+        const rendered = rr.html_fragment ?? rr.html ?? null;
         await sql`
-          UPDATE v2_report_modules SET html_cache = ${(rr.html_fragment ?? rr.html ?? null)}, height_mm = ${rr.height_mm ?? null}
+          UPDATE v2_report_modules SET html_cache = ${rendered}, height_mm = ${rr.height_mm ?? null}
           WHERE id = ${moduleId}
         `;
+        renderOk = !!rendered;
       } catch (e) {
         console.warn("[v2-modules] re-render failed:", e.message);
+      }
+
+      // Safety net: if re-render failed OR returned empty, fall back to
+      // html_content as the cache so the editor + PDF show the user's
+      // edit rather than a blank card. PDF pipeline will also look at
+      // html_content downstream, but this keeps editor previews intact.
+      if (!renderOk && newHtmlContent) {
+        await sql`
+          UPDATE v2_report_modules SET html_cache = ${newHtmlContent}
+          WHERE id = ${moduleId} AND html_cache IS NULL
+        `;
+        console.warn(`[v2-modules] fallback html_cache := html_content for ${moduleId}`);
       }
 
       const rows = await sql`
