@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import ImagePickerDialog from "./ImagePickerDialog";
 
 const SELECTABLE = new Set([
   "p","h1","h2","h3","h4","h5","h6","hr","img","div","section",
@@ -337,12 +338,17 @@ export default function HtmlPreview({
   zoom = 0.55,
   interactive = true,
   lang = "sv",
+  tenantId = null,
 }) {
   const containerRef = useRef(null);
   const [selected, setSelected] = useState(null);
   const [barPos, setBarPos] = useState(null);
   // Floating format toolbar for contenteditable text selections.
   const [formatBar, setFormatBar] = useState(null); // { left, top, el } | null
+  // Image picker — open when the user clicks an <img> or picks "Replace
+  // image" from the element action bar. target is the DOM node to rewire
+  // once the dialog returns a pick.
+  const [imagePicker, setImagePicker] = useState(null); // { target } | null
   // Local undo/redo stack of HTML snapshots. We push BEFORE any destructive
   // change (typing, delete, duplicate) and pop on Cmd/Ctrl+Z. Separate from
   // the server-side save history — this is just for live editing.
@@ -495,9 +501,18 @@ export default function HtmlPreview({
 
     if (!interactive) return;
 
-    // Click → select
+    // Click → select (or open image picker when clicking an <img>)
     frame.addEventListener("click", (e) => {
       e.stopPropagation();
+
+      // Direct click on an <img> element → treat as "change this image"
+      // shortcut. User can still Alt-click to fall back to regular selection.
+      if (e.target.tagName === "IMG" && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        setImagePicker({ target: e.target });
+        return;
+      }
+
       const el = findSelectable(e.target, root);
       if (!el) {
         clearSelection(shadow);
@@ -606,6 +621,32 @@ export default function HtmlPreview({
       el.addEventListener("keydown", onKey);
       el.addEventListener("mouseup", onMouseup);
       el.addEventListener("keyup", onMouseup);
+    });
+
+    // Drag-n-drop from desktop → open picker prefilled with the file
+    frame.addEventListener("dragover", (e) => {
+      if (!interactive) return;
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.preventDefault();
+        frame.style.outline = "2px dashed #004549";
+      }
+    });
+    frame.addEventListener("dragleave", () => {
+      frame.style.outline = "";
+    });
+    frame.addEventListener("drop", async (e) => {
+      if (!interactive) return;
+      frame.style.outline = "";
+      const file = e.dataTransfer?.files?.[0];
+      if (!file || !file.type.startsWith("image/")) return;
+      e.preventDefault();
+      // Find the nearest <img> to the drop coordinates; that's the one
+      // we replace. If no <img> is found, ignore.
+      const target = shadow.elementFromPoint?.(e.clientX, e.clientY);
+      const img = target?.closest?.("img");
+      if (!img) return;
+      // Open picker with the file already in queue
+      setImagePicker({ target: img, prefillFile: file });
     });
 
     // Undo / Redo — document-level so it fires even when nothing is
@@ -788,6 +829,46 @@ export default function HtmlPreview({
             zIndex: 10,
           }}
         >
+          {selected.tagName === "IMG" && (
+            <>
+              <button
+                onClick={() => setImagePicker({ target: selected })}
+                title="Byt bild"
+                style={{
+                  width: 28, height: 28, borderRadius: 4, border: "none",
+                  background: "transparent", color: "#fff", cursor: "pointer",
+                  fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#5b9bd5"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                🖼
+              </button>
+              <button
+                onClick={() => {
+                  const current = selected.getAttribute("alt") || "";
+                  const next = prompt("Alt-text (beskrivning för skärmläsare)", current);
+                  if (next == null) return;
+                  pushUndoSnapshot();
+                  if (next) selected.setAttribute("alt", next);
+                  else selected.removeAttribute("alt");
+                  const newHtml = getUpdatedHtml();
+                  if (newHtml !== null && onHtmlChange) onHtmlChange(newHtml);
+                }}
+                title="Redigera alt-text"
+                style={{
+                  width: 28, height: 28, borderRadius: 4, border: "none",
+                  background: "transparent", color: "#fff", cursor: "pointer",
+                  fontSize: 11, fontWeight: 600,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#444"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                ALT
+              </button>
+            </>
+          )}
           <button
             onClick={handleDelete}
             title="Ta bort element"
@@ -816,6 +897,34 @@ export default function HtmlPreview({
           </button>
         </div>
       )}
+      <ImagePickerDialog
+        open={!!imagePicker}
+        tenantId={tenantId}
+        initialTab="library"
+        initialAlt={imagePicker?.target?.getAttribute?.("alt") || ""}
+        onClose={() => setImagePicker(null)}
+        onPick={({ assetId, url, alt }) => {
+          const img = imagePicker?.target;
+          if (!img) return;
+          pushUndoSnapshot();
+          // Wire the img to point at the new asset. When assetId is set
+          // we use data-asset-ref so PDF render also resolves it from
+          // our storage; when only url is given (direct URL), set src
+          // directly.
+          if (assetId) {
+            img.setAttribute("data-asset-ref", assetId);
+            img.setAttribute("src", url);
+            img.removeAttribute("data-placeholder");
+          } else if (url) {
+            img.setAttribute("src", url);
+            img.removeAttribute("data-asset-ref");
+            img.removeAttribute("data-placeholder");
+          }
+          if (alt) img.setAttribute("alt", alt);
+          const newHtml = getUpdatedHtml();
+          if (newHtml !== null && onHtmlChange) onHtmlChange(newHtml);
+        }}
+      />
       {/* Floating text-format toolbar — appears when a range is selected
           inside a contenteditable leaf. Bold / italic / underline /
           link. execCommand still works in shadow DOM for these. */}

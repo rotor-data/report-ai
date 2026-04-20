@@ -372,6 +372,7 @@ export default function EditorV2() {
                 brandCss={brandCss}
                 logos={logos}
                 assets={assets}
+                tenantId={session?.report?.tenant_id || null}
                 onHtmlChange={(newHtml) => onLiveHtmlChange(selectedModule.id, newHtml)}
                 zoom={0.55}
               />
