@@ -99,6 +99,29 @@ export default function EditorV2() {
   // Imperative refs into each HtmlPreview instance so inspector buttons
   // can drive shadow-DOM selection actions from light DOM.
   const previewRefs = useRef({});
+  // Copy/paste buffer for elements. Survives navigation within a session
+  // and persists to localStorage so the user can paste after reloading.
+  const [clipboard, setClipboard] = useState(() => {
+    try {
+      const raw = localStorage.getItem("smyra-editor-clipboard");
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return null;
+  });
+  useEffect(() => {
+    try {
+      if (clipboard) localStorage.setItem("smyra-editor-clipboard", JSON.stringify(clipboard));
+      else localStorage.removeItem("smyra-editor-clipboard");
+    } catch {}
+  }, [clipboard]);
+  // Transient toast for feedback on copy/paste.
+  const [toast, setToast] = useState("");
+  const toastTimerRef = useRef(null);
+  const flashToast = (msg) => {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(""), 1400);
+  };
   // Current selection info broadcast by whichever HtmlPreview has the
   // live selection. { moduleId, tagName, textSample, isEditable, isImage, alt }.
   const [activeSelection, setActiveSelection] = useState(null);
@@ -579,6 +602,76 @@ export default function EditorV2() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.report_id, modules, selectedId]);
 
+  // Element clipboard handlers — act on the currently-selected element
+  // in whichever preview owns activeSelection.moduleId.
+  const onCopyElement = () => {
+    const id = activeSelection?.moduleId;
+    const payload = previewRefs.current[id]?.getClipboardPayload();
+    if (!payload) return;
+    setClipboard(payload);
+    flashToast(`Kopierad: <${payload.tagName}>`);
+  };
+  const onPasteElement = async (targetModuleId) => {
+    if (!clipboard) return;
+    // Default target = the active page (the one the user most recently
+    // selected or scrolled to). If an element is selected in another
+    // preview, that preview wins — we paste after it.
+    const target = targetModuleId
+      || activeSelection?.moduleId
+      || selectedId
+      || (modules.length > 0 ? modules[0].id : null);
+    if (!target) return;
+    // Try imperative paste-after-selection when the target preview is
+    // mounted and has a current selection. Falls back to appending to
+    // html_content when the preview ref isn't available (edge case).
+    const api = previewRefs.current[target];
+    if (api?.pasteHtml) {
+      api.pasteHtml(clipboard.outerHTML);
+      flashToast(`Klistrat in på sida ${((modules.find((m) => m.id === target)?.order_index ?? 0) + 1)}`);
+      pushUndo({ kind: "paste-element", payload: { moduleId: target } });
+      return;
+    }
+    // Fallback: append to html_content and PATCH.
+    const mod = modules.find((m) => m.id === target);
+    if (!mod) return;
+    const nextHtml = (mod.html_cache || "") + clipboard.outerHTML;
+    try {
+      const res = await api.updateV2Module(target, { html_content: nextHtml });
+      setModules((prev) => prev.map((m) => (m.id === target ? res.item : m)));
+      flashToast("Klistrat in");
+    } catch (err) {
+      setError(`Klistra in misslyckades: ${err.message}`);
+    }
+  };
+  // Cmd/Ctrl+C + Cmd/Ctrl+V global bindings. We don't intercept when
+  // the user has a native text selection or when the focus is in an
+  // input/contenteditable — let the browser handle real text copy/paste.
+  useEffect(() => {
+    const onKey = (e) => {
+      const cmd = e.metaKey || e.ctrlKey;
+      if (!cmd || e.shiftKey || e.altKey) return;
+      const tgt = e.target;
+      const isEditingText =
+        tgt?.tagName === "INPUT" ||
+        tgt?.tagName === "TEXTAREA" ||
+        tgt?.closest?.("[contenteditable='true']");
+      const hasTextSel = (document.getSelection()?.toString() || "").length > 0;
+      if (isEditingText || hasTextSel) return;
+
+      const k = e.key.toLowerCase();
+      if (k === "c" && activeSelection) {
+        e.preventDefault();
+        onCopyElement();
+      } else if (k === "v" && clipboard) {
+        e.preventDefault();
+        onPasteElement();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSelection, clipboard, selectedId, modules]);
+
   // ──────────────── render ────────────────
 
   if (loading) {
@@ -699,6 +792,7 @@ export default function EditorV2() {
       </header>
 
       {error ? <div className="error" style={{ margin: "12px 24px" }}>{error}</div> : null}
+      {toast ? <div className="ins-toast">{toast}</div> : null}
 
       <div className="editor-v2-body editor-v2-body--inspector">
         {/* ─── Left: page navigator (thumbnails, click = scroll) ─── */}
@@ -809,6 +903,7 @@ export default function EditorV2() {
             activeModuleId={selectedId}
             activeSelection={activeSelection}
             variants={variants}
+            hasClipboard={!!clipboard}
             onGoToModule={(id) => {
               setSelectedId(id);
               const el = document.getElementById(`module-card-${id}`);
@@ -819,32 +914,14 @@ export default function EditorV2() {
             onDeleteElement={() => previewRefs.current[activeSelection?.moduleId]?.deleteSelected()}
             onReplaceImage={() => previewRefs.current[activeSelection?.moduleId]?.openImagePicker()}
             onEditAlt={() => previewRefs.current[activeSelection?.moduleId]?.editAlt()}
-            onElementDragStart={(e) => {
-              const id = activeSelection?.moduleId;
-              const payload = previewRefs.current[id]?.getDragPayload();
-              if (!payload) return;
-              e.dataTransfer.effectAllowed = "move";
-              e.dataTransfer.setData("application/x-smyra-component", JSON.stringify(payload));
-              e.dataTransfer.setData("text/plain", `[komponent: ${activeSelection.tagName}]`);
-              setComponentDrag(payload);
-            }}
-            onElementDragEnd={() => {
-              const id = activeSelection?.moduleId;
-              previewRefs.current[id]?.clearDragStyling();
-              setComponentDrag(null);
-            }}
+            onCopyElement={onCopyElement}
+            onPasteElement={() => onPasteElement()}
+            onSelectParent={(steps) => previewRefs.current[activeSelection?.moduleId]?.selectParent(steps)}
+            onSelectChild={(i) => previewRefs.current[activeSelection?.moduleId]?.selectChildByIndex(i)}
+            onSetStyle={(prop, val) => previewRefs.current[activeSelection?.moduleId]?.setStyle(prop, val)}
             onDuplicateModule={(mod) => onDuplicateModule(mod)}
             onDeleteModule={(mod) => onDeleteModule(mod)}
             onSwapVariant={(mod, id) => onSwapVariant(mod, id)}
-            onMoveElementTo={(targetModuleId) => {
-              const srcId = activeSelection?.moduleId;
-              const payload = previewRefs.current[srcId]?.getDragPayload();
-              if (payload && srcId !== targetModuleId) {
-                onMoveComponentToModule(payload, targetModuleId).finally(() => {
-                  previewRefs.current[srcId]?.clearDragStyling();
-                });
-              }
-            }}
           />
         </aside>
       </div>
@@ -1030,123 +1107,227 @@ function InspectorPanels({
   activeModuleId,
   activeSelection,
   variants,
+  hasClipboard,
   onGoToModule,
   onStartEdit,
   onDuplicateElement,
   onDeleteElement,
   onReplaceImage,
   onEditAlt,
-  onElementDragStart,
-  onElementDragEnd,
+  onCopyElement,
+  onPasteElement,
+  onSelectParent,
+  onSelectChild,
+  onSetStyle,
   onDuplicateModule,
   onDeleteModule,
   onSwapVariant,
-  onMoveElementTo,
 }) {
-  const [elementOpen, setElementOpen] = useState(true);
+  const [structureOpen, setStructureOpen] = useState(true);
+  const [actionsOpen, setActionsOpen] = useState(true);
+  const [styleOpen, setStyleOpen] = useState(true);
   const [pageOpen, setPageOpen] = useState(true);
-  const [moveOpen, setMoveOpen] = useState(true);
 
   const activeMod = modules.find((m) => m.id === activeModuleId) || null;
-  const selModuleId = activeSelection?.moduleId;
   const sel = activeSelection;
 
   return (
     <div className="ins-root">
-      {/* ── Element panel ─────────────────────────────────────── */}
+      {/* ── Structure: parent crumbs + children list ───────────── */}
       <InsSection
         title="Element"
-        open={elementOpen}
-        onToggle={() => setElementOpen(!elementOpen)}
-        subtitle={sel ? `<${sel.tagName}>` : "Inget valt"}
+        open={structureOpen}
+        onToggle={() => setStructureOpen(!structureOpen)}
+        subtitle={sel ? `<${sel.tagName}${sel.className ? "." + sel.className : ""}>` : "Inget valt"}
       >
         {!sel ? (
-          <p className="ins-empty">Klicka på ett element i förhandsgranskningen för att redigera det.</p>
+          <p className="ins-empty">Klicka på ett element i förhandsgranskningen.</p>
         ) : (
           <>
-            <div className="ins-sample">{sel.textSample || (sel.isImage ? "Bild" : `<${sel.tagName}>`)}</div>
+            {/* Breadcrumbs: deepest-first parents, then current. Click a
+                parent to select it (useful for drilling out of a KPI
+                value back to the KPI card). */}
+            {sel.parents?.length ? (
+              <div className="ins-crumbs">
+                {[...sel.parents].reverse().map((p, i, arr) => (
+                  <span key={i} style={{ display: "inline-flex", alignItems: "center" }}>
+                    <button
+                      className="ins-crumb"
+                      type="button"
+                      onClick={() => onSelectParent(arr.length - i)}
+                    >
+                      &lt;{p.tagName}{p.className ? "." + p.className : ""}&gt;
+                    </button>
+                    <span className="ins-crumb-sep">›</span>
+                  </span>
+                ))}
+                <span className="ins-crumb is-current">
+                  &lt;{sel.tagName}{sel.className ? "." + sel.className : ""}&gt;
+                </span>
+              </div>
+            ) : null}
 
-            <div className="ins-btn-row">
-              {sel.isEditable && (
-                <button className="ins-btn ins-btn--primary" type="button" onClick={onStartEdit}>
-                  <span className="ins-btn-icon">✎</span>
-                  <span>Redigera text</span>
-                </button>
-              )}
-              {sel.isImage && (
-                <button className="ins-btn ins-btn--primary" type="button" onClick={onReplaceImage}>
-                  <span className="ins-btn-icon">🖼</span>
-                  <span>Byt bild</span>
-                </button>
-              )}
-            </div>
+            {sel.textSample ? (
+              <div className="ins-sample">{sel.textSample}</div>
+            ) : null}
 
-            {/* Drag handle — lives in light DOM, always fires reliably */}
-            <div className="ins-drag-hint">Dra till en annan sida:</div>
-            <button
-              className="ins-drag-handle"
-              type="button"
-              draggable="true"
-              onDragStart={onElementDragStart}
-              onDragEnd={onElementDragEnd}
-              onMouseDown={(e) => { e.currentTarget.style.cursor = "grabbing"; }}
-              onMouseUp={(e) => { e.currentTarget.style.cursor = "grab"; }}
-            >
-              <span className="ins-drag-grip">⋮⋮</span>
-              <span>Håll och dra till sida i listan</span>
-            </button>
-
-            <div className="ins-btn-row">
-              <button className="ins-btn" type="button" onClick={onDuplicateElement}>
-                <span className="ins-btn-icon">⎘</span>
-                <span>Duplicera</span>
-              </button>
-              {sel.isImage && (
-                <button className="ins-btn" type="button" onClick={onEditAlt}>
-                  <span className="ins-btn-icon">ALT</span>
-                  <span>Alt-text</span>
-                </button>
-              )}
-              <button className="ins-btn ins-btn--danger" type="button" onClick={onDeleteElement}>
-                <span className="ins-btn-icon">🗑</span>
-                <span>Ta bort</span>
-              </button>
-            </div>
+            {/* Children — drill into KPI value, label, trend etc. */}
+            {sel.children?.length ? (
+              <>
+                <div className="ins-children-label">Innehåller ({sel.children.length})</div>
+                <div className="ins-children">
+                  {sel.children.map((c, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      className="ins-child"
+                      onClick={() => onSelectChild(i)}
+                      title={`Välj <${c.tagName}>`}
+                    >
+                      <span className="ins-child-tag">
+                        &lt;{c.tagName}{c.className ? "." + c.className : ""}&gt;
+                      </span>
+                      <span className="ins-child-text">
+                        {c.textPreview || (c.tagName === "img" ? "Bild" : "")}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </>
         )}
       </InsSection>
 
-      {/* ── Move-to panel ─────────────────────────────────────── */}
+      {/* ── Actions — edit, copy, paste, duplicate, delete ─────── */}
       {sel && (
         <InsSection
-          title="Flytta till sida"
-          open={moveOpen}
-          onToggle={() => setMoveOpen(!moveOpen)}
+          title="Åtgärder"
+          open={actionsOpen}
+          onToggle={() => setActionsOpen(!actionsOpen)}
         >
-          <div className="ins-move-list">
-            {modules.map((m, idx) => {
-              const isSource = m.id === selModuleId;
-              return (
-                <button
-                  key={m.id}
-                  className={`ins-move-item${isSource ? " is-source" : ""}`}
-                  type="button"
-                  disabled={isSource}
-                  onClick={() => onMoveElementTo(m.id)}
-                  title={isSource ? "Samma sida som källan" : `Flytta till ${moduleDisplayName(m)}`}
-                >
-                  <span className="ins-move-idx">{idx + 1}</span>
-                  <span className="ins-move-type">{m.module_type}</span>
-                  <span className="ins-move-title">{moduleDisplayName(m)}</span>
-                  {isSource ? <span className="ins-move-tag">källa</span> : <span className="ins-move-arrow">→</span>}
-                </button>
-              );
-            })}
+          <div className="ins-btn-row">
+            {sel.isEditable && (
+              <button className="ins-btn ins-btn--primary" type="button" onClick={onStartEdit}>
+                <span className="ins-btn-icon">✎</span>
+                <span>Redigera text</span>
+              </button>
+            )}
+            {sel.isImage && (
+              <button className="ins-btn ins-btn--primary" type="button" onClick={onReplaceImage}>
+                <span className="ins-btn-icon">🖼</span>
+                <span>Byt bild</span>
+              </button>
+            )}
+          </div>
+          <div className="ins-btn-row">
+            <button className="ins-btn" type="button" onClick={onCopyElement}>
+              <span className="ins-btn-icon">📋</span>
+              <span>Kopiera</span>
+              <span className="ins-btn-kbd">⌘C</span>
+            </button>
+            <button
+              className="ins-btn"
+              type="button"
+              disabled={!hasClipboard}
+              onClick={onPasteElement}
+              title={hasClipboard ? "Klistra in på vald sida" : "Inget kopierat"}
+            >
+              <span className="ins-btn-icon">📥</span>
+              <span>Klistra in</span>
+              <span className="ins-btn-kbd">⌘V</span>
+            </button>
+          </div>
+          <div className="ins-btn-row">
+            <button className="ins-btn" type="button" onClick={onDuplicateElement}>
+              <span className="ins-btn-icon">⎘</span>
+              <span>Duplicera</span>
+            </button>
+            {sel.isImage && (
+              <button className="ins-btn" type="button" onClick={onEditAlt}>
+                <span className="ins-btn-icon">ALT</span>
+                <span>Alt-text</span>
+              </button>
+            )}
+            <button className="ins-btn ins-btn--danger" type="button" onClick={onDeleteElement}>
+              <span className="ins-btn-icon">🗑</span>
+              <span>Ta bort</span>
+            </button>
           </div>
         </InsSection>
       )}
 
-      {/* ── Page panel ────────────────────────────────────────── */}
+      {/* ── Style ──────────────────────────────────────────────── */}
+      {sel && (
+        <InsSection
+          title="Stil"
+          open={styleOpen}
+          onToggle={() => setStyleOpen(!styleOpen)}
+        >
+          <div className="ins-style-grid">
+            <label className="ins-style-label">Textfärg</label>
+            <ColorField
+              value={sel.style?.color}
+              onChange={(v) => onSetStyle("color", v)}
+              onReset={() => onSetStyle("color", "")}
+            />
+
+            <label className="ins-style-label">Bakgrund</label>
+            <ColorField
+              value={sel.style?.backgroundColor}
+              onChange={(v) => onSetStyle("backgroundColor", v)}
+              onReset={() => onSetStyle("backgroundColor", "")}
+            />
+
+            <label className="ins-style-label">Textstorlek</label>
+            <FontSizeField
+              value={sel.style?.fontSize}
+              onChange={(v) => onSetStyle("fontSize", v)}
+              onReset={() => onSetStyle("fontSize", "")}
+            />
+
+            <label className="ins-style-label">Tjocklek</label>
+            <select
+              className="ins-select"
+              value={sel.style?.fontWeight || ""}
+              onChange={(e) => onSetStyle("fontWeight", e.target.value || "")}
+            >
+              <option value="">—</option>
+              <option value="300">Light (300)</option>
+              <option value="400">Regular (400)</option>
+              <option value="500">Medium (500)</option>
+              <option value="600">Semibold (600)</option>
+              <option value="700">Bold (700)</option>
+              <option value="800">Extra Bold (800)</option>
+            </select>
+
+            <label className="ins-style-label">Justering</label>
+            <select
+              className="ins-select"
+              value={sel.style?.textAlign || ""}
+              onChange={(e) => onSetStyle("textAlign", e.target.value || "")}
+            >
+              <option value="">—</option>
+              <option value="left">Vänster</option>
+              <option value="center">Centrerad</option>
+              <option value="right">Höger</option>
+              <option value="justify">Marginaljust.</option>
+            </select>
+
+            <label className="ins-style-label">Padding</label>
+            <input
+              type="text"
+              className="ins-number-value"
+              style={{ width: "100%" }}
+              placeholder="t.ex. 12px 16px"
+              value={sel.style?.padding || ""}
+              onChange={(e) => onSetStyle("padding", e.target.value)}
+            />
+          </div>
+        </InsSection>
+      )}
+
+      {/* ── Page panel ─────────────────────────────────────────── */}
       <InsSection
         title="Sida"
         open={pageOpen}
@@ -1194,6 +1375,64 @@ function InspectorPanels({
       </InsSection>
     </div>
   );
+}
+
+// ─── Style field helpers ────────────────────────────────────────
+function ColorField({ value, onChange, onReset }) {
+  // Normalise to a hex color for the <input type=color> display.
+  // If value is a CSS name or rgb(), fall back to the browser default.
+  const hex = toHex(value);
+  return (
+    <div className="ins-color-row">
+      <input
+        type="color"
+        className="ins-color-input"
+        value={hex || "#000000"}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Färgväljare"
+      />
+      <input
+        type="text"
+        className="ins-number-value"
+        style={{ flex: 1, minWidth: 0 }}
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="—"
+      />
+      {value ? <button type="button" className="ins-color-reset" onClick={onReset}>Rensa</button> : null}
+    </div>
+  );
+}
+
+function FontSizeField({ value, onChange, onReset }) {
+  const current = parseFloat(value) || 0;
+  const unit = (String(value || "").match(/(px|pt|em|rem)$/) || [null, "px"])[1];
+  return (
+    <div className="ins-number-row">
+      <button type="button" className="ins-number-btn" onClick={() => onChange(`${Math.max(6, current - 1)}${unit}`)}>−</button>
+      <input
+        type="text"
+        className="ins-number-value"
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="—"
+      />
+      <button type="button" className="ins-number-btn" onClick={() => onChange(`${Math.max(6, current + 1)}${unit}`)}>+</button>
+      {value ? <button type="button" className="ins-color-reset" onClick={onReset}>Rensa</button> : null}
+    </div>
+  );
+}
+
+function toHex(color) {
+  if (!color) return "";
+  if (color.startsWith("#")) {
+    if (color.length === 4) return `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`;
+    return color.length >= 7 ? color.slice(0, 7) : "";
+  }
+  const m = color.match(/^rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  if (!m) return "";
+  const hex2 = (n) => Number(n).toString(16).padStart(2, "0");
+  return `#${hex2(m[1])}${hex2(m[2])}${hex2(m[3])}`;
 }
 
 function InsSection({ title, subtitle, open, onToggle, children }) {

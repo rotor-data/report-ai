@@ -410,7 +410,9 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   useEffect(() => { onSelectionChangeRef.current = onSelectionChange; });
 
   // Emit selection info to the parent whenever `selected` changes so
-  // the inspector panel can render the right actions.
+  // the inspector panel can render the right actions. Includes a
+  // parent path and an immediate-children list so the user can drill
+  // into component parts.
   useEffect(() => {
     if (!onSelectionChange) return;
     if (!selected) { onSelectionChange(null); return; }
@@ -421,13 +423,51 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       !hasBlockChildren(selected) &&
       !selected.querySelector?.("img, svg, video");
     const isImage = tag === "img";
+
+    // Parents (up to .preview-root boundary) — newest first.
+    const parents = [];
+    let p = selected.parentElement;
+    const shadow = containerRef.current?.shadowRoot;
+    const root = shadow?.querySelector(".preview-root");
+    while (p && p !== root) {
+      parents.push({
+        tagName: p.tagName.toLowerCase(),
+        className: (p.className || "").split(/\s+/)[0] || "",
+      });
+      p = p.parentElement;
+      if (parents.length > 6) break;
+    }
+    // Children — immediate only.
+    const children = Array.from(selected.children || []).slice(0, 20).map((c) => ({
+      tagName: c.tagName.toLowerCase(),
+      className: (c.className || "").split(/\s+/)[0] || "",
+      textPreview: (c.textContent || "").replace(/\s+/g, " ").trim().slice(0, 40),
+      isText: EDITABLE_TEXT_TAGS.has(c.tagName.toLowerCase()) && !c.querySelector?.("img, svg, video") && !hasBlockChildren(c),
+    }));
+
+    // Current inline styles the inspector can surface + reset.
+    const inlineStyle = selected.getAttribute("style") || "";
+    const readStyle = (prop) => selected.style?.[prop] || "";
+
     onSelectionChange({
       moduleId,
       tagName: tag,
+      className: (selected.className || "").split(/\s+/)[0] || "",
       textSample,
       isEditable,
       isImage,
       alt: isImage ? (selected.getAttribute("alt") || "") : "",
+      parents,
+      children,
+      style: {
+        color: readStyle("color"),
+        backgroundColor: readStyle("backgroundColor"),
+        fontSize: readStyle("fontSize"),
+        fontWeight: readStyle("fontWeight"),
+        textAlign: readStyle("textAlign"),
+        padding: readStyle("padding"),
+      },
+      inlineStyle,
     });
   }, [selected, onSelectionChange, moduleId]);
 
@@ -490,7 +530,93 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       if (!selected) return;
       selected.style.opacity = "";
     },
-  }), [selected, moduleId]);
+    // Select a specific ancestor of the current selection. `steps` is
+    // how many levels up to walk (1 = parent, 2 = grandparent).
+    selectParent: (steps = 1) => {
+      const shadow = containerRef.current?.shadowRoot;
+      const root = shadow?.querySelector(".preview-root");
+      let node = selected;
+      for (let i = 0; i < steps; i++) {
+        if (!node?.parentElement || node.parentElement === root) return false;
+        node = node.parentElement;
+      }
+      shadow?.querySelectorAll(".el-selected").forEach((el) => el.classList.remove("el-selected"));
+      node.classList.add("el-selected");
+      setSelected(node);
+      return true;
+    },
+    // Pick a specific immediate child by index (as reported in
+    // info.children).
+    selectChildByIndex: (index) => {
+      const child = selected?.children?.[index];
+      if (!child) return false;
+      const shadow = containerRef.current?.shadowRoot;
+      shadow?.querySelectorAll(".el-selected").forEach((el) => el.classList.remove("el-selected"));
+      child.classList.add("el-selected");
+      setSelected(child);
+      return true;
+    },
+    // Set a single CSS property on the selected element. Pass null or
+    // empty string to unset. Changes notify via the save channel so
+    // the edit persists.
+    setStyle: (prop, value) => {
+      if (!selected) return;
+      pushUndoSnapshot();
+      if (value == null || value === "") {
+        selected.style[prop] = "";
+      } else {
+        selected.style[prop] = value;
+      }
+      // Force a re-read of `selected` so onSelectionChange fires with
+      // the new style values. React won't refresh state for a mutation
+      // on the same reference, so we bump selection by re-setting it.
+      setSelected(selected);
+      notifyRef.current();
+    },
+    // Return the outerHTML + a tempId marker for clipboard / drag
+    // payloads. Keeps the marker attribute in place on the source DOM
+    // so subsequent cut-style operations can locate the element.
+    getClipboardPayload: () => {
+      if (!selected || !moduleId) return null;
+      return {
+        sourceModuleId: moduleId,
+        tagName: selected.tagName.toLowerCase(),
+        textSample: (selected.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60),
+        outerHTML: selected.outerHTML,
+      };
+    },
+    // Paste an outerHTML string at the current selection (after it) or
+    // at the end of the page root if nothing is selected.
+    pasteHtml: (html) => {
+      if (!html) return false;
+      pushUndoSnapshot();
+      const shadow = containerRef.current?.shadowRoot;
+      const root = shadow?.querySelector(".preview-root");
+      if (!root) return false;
+      const tpl = document.createElement("template");
+      tpl.innerHTML = html;
+      const node = tpl.content.firstElementChild;
+      if (!node) return false;
+      if (selected && root.contains(selected)) selected.after(node);
+      else root.appendChild(node);
+      // Re-tag selectables on the new subtree
+      const tagAll = (el) => {
+        const tag = el.tagName.toLowerCase();
+        if (SELECTABLE.has(tag)) el.setAttribute("data-editor-selectable", "true");
+        if (EDITABLE_TEXT_TAGS.has(tag)
+            && !el.querySelector("img, svg, video")
+            && !hasBlockChildren(el)
+            && (el.textContent || "").trim().length > 0) {
+          el.setAttribute("data-editor-text", "true");
+        }
+        for (const c of el.children) tagAll(c);
+      };
+      tagAll(node);
+      resolveAssetRefs(node, logos, assets);
+      notifyRef.current();
+      return true;
+    },
+  }), [selected, moduleId, logos, assets]);
 
   const injectHtml = useCallback((node) => {
     if (!node) return;

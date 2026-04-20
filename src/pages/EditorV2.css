@@ -450,11 +450,11 @@
   grid-template-columns: 240px 1fr 320px;
 }
 
-/* ── Inspector (v3 — Illustrator-style) ────────────────────────── */
+/* ── Inspector (v4 — Smyra light palette) ──────────────────────── */
 .smyra-editor .editor-inspector-v3 {
-  background: #23181f;
-  color: #f6f0f2;
-  border-left: 1px solid #3a2733;
+  background: #fff;
+  color: var(--ink);
+  border-left: 1px solid var(--line-strong);
   overflow-y: auto;
   font-size: 12px;
 }
@@ -463,30 +463,31 @@
   flex-direction: column;
 }
 .smyra-editor .ins-section {
-  border-bottom: 1px solid #3a2733;
+  border-bottom: 1px solid var(--line);
 }
 .smyra-editor .ins-section-head {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 12px 14px;
+  padding: 12px 16px;
   background: transparent;
-  color: #f6f0f2;
+  color: var(--ink);
   border: 0;
   cursor: pointer;
   text-align: left;
-  font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+  font: 650 11px/1 "Avenir Next", ui-sans-serif, system-ui, sans-serif;
   text-transform: uppercase;
   letter-spacing: .08em;
 }
 .smyra-editor .ins-section-head:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: #faf6f8;
 }
 .smyra-editor .ins-chev {
   display: inline-block;
   transition: transform .12s;
-  color: #b99eaa;
+  color: var(--rose-600);
+  font-size: 9px;
 }
 .smyra-editor .ins-chev.is-open { transform: rotate(90deg); }
 .smyra-editor .ins-section-title { flex-shrink: 0; }
@@ -495,27 +496,68 @@
   font-weight: 500;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  color: #c77389;
+  color: var(--rose-700);
   text-transform: none;
   letter-spacing: 0;
 }
 .smyra-editor .ins-section-body {
-  padding: 8px 14px 14px;
+  padding: 4px 16px 16px;
 }
 .smyra-editor .ins-empty {
   margin: 6px 0 2px;
-  color: #a6919a;
+  color: var(--muted);
   font-size: 11.5px;
   line-height: 1.5;
 }
+
+/* Element "crumb" — parent path, current, children list */
+.smyra-editor .ins-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.smyra-editor .ins-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  background: #f7f0f3;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .1s, border-color .1s;
+}
+.smyra-editor .ins-crumb:hover {
+  background: #fbe6ec;
+  border-color: var(--rose-500);
+  color: var(--rose-700);
+}
+.smyra-editor .ins-crumb.is-current {
+  background: var(--rose-600);
+  border-color: var(--rose-700);
+  color: #fff;
+  cursor: default;
+  font-weight: 600;
+}
+.smyra-editor .ins-crumb-sep {
+  color: var(--muted);
+  font-size: 10px;
+  padding: 0 2px;
+  align-self: center;
+}
+
 .smyra-editor .ins-sample {
   padding: 10px 12px;
-  margin-bottom: 10px;
-  background: #2f212a;
-  border-left: 2px solid #c77389;
+  margin-bottom: 12px;
+  background: #faf6f8;
+  border-left: 3px solid var(--rose-600);
   border-radius: 4px;
   font-size: 12px;
-  color: #eadbe2;
+  color: var(--ink);
   line-height: 1.45;
   max-height: 80px;
   overflow: hidden;
@@ -523,6 +565,55 @@
   display: -webkit-box;
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
+}
+
+/* Children list — lets author drill into component parts */
+.smyra-editor .ins-children-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--muted);
+  margin: 4px 0 6px;
+}
+.smyra-editor .ins-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.smyra-editor .ins-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--ink);
+  transition: background .08s, border-color .08s;
+  text-align: left;
+}
+.smyra-editor .ins-child:hover {
+  background: #faf6f8;
+  border-color: var(--rose-500);
+}
+.smyra-editor .ins-child-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--rose-700);
+  font-weight: 600;
+  min-width: 48px;
+}
+.smyra-editor .ins-child-text {
+  flex: 1;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .smyra-editor .ins-btn-row {
@@ -538,19 +629,20 @@
   padding: 8px 10px;
   font-size: 12px;
   font-weight: 600;
-  color: #f6f0f2;
-  background: #3a2733;
-  border: 1px solid #4a3340;
-  border-radius: 6px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
   cursor: pointer;
-  transition: background .1s, border-color .1s;
+  transition: background .1s, border-color .1s, color .1s;
   flex: 1 1 auto;
   min-width: 0;
   white-space: nowrap;
 }
 .smyra-editor .ins-btn:hover {
-  background: #4a3340;
-  border-color: #6b4a5d;
+  background: #faf6f8;
+  border-color: var(--rose-500);
+  color: var(--rose-700);
 }
 .smyra-editor .ins-btn--primary {
   background: var(--rose-600);
@@ -559,10 +651,12 @@
 }
 .smyra-editor .ins-btn--primary:hover {
   background: var(--rose-700);
+  color: #fff;
 }
 .smyra-editor .ins-btn--danger:hover {
-  background: #6b2a3a;
-  border-color: #8a3848;
+  color: var(--danger);
+  background: #fceff3;
+  border-color: var(--danger);
 }
 .smyra-editor .ins-btn-icon {
   display: inline-grid;
@@ -570,40 +664,84 @@
   min-width: 14px;
   font-size: 12px;
 }
-
-.smyra-editor .ins-drag-hint {
-  margin: 6px 0 4px;
-  font-size: 10.5px;
-  color: #b99eaa;
-  text-transform: uppercase;
-  letter-spacing: .06em;
+.smyra-editor .ins-btn-kbd {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  opacity: .7;
 }
-.smyra-editor .ins-drag-handle {
+
+/* Style controls — color swatches, font size stepper, etc. */
+.smyra-editor .ins-style-grid {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 8px 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.smyra-editor .ins-style-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.smyra-editor .ins-color-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 12px;
-  background: linear-gradient(160deg, #4a3340, #3a2733);
-  border: 1px dashed #c77389;
-  border-radius: 8px;
-  color: #f6f0f2;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: grab;
-  margin-bottom: 10px;
-  text-align: left;
-  user-select: none;
+  gap: 6px;
 }
-.smyra-editor .ins-drag-handle:hover {
-  background: linear-gradient(160deg, #5a3e4c, #4a3340);
+.smyra-editor .ins-color-input {
+  width: 28px;
+  height: 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.smyra-editor .ins-color-reset {
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.smyra-editor .ins-color-reset:hover {
+  color: var(--rose-700);
+  background: #faeef3;
+}
+.smyra-editor .ins-number-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.smyra-editor .ins-number-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.smyra-editor .ins-number-btn:hover {
+  background: #faeef3;
   border-color: var(--rose-500);
 }
-.smyra-editor .ins-drag-grip {
-  font-size: 16px;
-  line-height: 1;
-  color: var(--rose-500);
-  letter-spacing: -2px;
+.smyra-editor .ins-number-value {
+  min-width: 54px;
+  padding: 4px 6px;
+  font-size: 12px;
+  text-align: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .smyra-editor .ins-move-list {
@@ -619,29 +757,31 @@
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  background: transparent;
-  border: 1px solid transparent;
-  color: #f6f0f2;
+  background: #fff;
+  border: 1px solid var(--line);
+  color: var(--ink);
   font-size: 11.5px;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   text-align: left;
   transition: background .08s;
 }
 .smyra-editor .ins-move-item:hover:not(:disabled) {
-  background: #3a2733;
-  border-color: #6b4a5d;
+  background: #faf6f8;
+  border-color: var(--rose-500);
 }
 .smyra-editor .ins-move-item.is-source,
 .smyra-editor .ins-move-item:disabled {
-  color: #8d7782;
+  color: var(--muted);
   cursor: not-allowed;
+  background: #f7f3f5;
 }
 .smyra-editor .ins-move-idx {
   width: 22px; height: 22px;
   display: grid; place-items: center;
   border-radius: 5px;
-  background: rgba(255, 255, 255, 0.06);
+  background: linear-gradient(160deg, #f8edf2, #f0dce8);
+  border: 1px solid var(--line-strong);
   font-size: 10.5px;
   font-weight: 700;
 }
@@ -649,7 +789,7 @@
   font-size: 9.5px;
   text-transform: uppercase;
   letter-spacing: .05em;
-  color: #b99eaa;
+  color: var(--muted);
   text-overflow: ellipsis;
   overflow: hidden;
   white-space: nowrap;
@@ -660,18 +800,18 @@
   white-space: nowrap;
   font-weight: 500;
 }
-.smyra-editor .ins-move-arrow { color: var(--rose-500); font-weight: 700; }
+.smyra-editor .ins-move-arrow { color: var(--rose-600); font-weight: 700; }
 .smyra-editor .ins-move-tag {
   font-size: 9px; text-transform: uppercase;
   letter-spacing: .06em;
-  color: #8d7782;
+  color: var(--muted);
 }
 
 .smyra-editor .ins-page-title {
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 10px;
-  color: #f6f0f2;
+  color: var(--ink);
 }
 .smyra-editor .ins-row {
   display: flex;
@@ -683,18 +823,39 @@
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: .06em;
-  color: #b99eaa;
+  color: var(--muted);
   min-width: 60px;
 }
 .smyra-editor .ins-select {
   flex: 1;
   padding: 6px 8px;
-  background: #2f212a;
-  color: #f6f0f2;
-  border: 1px solid #4a3340;
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
   border-radius: 6px;
   font-size: 12px;
   cursor: pointer;
+}
+
+/* Copy / paste toast */
+.smyra-editor .ins-toast {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  background: var(--rose-700);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  box-shadow: 0 6px 18px rgba(126, 68, 90, 0.25);
+  z-index: 1000;
+  animation: ins-toast-in .18s ease;
+}
+@keyframes ins-toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 /* ── Save pill ── */
