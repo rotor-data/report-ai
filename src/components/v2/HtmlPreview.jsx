@@ -837,21 +837,71 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         white-space: nowrap;
       }
       ${interactive ? `
+      /* Hover affordance — a rose-tinted outline that is impossible to
+         miss. Offset + a soft glow so users can tell the cursor is
+         targeting a selectable rectangle even over dense content. */
       .preview-root [data-editor-selectable]:hover {
-        outline: 1px dashed rgba(91,155,213,0.55);
+        outline: 2px solid rgba(199, 115, 137, 0.75);
         outline-offset: 2px;
+        box-shadow: 0 0 0 4px rgba(199, 115, 137, 0.12);
         cursor: pointer;
+        position: relative;
       }
-      /* Stronger affordance for pure-text leaves: user can double-click
-         to edit in place. Visual cue: caret cursor on hover. */
+      /* Label pill — hover shows a small rose chip above the element
+         so the user can see WHAT they're about to select before
+         clicking. Renders via CSS attr() content. */
+      .preview-root [data-editor-selectable][data-editor-label]:hover::before {
+        content: attr(data-editor-label);
+        position: absolute;
+        top: -22px;
+        left: 0;
+        background: #b85a73;
+        color: #fff;
+        font: 600 10px/1 ui-sans-serif, system-ui, sans-serif;
+        padding: 4px 7px;
+        border-radius: 4px 4px 4px 0;
+        white-space: nowrap;
+        pointer-events: none;
+        z-index: 50;
+        letter-spacing: .02em;
+      }
+      /* Stronger affordance for text leaves — caret cursor + rose dash. */
       .preview-root [data-editor-text]:hover {
-        outline: 1px dashed rgba(232,168,56,0.65);
+        outline: 2px solid rgba(184, 90, 115, 0.8);
         outline-offset: 2px;
         cursor: text;
       }
+      /* Selected element — thick rose border + constant label pill so
+         the user always sees what's active even while interacting with
+         the inspector. */
       .el-selected {
-        outline: 2px solid #e8a838 !important;
-        outline-offset: 2px;
+        outline: 2.5px solid #b85a73 !important;
+        outline-offset: 3px;
+        box-shadow: 0 0 0 6px rgba(184, 90, 115, 0.18) !important;
+        position: relative;
+      }
+      .el-selected[data-editor-label]::before {
+        content: attr(data-editor-label);
+        position: absolute;
+        top: -24px;
+        left: -2px;
+        background: #94445b;
+        color: #fff;
+        font: 700 10.5px/1 ui-sans-serif, system-ui, sans-serif;
+        padding: 5px 9px;
+        border-radius: 4px 4px 4px 0;
+        white-space: nowrap;
+        pointer-events: none;
+        z-index: 50;
+        letter-spacing: .03em;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+      }
+      /* Drop zone markers for intra-page reorder */
+      .preview-root [data-editor-selectable].dz-before {
+        box-shadow: 0 -3px 0 0 #b85a73, 0 0 0 4px rgba(184, 90, 115, 0.12) !important;
+      }
+      .preview-root [data-editor-selectable].dz-after {
+        box-shadow: 0 3px 0 0 #b85a73, 0 0 0 4px rgba(184, 90, 115, 0.12) !important;
       }
       [contenteditable="true"] {
         outline: 2px solid #5b9bd5 !important;
@@ -896,6 +946,12 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       const tag = el.tagName.toLowerCase();
       if (SELECTABLE.has(tag)) {
         el.setAttribute("data-editor-selectable", "true");
+        // Human label so the CSS ::before pill shows "Siffra" / "KPI-kort"
+        // instead of technical tag names when hovered or selected.
+        const label = humanLabel(el);
+        if (label) el.setAttribute("data-editor-label", label);
+        // Mark groups vs leafs so we can style differently if needed
+        if (el.children?.length > 0) el.setAttribute("data-editor-group", "true");
       }
       if (EDITABLE_TEXT_TAGS.has(tag)
           && !el.querySelector("img, svg, video")
@@ -968,7 +1024,13 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       if (el.getAttribute("contenteditable") === "true") return;
 
       clearSelection(shadow);
+      // Previous selection loses draggable; we only make the CURRENT
+      // selection draggable so dragstart can reliably originate from it.
+      root.querySelectorAll("[draggable=\"true\"]").forEach((n) =>
+        n.removeAttribute("draggable")
+      );
       el.classList.add("el-selected");
+      el.setAttribute("draggable", "true");
       setSelected(el);
 
       const rect = el.getBoundingClientRect();
@@ -977,6 +1039,75 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         left: rect.left - containerRect.left + rect.width / 2 - 80,
         top: rect.top - containerRect.top - 36,
       });
+    });
+
+    // ── Intra-page drag/drop ─────────────────────────────────────
+    // When the user drags a selected element and drops it onto
+    // another selectable in the same preview, reorder. Drop-Y in the
+    // upper half = insert before target; lower half = insert after.
+    let localDragSrc = null;
+    frame.addEventListener("dragstart", (e) => {
+      // Don't hijack if the drag originated in light DOM (inspector
+      // drag handle) — those go through the cross-page payload path.
+      const srcEl = e.target?.closest?.("[draggable=\"true\"]");
+      if (!srcEl || !root.contains(srcEl)) return;
+      localDragSrc = srcEl;
+      srcEl.style.opacity = "0.4";
+      try {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", "local-drag");
+      } catch { /* noop */ }
+    });
+
+    frame.addEventListener("dragover", (e) => {
+      if (!localDragSrc) return;
+      const tgt = e.target?.closest?.("[data-editor-selectable]");
+      if (!tgt || tgt === localDragSrc || localDragSrc.contains(tgt)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      // Decide before/after by mid-line
+      const rect = tgt.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      // Clear all dz markers, then mark the current one.
+      root.querySelectorAll(".dz-before, .dz-after").forEach((n) =>
+        n.classList.remove("dz-before", "dz-after")
+      );
+      tgt.classList.add(e.clientY < midY ? "dz-before" : "dz-after");
+    });
+
+    frame.addEventListener("drop", (e) => {
+      if (!localDragSrc) return;
+      const tgt = e.target?.closest?.("[data-editor-selectable]");
+      root.querySelectorAll(".dz-before, .dz-after").forEach((n) =>
+        n.classList.remove("dz-before", "dz-after")
+      );
+      if (!tgt || tgt === localDragSrc || localDragSrc.contains(tgt)) return;
+      e.preventDefault();
+      pushUndoSnapshot();
+      const rect = tgt.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      if (e.clientY < midY) tgt.before(localDragSrc);
+      else tgt.after(localDragSrc);
+      localDragSrc.style.opacity = "";
+      const srcRestored = localDragSrc;
+      localDragSrc = null;
+      // Notify parent through the save channel.
+      const cb = onHtmlChangeRef.current;
+      const newHtml = getUpdatedHtml();
+      if (newHtml !== null && cb) cb(newHtml);
+      // Keep the moved element selected so the user can immediately
+      // keep editing / dragging it.
+      clearSelection(shadow);
+      srcRestored.classList.add("el-selected");
+      setSelected(srcRestored);
+    });
+
+    frame.addEventListener("dragend", () => {
+      if (localDragSrc) localDragSrc.style.opacity = "";
+      localDragSrc = null;
+      root.querySelectorAll(".dz-before, .dz-after").forEach((n) =>
+        n.classList.remove("dz-before", "dz-after")
+      );
     });
 
     // Turn an element into an in-place contenteditable. Factored out so
@@ -1000,17 +1131,21 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       const sel = node.ownerDocument.getSelection?.();
       if (sel) { sel.removeAllRanges(); sel.addRange(range); }
 
+      // Forward-declare to allow selectionchange cleanup below to bind
+      // to the real finish closure.
+      let onSelChange;
       const finish = () => {
         el.removeAttribute("contenteditable");
         el.removeEventListener("blur", finish);
         el.removeEventListener("keydown", onKey);
         el.removeEventListener("mouseup", onMouseup);
         el.removeEventListener("keyup", onMouseup);
+        if (onSelChange) {
+          shadow.removeEventListener?.("selectionchange", onSelChange);
+          node.ownerDocument.removeEventListener("selectionchange", onSelChange);
+        }
         setFormatBar(null);
         const newHtml = getUpdatedHtml();
-        // Use ref so the latest onHtmlChange is reached — injectHtml's
-        // useCallback intentionally doesn't depend on onHtmlChange,
-        // which means the closure here captures the first-render value.
         const cb = onHtmlChangeRef.current;
         if (newHtml !== null && cb) cb(newHtml);
       };
@@ -1035,11 +1170,22 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         }
       };
       const onMouseup = () => {
-        const selection = node.ownerDocument.getSelection?.();
-        if (!selection || selection.isCollapsed) { setFormatBar(null); return; }
+        // Selection inside a shadow root lives on shadowRoot.getSelection()
+        // in Chrome/Safari; Firefox still exposes it on document too.
+        // Try both and use whichever has a non-collapsed range.
+        const shadowSel = shadow.getSelection?.();
+        const docSel = node.ownerDocument.getSelection?.();
+        const selection =
+          shadowSel && !shadowSel.isCollapsed ? shadowSel :
+          docSel && !docSel.isCollapsed ? docSel : null;
+        if (!selection) { setFormatBar(null); return; }
         const rng = selection.getRangeAt(0);
         const rect = rng.getBoundingClientRect();
-        const containerRect = node.getBoundingClientRect();
+        // Anchor the floating toolbar to the outer container div (the
+        // one we return from the component), which is the nearest
+        // positioned ancestor in light DOM.
+        const host = node.parentElement || node;
+        const containerRect = host.getBoundingClientRect();
         if (rect.width < 2 && rect.height < 2) { setFormatBar(null); return; }
         setFormatBar({
           left: rect.left - containerRect.left + rect.width / 2 - 110,
@@ -1047,6 +1193,12 @@ const HtmlPreview = forwardRef(function HtmlPreview({
           el,
         });
       };
+      // Also re-check on selectionchange — some browsers don't fire
+      // mouseup reliably when the selection is grown via keyboard
+      // (shift+arrow). Shadow root has its own selectionchange.
+      onSelChange = () => onMouseup();
+      shadow.addEventListener?.("selectionchange", onSelChange);
+      node.ownerDocument.addEventListener("selectionchange", onSelChange);
       el.addEventListener("blur", finish);
       el.addEventListener("keydown", onKey);
       el.addEventListener("mouseup", onMouseup);
@@ -1188,7 +1340,11 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // Re-tag selectables
     root.querySelectorAll("*").forEach((el) => {
       const tag = el.tagName.toLowerCase();
-      if (SELECTABLE.has(tag)) el.setAttribute("data-editor-selectable", "true");
+      if (SELECTABLE.has(tag)) {
+        el.setAttribute("data-editor-selectable", "true");
+        const lbl = humanLabel(el);
+        if (lbl) el.setAttribute("data-editor-label", lbl);
+      }
       if (EDITABLE_TEXT_TAGS.has(tag)
           && !el.querySelector("img, svg, video")
           && !hasBlockChildren(el)
@@ -1209,6 +1365,18 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     clone.querySelectorAll("[data-editor-selectable]").forEach((el) =>
       el.removeAttribute("data-editor-selectable")
     );
+    clone.querySelectorAll("[data-editor-label]").forEach((el) =>
+      el.removeAttribute("data-editor-label")
+    );
+    clone.querySelectorAll("[data-editor-group]").forEach((el) =>
+      el.removeAttribute("data-editor-group")
+    );
+    clone.querySelectorAll("[data-editor-text]").forEach((el) =>
+      el.removeAttribute("data-editor-text")
+    );
+    clone.querySelectorAll(".dz-before, .dz-after").forEach((el) => {
+      el.classList.remove("dz-before", "dz-after");
+    });
     clone.querySelectorAll(".el-selected").forEach((el) =>
       el.classList.remove("el-selected")
     );
