@@ -1442,43 +1442,135 @@ function renderCanvas() {
 
 function scopeStyles(css) {
   if (!css) return '';
-  // Remove @page rules (they affect print only, may have nested braces) and scope selectors
-  let scoped = css
+  // Strip print-only rules that shouldn't affect the editor view.
+  let src = css
     .replace(/@page[^{]*\{[^}]*(?:\{[^}]*\}[^}]*)?\}/g, '')
-    .replace(/@media\s+print[^{]*\{[^}]*(?:\{[^}]*\}[^}]*)?\}/g, '')
-    .replace(/@font-face/g, '@font-face');
+    .replace(/@media\s+print[^{]*\{[^}]*(?:\{[^}]*\}[^}]*)?\}/g, '');
 
-  // Simple scoping: prefix selectors (rough but functional for module CSS)
-  // Don't scope @font-face or @keyframes
-  const lines = scoped.split('\n');
-  const result = [];
-  let inAtRule = false;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('@font-face') || trimmed.startsWith('@keyframes') || trimmed.startsWith('@import')) {
-      inAtRule = true;
-      result.push(line);
+  // Tokenise the stylesheet properly. The line-based scoper below this
+  // comment used to miss everything on minified (single-line) CSS:
+  // only the first selector before the first `{` got prefixed, and
+  // everything else on the line was appended untouched — so `.cov-ed`,
+  // `.page--full-bleed`, `.t-h1` etc. never got the `.canvas-page`
+  // scope and the brand vars defined on `:root` (rewritten to
+  // `.canvas-page`) never reached them by inheritance.
+  //
+  // This walker scans char-by-char, tracks brace depth, recognises
+  // @font-face / @keyframes / @media / @supports blocks (keep inner
+  // selectors unscoped) and prefixes every other top-level selector
+  // list with `.canvas-page` (or replaces `:root` / `html` / `body` with
+  // it outright).
+  const out = [];
+  let i = 0;
+  const n = src.length;
+
+  const skipWs = () => {
+    while (i < n && /\s/.test(src[i])) { out.push(src[i]); i++; }
+  };
+
+  const readUntilBrace = () => {
+    // Returns selector text up to the next top-level `{`, handling
+    // nested parens `url(...)`, `:is(...)` etc. but not nested braces
+    // (those start a new block).
+    let buf = '';
+    let paren = 0;
+    while (i < n) {
+      const c = src[i];
+      if (c === '(') paren++;
+      else if (c === ')') paren--;
+      else if (c === '{' && paren === 0) break;
+      else if (c === '}' && paren === 0) break;
+      buf += c;
+      i++;
+    }
+    return buf;
+  };
+
+  const skipBlock = () => {
+    // Consume from current `{` through matching `}`, pushing unchanged.
+    if (src[i] !== '{') return;
+    let depth = 0;
+    while (i < n) {
+      const c = src[i];
+      out.push(c);
+      if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) { i++; return; } }
+      i++;
+    }
+  };
+
+  const scopeSelector = (raw) => {
+    const sel = raw.trim();
+    if (!sel) return raw;
+    if (sel === ':root' || sel === 'html' || sel === 'body') return '.canvas-page';
+    // Preserve leading/trailing whitespace for readability
+    return '.canvas-page ' + sel;
+  };
+
+  while (i < n) {
+    // Preserve whitespace, comments, trailing chars verbatim
+    if (/\s/.test(src[i])) { out.push(src[i]); i++; continue; }
+    if (src.slice(i, i + 2) === '/*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end < 0) { out.push(src.slice(i)); i = n; break; }
+      out.push(src.slice(i, end + 2));
+      i = end + 2;
       continue;
     }
-    if (inAtRule) {
-      result.push(line);
-      if (trimmed === '}') inAtRule = false;
+
+    if (src[i] === '}') { out.push('}'); i++; continue; }
+
+    if (src[i] === '@') {
+      // At-rule. Read the prelude up to `{` or `;` and decide.
+      const start = i;
+      let prelude = '';
+      while (i < n && src[i] !== '{' && src[i] !== ';') { prelude += src[i]; i++; }
+      out.push(prelude);
+      if (i < n && src[i] === ';') { out.push(';'); i++; continue; }
+      if (i >= n) break;
+      // `{` follows. For @font-face / @keyframes / @page / @import,
+      // keep inner rules unchanged. For @media / @supports, recurse
+      // into the body and scope selectors inside.
+      const atName = prelude.match(/^@([a-z-]+)/i)?.[1]?.toLowerCase() ?? '';
+      const recursive = atName === 'media' || atName === 'supports';
+      if (!recursive) {
+        skipBlock();
+        continue;
+      }
+      // Recursive: consume `{`, process inner, consume matching `}`
+      out.push('{'); i++;
+      // Find matching `}` for this block and recurse on its inner text
+      let depth = 1;
+      let inner = '';
+      while (i < n && depth > 0) {
+        const c = src[i];
+        if (c === '{') depth++;
+        else if (c === '}') { depth--; if (depth === 0) break; }
+        inner += c;
+        i++;
+      }
+      out.push(scopeStyles(inner));
+      if (i < n && src[i] === '}') { out.push('}'); i++; }
       continue;
     }
-    // Scope CSS selectors to .canvas-page
-    if (trimmed && !trimmed.startsWith('@') && !trimmed.startsWith('}') && !trimmed.startsWith('/*') && trimmed.includes('{')) {
-      const parts = trimmed.split('{');
-      const selectors = parts[0].split(',').map(s => {
-        s = s.trim();
-        if (!s || s === ':root' || s === 'html' || s === 'body') return '.canvas-page';
-        return '.canvas-page ' + s;
-      }).join(', ');
-      result.push(selectors + ' {' + (parts.slice(1).join('{') || ''));
-    } else {
-      result.push(line);
+
+    // Regular rule: read selector list until `{`, scope each selector,
+    // then consume the declaration block verbatim.
+    const selectors = readUntilBrace();
+    if (i >= n || src[i] !== '{') {
+      // Stray content — push and bail
+      out.push(selectors);
+      continue;
     }
+    const scoped = selectors
+      .split(',')
+      .map((s) => scopeSelector(s))
+      .join(', ');
+    out.push(scoped);
+    skipBlock();
   }
-  return result.join('\n');
+
+  return out.join('');
 }
 
 function renderProperties() {
