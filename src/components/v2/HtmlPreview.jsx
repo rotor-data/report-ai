@@ -336,10 +336,32 @@ export default function HtmlPreview({
   onHtmlChange,
   zoom = 0.55,
   interactive = true,
+  lang = "sv",
 }) {
   const containerRef = useRef(null);
   const [selected, setSelected] = useState(null);
   const [barPos, setBarPos] = useState(null);
+  // Floating format toolbar for contenteditable text selections.
+  const [formatBar, setFormatBar] = useState(null); // { left, top, el } | null
+  // Local undo/redo stack of HTML snapshots. We push BEFORE any destructive
+  // change (typing, delete, duplicate) and pop on Cmd/Ctrl+Z. Separate from
+  // the server-side save history — this is just for live editing.
+  const undoStack = useRef([]);
+  const redoStack = useRef([]);
+  const MAX_UNDO = 60;
+
+  const pushUndoSnapshot = useCallback(() => {
+    const snap = getUpdatedHtmlRef.current?.();
+    if (snap == null) return;
+    const last = undoStack.current[undoStack.current.length - 1];
+    if (last === snap) return; // no change
+    undoStack.current.push(snap);
+    if (undoStack.current.length > MAX_UNDO) undoStack.current.shift();
+    redoStack.current = []; // new branch invalidates redo
+  }, []);
+  // Ref wrapper so pushUndoSnapshot can reach getUpdatedHtml defined later
+  // in the closure without circular init.
+  const getUpdatedHtmlRef = useRef(null);
 
   const injectHtml = useCallback((node) => {
     if (!node) return;
@@ -427,6 +449,9 @@ export default function HtmlPreview({
     const frame = document.createElement("div");
     frame.className = "page-frame";
     frame.style.transform = `scale(${zoom})`;
+    // Language hint — helps spell-check + hyphenation pick the right
+    // dictionary. Default "sv" for Rotor; override via prop.
+    if (lang) frame.setAttribute("lang", lang);
 
     const root = document.createElement("div");
     root.className = "preview-root";
@@ -511,32 +536,114 @@ export default function HtmlPreview({
       if (el.querySelector("img, svg, video")) return;
       if (hasBlockChildren(el)) return;
 
+      // Snapshot BEFORE editing so Cmd/Ctrl+Z jumps back to pre-edit state
+      pushUndoSnapshot();
+
       el.setAttribute("contenteditable", "true");
+      el.setAttribute("spellcheck", "true");
       el.focus();
+
+      // Place caret at end of existing text for "append" feel
+      const range = node.ownerDocument.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = node.ownerDocument.getSelection?.();
+      if (sel) { sel.removeAllRanges(); sel.addRange(range); }
 
       const finish = () => {
         el.removeAttribute("contenteditable");
         el.removeEventListener("blur", finish);
         el.removeEventListener("keydown", onKey);
+        el.removeEventListener("mouseup", onMouseup);
+        el.removeEventListener("keyup", onMouseup);
+        setFormatBar(null);
         const newHtml = getUpdatedHtml();
         if (newHtml !== null && onHtmlChange) onHtmlChange(newHtml);
       };
       const onKey = (ev) => {
-        if (ev.key === "Escape") { ev.preventDefault(); finish(); }
-        if (ev.key === "Enter" && !ev.shiftKey && tag !== "p" && tag !== "li") {
-          ev.preventDefault();
-          finish();
+        if (ev.key === "Escape") { ev.preventDefault(); finish(); return; }
+        // Enter in a block-level element → close (finish). Inside <p>/<li>
+        // Enter should create a new paragraph/item; Shift+Enter stays as
+        // <br> in both cases. This matches user expectations from docs
+        // editors.
+        if (ev.key === "Enter" && !ev.shiftKey) {
+          if (tag === "p" || tag === "li") {
+            // let browser insert new <p>/<li>
+          } else {
+            ev.preventDefault();
+            finish();
+            return;
+          }
         }
+        // Inline formatting shortcuts
+        const mod = ev.metaKey || ev.ctrlKey;
+        if (mod && !ev.altKey) {
+          const k = ev.key.toLowerCase();
+          if (k === "b") { ev.preventDefault(); execFormat("bold"); return; }
+          if (k === "i") { ev.preventDefault(); execFormat("italic"); return; }
+          if (k === "u") { ev.preventDefault(); execFormat("underline"); return; }
+          if (k === "k") { ev.preventDefault(); promptLink(); return; }
+          // Undo/redo: fall through to document default — browser handles
+          // the contenteditable stack natively within the element.
+        }
+      };
+      // Show/hide format toolbar based on selection
+      const onMouseup = () => {
+        const selection = node.ownerDocument.getSelection?.();
+        if (!selection || selection.isCollapsed) { setFormatBar(null); return; }
+        // Keep the toolbar anchored to selection rectangle
+        const rng = selection.getRangeAt(0);
+        const rect = rng.getBoundingClientRect();
+        const containerRect = node.getBoundingClientRect();
+        if (rect.width < 2 && rect.height < 2) { setFormatBar(null); return; }
+        setFormatBar({
+          left: rect.left - containerRect.left + rect.width / 2 - 110,
+          top: rect.top - containerRect.top - 38,
+          el,
+        });
       };
       el.addEventListener("blur", finish);
       el.addEventListener("keydown", onKey);
+      el.addEventListener("mouseup", onMouseup);
+      el.addEventListener("keyup", onMouseup);
     });
+
+    // Undo / Redo — document-level so it fires even when nothing is
+    // contenteditable (e.g. after a delete/duplicate action).
+    const onDocKey = (ev) => {
+      const mod = ev.metaKey || ev.ctrlKey;
+      if (!mod || ev.altKey) return;
+      const k = ev.key.toLowerCase();
+      if (k === "z" && !ev.shiftKey) {
+        if (undoStack.current.length === 0) return;
+        ev.preventDefault();
+        const cur = getUpdatedHtml();
+        const prev = undoStack.current.pop();
+        if (cur != null) redoStack.current.push(cur);
+        restoreHtml(prev);
+      } else if ((k === "z" && ev.shiftKey) || k === "y") {
+        if (redoStack.current.length === 0) return;
+        ev.preventDefault();
+        const cur = getUpdatedHtml();
+        const next = redoStack.current.pop();
+        if (cur != null) undoStack.current.push(cur);
+        restoreHtml(next);
+      }
+    };
+    frame.addEventListener("keydown", onDocKey);
+    // Also listen globally so Cmd+Z works when focus is outside the
+    // shadow (e.g. user just clicked a toolbar button that blurred the
+    // contenteditable).
+    node.ownerDocument.addEventListener("keydown", onDocKey);
   }, [html, brandCss, logos, assets, zoom, interactive, onHtmlChange]);
 
   // Re-run injection when html/brandCss/logos/assets change
   useEffect(() => {
     if (containerRef.current) injectHtml(containerRef.current);
   }, [html, brandCss, logos, assets, zoom, interactive, injectHtml]);
+
+  // Make getUpdatedHtml reachable from pushUndoSnapshot's ref callback
+  useEffect(() => { getUpdatedHtmlRef.current = getUpdatedHtml; });
 
   function findSelectable(target, boundary) {
     let el = target;
@@ -549,6 +656,50 @@ export default function HtmlPreview({
 
   function clearSelection(shadow) {
     shadow.querySelectorAll(".el-selected").forEach((el) => el.classList.remove("el-selected"));
+  }
+
+  function execFormat(command, value) {
+    // Formatting commands work against the current selection inside the
+    // shadow DOM. document.execCommand is deprecated but still the only
+    // single-call path that mutates a contenteditable selection cleanly
+    // across browsers; successor APIs (Selection.modify + insertNode)
+    // are many lines of code and less reliable for bold/italic.
+    const doc = containerRef.current?.ownerDocument;
+    if (!doc) return;
+    doc.execCommand(command, false, value ?? undefined);
+  }
+  function promptLink() {
+    const existing = containerRef.current?.ownerDocument?.getSelection?.();
+    const hasSelection = existing && !existing.isCollapsed;
+    if (!hasSelection) return;
+    const url = prompt("Länk-URL (https://…)");
+    if (!url) return;
+    execFormat("createLink", url);
+  }
+  /**
+   * Replace the live preview HTML with a snapshot (for undo/redo).
+   * We bypass onHtmlChange to avoid double-notifying the parent — they'll
+   * see the change in the very next getUpdatedHtml().
+   */
+  function restoreHtml(snap) {
+    const shadow = containerRef.current?.shadowRoot;
+    const root = shadow?.querySelector(".preview-root");
+    if (!root) return;
+    root.innerHTML = snap;
+    // Re-resolve logos/assets/charts since we just blew away the DOM
+    resolveAssetRefs(root, logos, assets);
+    // Re-tag selectables
+    root.querySelectorAll("*").forEach((el) => {
+      const tag = el.tagName.toLowerCase();
+      if (SELECTABLE.has(tag)) el.setAttribute("data-editor-selectable", "true");
+      if (EDITABLE_TEXT_TAGS.has(tag)
+          && !el.querySelector("img, svg, video")
+          && !hasBlockChildren(el)
+          && (el.textContent || "").trim().length > 0) {
+        el.setAttribute("data-editor-text", "true");
+      }
+    });
+    if (onHtmlChange) onHtmlChange(snap);
   }
 
   function getUpdatedHtml() {
@@ -584,6 +735,7 @@ export default function HtmlPreview({
     const text = selected.textContent?.slice(0, 30) || tag;
     if (!confirm(`Ta bort ${tag}-element "${text.trim()}"?`)) return;
 
+    pushUndoSnapshot();
     selected.remove();
     setSelected(null);
     setBarPos(null);
@@ -594,6 +746,7 @@ export default function HtmlPreview({
 
   function handleDuplicate() {
     if (!selected) return;
+    pushUndoSnapshot();
     const clone = selected.cloneNode(true);
     clone.classList.remove("el-selected");
     selected.after(clone);
@@ -661,6 +814,59 @@ export default function HtmlPreview({
           >
             📋
           </button>
+        </div>
+      )}
+      {/* Floating text-format toolbar — appears when a range is selected
+          inside a contenteditable leaf. Bold / italic / underline /
+          link. execCommand still works in shadow DOM for these. */}
+      {interactive && formatBar && (
+        <div
+          style={{
+            position: "absolute",
+            left: Math.max(0, formatBar.left),
+            top: Math.max(0, formatBar.top),
+            display: "flex",
+            gap: "1px",
+            padding: "3px",
+            background: "#2a1f2a",
+            borderRadius: "8px",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            zIndex: 11,
+          }}
+          onMouseDown={(e) => e.preventDefault() /* keep selection */}
+        >
+          {[
+            { cmd: "bold",      label: "𝐁", title: "Fetstil (⌘B)" },
+            { cmd: "italic",    label: "𝐼", title: "Kursiv (⌘I)" },
+            { cmd: "underline", label: "U", title: "Understruken (⌘U)" },
+            { cmd: "__link",    label: "🔗", title: "Länk (⌘K)" },
+            { cmd: "insertUnorderedList", label: "•", title: "Punktlista" },
+            { cmd: "insertOrderedList",   label: "1.", title: "Numrerad lista" },
+            { cmd: "removeFormat", label: "⌫", title: "Rensa formatering" },
+          ].map(({ cmd, label, title }) => (
+            <button
+              key={cmd}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                if (cmd === "__link") return promptLink();
+                execFormat(cmd);
+              }}
+              title={title}
+              style={{
+                width: 26, height: 26, borderRadius: 4, border: "none",
+                background: "transparent", color: "#fff", cursor: "pointer",
+                fontSize: label.length > 1 ? 11 : 13,
+                fontWeight: cmd === "bold" ? 700 : 500,
+                fontStyle: cmd === "italic" ? "italic" : "normal",
+                textDecoration: cmd === "underline" ? "underline" : "none",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "#5b9bd5"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       )}
     </div>
