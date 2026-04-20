@@ -1317,13 +1317,25 @@ function fillTemplatePlaceholders(template, values) {
 // in the emitted stylesheet. Font keys quote the value (single quotes)
 // so rewriteTokenInCss produces `--font-heading: 'Playfair Display', …`.
 const TOKEN_CSS_VAR = {
+  // Primary palette
   primary_color: "--primary",
+  primary_dark_color: "--primary-dark",
+  secondary_color: "--secondary",
   accent_color: "--accent",
+  // Text
   text_color: "--text",
+  text_muted_color: "--text-muted",
+  // Surfaces
   bg_color: "--bg",
+  bg_light_color: "--bg-light",
   surface_color: "--surface",
   border_color: "--border",
+  // Links + states
   link_color: "--link",
+  success_color: "--success",
+  warning_color: "--warning",
+  danger_color: "--danger",
+  // Typography
   font_display: "--font-display",
   font_heading: "--font-heading",
   font_body: "--font-body",
@@ -1463,84 +1475,66 @@ function InspectorPanels({
         onToggle={() => setReportStyleOpen(!reportStyleOpen)}
         subtitle={Object.keys(overrides || {}).length ? `${Object.keys(overrides).length} ändringar` : "Brand-standard"}
       >
-        <div className="ins-style-grid">
-          <label className="ins-style-label">Primär</label>
-          <ColorField
-            value={tokens?.primary_color || ""}
-            brandDefault={brandTokens?.primary_color || ""}
-            isOverride={!!overrides?.primary_color}
-            onChange={(v) => onStyleOverride("primary_color", v)}
-            onReset={() => onResetOverride("primary_color")}
-          />
+        {/* Grouped color/typography controls. Expand each group on
+            demand so the panel doesn't look overwhelming. */}
+        <TokenGroup title="Primärfärger" defaultOpen={true}>
+          <TokenColorRow label="Primär"    tokenKey="primary_color"       {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Primär mörk" tokenKey="primary_dark_color" {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Sekundär"  tokenKey="secondary_color"     {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Accent"    tokenKey="accent_color"        {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+        </TokenGroup>
 
-          <label className="ins-style-label">Accent</label>
-          <ColorField
-            value={tokens?.accent_color || ""}
-            brandDefault={brandTokens?.accent_color || ""}
-            isOverride={!!overrides?.accent_color}
-            onChange={(v) => onStyleOverride("accent_color", v)}
-            onReset={() => onResetOverride("accent_color")}
-          />
+        <TokenGroup title="Text & ytor">
+          <TokenColorRow label="Text"          tokenKey="text_color"       {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Dämpad text"   tokenKey="text_muted_color" {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Bakgrund"      tokenKey="bg_color"         {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Bakgrund ljus" tokenKey="bg_light_color"   {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Yta (kort)"    tokenKey="surface_color"    {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Kant"          tokenKey="border_color"     {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+        </TokenGroup>
 
-          <label className="ins-style-label">Textfärg</label>
-          <ColorField
-            value={tokens?.text_color || ""}
-            brandDefault={brandTokens?.text_color || ""}
-            isOverride={!!overrides?.text_color}
-            onChange={(v) => onStyleOverride("text_color", v)}
-            onReset={() => onResetOverride("text_color")}
-          />
+        <TokenGroup title="Länkar & signaler">
+          <TokenColorRow label="Länk"    tokenKey="link_color"    {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="OK"      tokenKey="success_color" {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Varning" tokenKey="warning_color" {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+          <TokenColorRow label="Fara"    tokenKey="danger_color"  {...colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride })} />
+        </TokenGroup>
 
-          <label className="ins-style-label">Bakgrund</label>
-          <ColorField
-            value={tokens?.bg_color || ""}
-            brandDefault={brandTokens?.bg_color || ""}
-            isOverride={!!overrides?.bg_color}
-            onChange={(v) => onStyleOverride("bg_color", v)}
-            onReset={() => onResetOverride("bg_color")}
-          />
+        <TokenGroup title="Typografi" defaultOpen={true}>
+          <div className="ins-style-grid">
+            <label className="ins-style-label">Display</label>
+            <FontField
+              value={tokens?.font_display || ""}
+              isOverride={!!overrides?.font_display}
+              onChange={(v) => onStyleOverride("font_display", v)}
+              onReset={() => onResetOverride("font_display")}
+            />
 
-          <label className="ins-style-label">Länkfärg</label>
-          <ColorField
-            value={tokens?.link_color || ""}
-            brandDefault={brandTokens?.link_color || tokens?.primary_color || ""}
-            isOverride={!!overrides?.link_color}
-            onChange={(v) => onStyleOverride("link_color", v)}
-            onReset={() => onResetOverride("link_color")}
-          />
+            <label className="ins-style-label">Rubriker</label>
+            <FontField
+              value={tokens?.font_heading || ""}
+              isOverride={!!overrides?.font_heading}
+              onChange={(v) => onStyleOverride("font_heading", v)}
+              onReset={() => onResetOverride("font_heading")}
+            />
 
-          <label className="ins-style-label">Display</label>
-          <FontField
-            value={tokens?.font_display || ""}
-            isOverride={!!overrides?.font_display}
-            onChange={(v) => onStyleOverride("font_display", v)}
-            onReset={() => onResetOverride("font_display")}
-          />
+            <label className="ins-style-label">Brödtext</label>
+            <FontField
+              value={tokens?.font_body || ""}
+              isOverride={!!overrides?.font_body}
+              onChange={(v) => onStyleOverride("font_body", v)}
+              onReset={() => onResetOverride("font_body")}
+            />
 
-          <label className="ins-style-label">Rubriker</label>
-          <FontField
-            value={tokens?.font_heading || ""}
-            isOverride={!!overrides?.font_heading}
-            onChange={(v) => onStyleOverride("font_heading", v)}
-            onReset={() => onResetOverride("font_heading")}
-          />
-
-          <label className="ins-style-label">Brödtext</label>
-          <FontField
-            value={tokens?.font_body || ""}
-            isOverride={!!overrides?.font_body}
-            onChange={(v) => onStyleOverride("font_body", v)}
-            onReset={() => onResetOverride("font_body")}
-          />
-
-          <label className="ins-style-label">Basstorlek</label>
-          <BaseFontSizeField
-            value={tokens?.base_font_size || ""}
-            isOverride={!!overrides?.base_font_size}
-            onChange={(v) => onStyleOverride("base_font_size", v)}
-            onReset={() => onResetOverride("base_font_size")}
-          />
-        </div>
+            <label className="ins-style-label">Basstorlek</label>
+            <BaseFontSizeField
+              value={tokens?.base_font_size || ""}
+              isOverride={!!overrides?.base_font_size}
+              onChange={(v) => onStyleOverride("base_font_size", v)}
+              onReset={() => onResetOverride("base_font_size")}
+            />
+          </div>
+        </TokenGroup>
         {Object.keys(overrides || {}).length > 0 && (
           <button
             type="button"
@@ -2092,6 +2086,48 @@ function ColorField({ value, brandDefault, isOverride, onChange, onReset }) {
       ) : null}
     </div>
   );
+}
+
+// Collapsible grouping inside the Rapport-stil panel so 15+ tokens
+// don't flood the user with one gigantic form.
+function TokenGroup({ title, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="ins-token-group">
+      <button
+        type="button"
+        className="ins-token-group-head"
+        onClick={() => setOpen(!open)}
+      >
+        <span className={`ins-chev${open ? " is-open" : ""}`}>▸</span>
+        <span>{title}</span>
+      </button>
+      {open && <div className="ins-token-group-body">{children}</div>}
+    </div>
+  );
+}
+
+// Tiny wrapper that binds a single token key to a color row so the
+// JSX stays readable when we list 10+ tokens.
+function TokenColorRow({ label, tokenKey, tokens, brandTokens, overrides, onStyleOverride, onResetOverride }) {
+  return (
+    <div className="ins-token-row">
+      <span className="ins-token-label">{label}</span>
+      <ColorField
+        value={tokens?.[tokenKey] || ""}
+        brandDefault={brandTokens?.[tokenKey] || ""}
+        isOverride={!!overrides?.[tokenKey]}
+        onChange={(v) => onStyleOverride(tokenKey, v)}
+        onReset={() => onResetOverride(tokenKey)}
+      />
+    </div>
+  );
+}
+
+// Share a single props bundle across every TokenColorRow so we don't
+// repeat tokens/brandTokens/overrides/handlers on each line.
+function colorFieldProps({ tokens, brandTokens, overrides, onStyleOverride, onResetOverride }) {
+  return { tokens, brandTokens, overrides, onStyleOverride, onResetOverride };
 }
 
 function BaseFontSizeField({ value, isOverride, onChange, onReset }) {

@@ -901,6 +901,50 @@
   cursor: pointer;
 }
 
+/* Token groups (Primärfärger / Text & ytor / Länkar & signaler / Typografi) */
+.smyra-editor .ins-token-group {
+  border-top: 1px solid var(--line);
+  padding: 2px 0;
+}
+.smyra-editor .ins-token-group:first-child {
+  border-top: 0;
+}
+.smyra-editor .ins-token-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 0;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  font: 600 10.5px/1 "Avenir Next", ui-sans-serif, system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+}
+.smyra-editor .ins-token-group-head:hover {
+  color: var(--rose-700);
+}
+.smyra-editor .ins-token-group-body {
+  padding: 4px 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.smyra-editor .ins-token-row {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+.smyra-editor .ins-token-label {
+  font-size: 11px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
 /* Clipboard indicator — persistent when something is cut/copied */
 .smyra-editor .ins-clipboard {
   display: flex;

@@ -83,8 +83,8 @@ function buildTokenCss(brandTokens) {
   const colorMap = {
     primary_color: "--primary",
     primary_dark_color: "--primary-dark",
-    accent_color: "--accent",
     secondary_color: "--secondary",
+    accent_color: "--accent",
     text_color: "--text",
     text_muted_color: "--text-muted",
     bg_color: "--bg",
@@ -92,6 +92,9 @@ function buildTokenCss(brandTokens) {
     surface_color: "--surface",
     border_color: "--border",
     link_color: "--link",
+    success_color: "--success",
+    warning_color: "--warning",
+    danger_color: "--danger",
   };
   const spacingMap = {
     margin_top_mm: "--margin-top",
@@ -145,6 +148,8 @@ function buildTokenCss(brandTokens) {
   // Sensible defaults so templates don't render with raw tokens
   const defaults = {
     "--primary": "#1a1a2e",
+    "--primary-dark": "#0f0f1a",
+    "--secondary": "#4a4a6a",
     "--accent": "#e94560",
     "--text": "#1a1a1a",
     "--text-muted": "#6b7280",
@@ -153,6 +158,9 @@ function buildTokenCss(brandTokens) {
     "--surface": "#ffffff",
     "--border": "#e5e7eb",
     "--link": "var(--primary)",
+    "--success": "#2e7b58",
+    "--warning": "#a66a12",
+    "--danger": "#a13f5a",
     "--font-display": "system-ui, sans-serif",
     "--font-heading": "system-ui, sans-serif",
     "--font-body": "system-ui, sans-serif",
