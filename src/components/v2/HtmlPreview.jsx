@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import ImagePickerDialog from "./ImagePickerDialog";
 
 const SELECTABLE = new Set([
@@ -329,7 +329,7 @@ function formatNum(n) {
  *  - zoom: number (0–1) — visual shrink factor for the preview. Defaults 0.55.
  *  - interactive: boolean — default true. Set false for thumbnail-only rendering.
  */
-export default function HtmlPreview({
+const HtmlPreview = forwardRef(function HtmlPreview({
   html,
   brandCss = "",
   logos = [],
@@ -347,7 +347,12 @@ export default function HtmlPreview({
   //   ({ sourceModuleId, tempId, outerHTML })
   onComponentDragStart,
   onComponentDragEnd,
-}) {
+  // Fired whenever the internal selection changes. Parent uses this
+  // to drive the right-side inspector panel so the user has a
+  // persistent, unambiguous tool surface that doesn't depend on the
+  // fragile floating bar.
+  onSelectionChange,
+}, forwardedRef) {
   const containerRef = useRef(null);
   const [selected, setSelected] = useState(null);
   const [barPos, setBarPos] = useState(null);
@@ -384,6 +389,93 @@ export default function HtmlPreview({
   // element bar so the ✎ button can put the selected element into
   // contenteditable from light DOM.
   const enterEditModeRef = useRef(null);
+  // The ref for "getUpdatedHtml + snapshot-and-notify" used by the
+  // imperative API below. Filled on every render so handlers always see
+  // the latest onHtmlChange prop.
+  const notifyRef = useRef(() => {});
+
+  // Emit selection info to the parent whenever `selected` changes so
+  // the inspector panel can render the right actions.
+  useEffect(() => {
+    if (!onSelectionChange) return;
+    if (!selected) { onSelectionChange(null); return; }
+    const tag = selected.tagName?.toLowerCase?.() || "";
+    const textSample = (selected.textContent || "").replace(/\s+/g, " ").trim().slice(0, 140);
+    const isEditable =
+      EDITABLE_TEXT_TAGS.has(tag) &&
+      !hasBlockChildren(selected) &&
+      !selected.querySelector?.("img, svg, video");
+    const isImage = tag === "img";
+    onSelectionChange({
+      moduleId,
+      tagName: tag,
+      textSample,
+      isEditable,
+      isImage,
+      alt: isImage ? (selected.getAttribute("alt") || "") : "",
+    });
+  }, [selected, onSelectionChange, moduleId]);
+
+  // Imperative API exposed to the parent so buttons in the inspector
+  // (light DOM, always reliable) can act on the shadow-DOM selection.
+  useImperativeHandle(forwardedRef, () => ({
+    startEdit: () => {
+      if (!selected) return false;
+      return !!enterEditModeRef.current?.(selected);
+    },
+    duplicateSelected: () => {
+      if (!selected) return;
+      pushUndoSnapshot();
+      const clone = selected.cloneNode(true);
+      clone.classList.remove("el-selected");
+      selected.after(clone);
+      setSelected(null);
+      setBarPos(null);
+      notifyRef.current();
+    },
+    deleteSelected: () => {
+      if (!selected) return;
+      pushUndoSnapshot();
+      selected.remove();
+      setSelected(null);
+      setBarPos(null);
+      notifyRef.current();
+    },
+    openImagePicker: () => {
+      if (!selected || selected.tagName !== "IMG") return;
+      setImagePicker({ target: selected });
+    },
+    editAlt: () => {
+      if (!selected || selected.tagName !== "IMG") return;
+      const current = selected.getAttribute("alt") || "";
+      const next = prompt("Alt-text (beskrivning för skärmläsare)", current);
+      if (next == null) return;
+      pushUndoSnapshot();
+      if (next) selected.setAttribute("alt", next);
+      else selected.removeAttribute("alt");
+      notifyRef.current();
+    },
+    // Called by the inspector's drag-handle button at dragstart time.
+    // Tags the shadow-DOM selection with a tempId marker, returns the
+    // payload to stash in dataTransfer. The parent will then call
+    // clearDragStyling() in dragend to restore opacity.
+    getDragPayload: () => {
+      if (!selected || !moduleId) return null;
+      const tempId = `drag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      selected.setAttribute("data-editor-moving", tempId);
+      const outerHTML = selected.outerHTML;
+      const cleanHtml = outerHTML.replace(
+        new RegExp(`\\sdata-editor-moving="${tempId}"`),
+        ""
+      );
+      selected.style.opacity = "0.4";
+      return { sourceModuleId: moduleId, tempId, outerHTML: cleanHtml };
+    },
+    clearDragStyling: () => {
+      if (!selected) return;
+      selected.style.opacity = "";
+    },
+  }), [selected, moduleId]);
 
   const injectHtml = useCallback((node) => {
     if (!node) return;
@@ -777,6 +869,16 @@ export default function HtmlPreview({
   // Make getUpdatedHtml reachable from pushUndoSnapshot's ref callback
   useEffect(() => { getUpdatedHtmlRef.current = getUpdatedHtml; });
 
+  // Keep notifyRef pointed at a fresh closure that reads the latest
+  // onHtmlChange prop. Imperative methods call notifyRef.current()
+  // after mutating the shadow DOM so the parent picks up the new HTML.
+  useEffect(() => {
+    notifyRef.current = () => {
+      const newHtml = getUpdatedHtml();
+      if (newHtml !== null && onHtmlChange) onHtmlChange(newHtml);
+    };
+  });
+
   function findSelectable(target, boundary) {
     let el = target;
     while (el && el !== boundary) {
@@ -1144,4 +1246,6 @@ export default function HtmlPreview({
       )}
     </div>
   );
-}
+});
+
+export default HtmlPreview;

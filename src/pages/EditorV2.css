@@ -445,6 +445,257 @@
 .smyra-editor .editor-v2-body--stacked {
   grid-template-columns: 260px 1fr;
 }
+/* Stacked + Illustrator-style inspector on the right. */
+.smyra-editor .editor-v2-body--inspector {
+  grid-template-columns: 240px 1fr 320px;
+}
+
+/* ── Inspector (v3 — Illustrator-style) ────────────────────────── */
+.smyra-editor .editor-inspector-v3 {
+  background: #23181f;
+  color: #f6f0f2;
+  border-left: 1px solid #3a2733;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.smyra-editor .ins-root {
+  display: flex;
+  flex-direction: column;
+}
+.smyra-editor .ins-section {
+  border-bottom: 1px solid #3a2733;
+}
+.smyra-editor .ins-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 14px;
+  background: transparent;
+  color: #f6f0f2;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.smyra-editor .ins-section-head:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.smyra-editor .ins-chev {
+  display: inline-block;
+  transition: transform .12s;
+  color: #b99eaa;
+}
+.smyra-editor .ins-chev.is-open { transform: rotate(90deg); }
+.smyra-editor .ins-section-title { flex-shrink: 0; }
+.smyra-editor .ins-section-sub {
+  margin-left: auto;
+  font-weight: 500;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #c77389;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.smyra-editor .ins-section-body {
+  padding: 8px 14px 14px;
+}
+.smyra-editor .ins-empty {
+  margin: 6px 0 2px;
+  color: #a6919a;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.smyra-editor .ins-sample {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: #2f212a;
+  border-left: 2px solid #c77389;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #eadbe2;
+  line-height: 1.45;
+  max-height: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+
+.smyra-editor .ins-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.smyra-editor .ins-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #f6f0f2;
+  background: #3a2733;
+  border: 1px solid #4a3340;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .1s, border-color .1s;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+.smyra-editor .ins-btn:hover {
+  background: #4a3340;
+  border-color: #6b4a5d;
+}
+.smyra-editor .ins-btn--primary {
+  background: var(--rose-600);
+  border-color: var(--rose-700);
+  color: #fff;
+}
+.smyra-editor .ins-btn--primary:hover {
+  background: var(--rose-700);
+}
+.smyra-editor .ins-btn--danger:hover {
+  background: #6b2a3a;
+  border-color: #8a3848;
+}
+.smyra-editor .ins-btn-icon {
+  display: inline-grid;
+  place-items: center;
+  min-width: 14px;
+  font-size: 12px;
+}
+
+.smyra-editor .ins-drag-hint {
+  margin: 6px 0 4px;
+  font-size: 10.5px;
+  color: #b99eaa;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.smyra-editor .ins-drag-handle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: linear-gradient(160deg, #4a3340, #3a2733);
+  border: 1px dashed #c77389;
+  border-radius: 8px;
+  color: #f6f0f2;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: grab;
+  margin-bottom: 10px;
+  text-align: left;
+  user-select: none;
+}
+.smyra-editor .ins-drag-handle:hover {
+  background: linear-gradient(160deg, #5a3e4c, #4a3340);
+  border-color: var(--rose-500);
+}
+.smyra-editor .ins-drag-grip {
+  font-size: 16px;
+  line-height: 1;
+  color: var(--rose-500);
+  letter-spacing: -2px;
+}
+
+.smyra-editor .ins-move-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.smyra-editor .ins-move-item {
+  display: grid;
+  grid-template-columns: 22px 60px 1fr 18px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #f6f0f2;
+  font-size: 11.5px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: background .08s;
+}
+.smyra-editor .ins-move-item:hover:not(:disabled) {
+  background: #3a2733;
+  border-color: #6b4a5d;
+}
+.smyra-editor .ins-move-item.is-source,
+.smyra-editor .ins-move-item:disabled {
+  color: #8d7782;
+  cursor: not-allowed;
+}
+.smyra-editor .ins-move-idx {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.smyra-editor .ins-move-type {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: #b99eaa;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.smyra-editor .ins-move-title {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.smyra-editor .ins-move-arrow { color: var(--rose-500); font-weight: 700; }
+.smyra-editor .ins-move-tag {
+  font-size: 9px; text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #8d7782;
+}
+
+.smyra-editor .ins-page-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: #f6f0f2;
+}
+.smyra-editor .ins-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.smyra-editor .ins-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #b99eaa;
+  min-width: 60px;
+}
+.smyra-editor .ins-select {
+  flex: 1;
+  padding: 6px 8px;
+  background: #2f212a;
+  color: #f6f0f2;
+  border: 1px solid #4a3340;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
 
 /* ── Save pill ── */
 .smyra-editor .save-pill {

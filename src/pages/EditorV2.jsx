@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useUiStore } from "../stores/uiStore";
@@ -95,6 +95,22 @@ export default function EditorV2() {
   // Cross-page component drag state — used to tell the sidebar which
   // drop type to visualise. `null` = no component drag in progress.
   const [componentDrag, setComponentDrag] = useState(null); // { sourceModuleId, tempId, outerHTML }
+
+  // Imperative refs into each HtmlPreview instance so inspector buttons
+  // can drive shadow-DOM selection actions from light DOM.
+  const previewRefs = useRef({});
+  // Current selection info broadcast by whichever HtmlPreview has the
+  // live selection. { moduleId, tagName, textSample, isEditable, isImage, alt }.
+  const [activeSelection, setActiveSelection] = useState(null);
+  const handleSelectionChange = (mod, info) => {
+    setActiveSelection((prev) => {
+      if (info) return { ...info, moduleId: mod.id };
+      // Only clear if *this* module was the source of the current selection —
+      // otherwise we'd keep nuking the selection on every re-render pass.
+      if (prev?.moduleId === mod.id) return null;
+      return prev;
+    });
+  };
 
   // Move a component subtree between modules. Source and target are
   // PATCHed in parallel. Uses html_cache as the source of truth (the
@@ -684,7 +700,7 @@ export default function EditorV2() {
 
       {error ? <div className="error" style={{ margin: "12px 24px" }}>{error}</div> : null}
 
-      <div className="editor-v2-body editor-v2-body--stacked">
+      <div className="editor-v2-body editor-v2-body--inspector">
         {/* ─── Left: page navigator (thumbnails, click = scroll) ─── */}
         <aside className="editor-sidebar">
           <div className="sidebar-header">
@@ -767,6 +783,10 @@ export default function EditorV2() {
                 variants={variants[mod.module_type] || []}
                 componentDrag={componentDrag}
                 busy={!!busy[mod.id]}
+                previewRefCb={(api) => {
+                  if (api) previewRefs.current[mod.id] = api;
+                  else delete previewRefs.current[mod.id];
+                }}
                 onActivate={() => setSelectedId(mod.id)}
                 onLiveHtmlChange={(html) => onLiveHtmlChange(mod.id, html)}
                 onComponentDragStart={(info) => setComponentDrag(info)}
@@ -776,10 +796,57 @@ export default function EditorV2() {
                 onDelete={() => onDeleteModule(mod)}
                 onSwapVariant={(vId) => onSwapVariant(mod, vId)}
                 onSaveContent={(patch) => onSaveContent(mod.id, patch)}
+                onSelectionChange={(info) => handleSelectionChange(mod, info)}
               />
             ))
           )}
         </main>
+
+        {/* ─── Right: Illustrator-style inspector ─── */}
+        <aside className="editor-inspector-v3">
+          <InspectorPanels
+            modules={modules}
+            activeModuleId={selectedId}
+            activeSelection={activeSelection}
+            variants={variants}
+            onGoToModule={(id) => {
+              setSelectedId(id);
+              const el = document.getElementById(`module-card-${id}`);
+              if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+            }}
+            onStartEdit={() => previewRefs.current[activeSelection?.moduleId]?.startEdit()}
+            onDuplicateElement={() => previewRefs.current[activeSelection?.moduleId]?.duplicateSelected()}
+            onDeleteElement={() => previewRefs.current[activeSelection?.moduleId]?.deleteSelected()}
+            onReplaceImage={() => previewRefs.current[activeSelection?.moduleId]?.openImagePicker()}
+            onEditAlt={() => previewRefs.current[activeSelection?.moduleId]?.editAlt()}
+            onElementDragStart={(e) => {
+              const id = activeSelection?.moduleId;
+              const payload = previewRefs.current[id]?.getDragPayload();
+              if (!payload) return;
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("application/x-smyra-component", JSON.stringify(payload));
+              e.dataTransfer.setData("text/plain", `[komponent: ${activeSelection.tagName}]`);
+              setComponentDrag(payload);
+            }}
+            onElementDragEnd={() => {
+              const id = activeSelection?.moduleId;
+              previewRefs.current[id]?.clearDragStyling();
+              setComponentDrag(null);
+            }}
+            onDuplicateModule={(mod) => onDuplicateModule(mod)}
+            onDeleteModule={(mod) => onDeleteModule(mod)}
+            onSwapVariant={(mod, id) => onSwapVariant(mod, id)}
+            onMoveElementTo={(targetModuleId) => {
+              const srcId = activeSelection?.moduleId;
+              const payload = previewRefs.current[srcId]?.getDragPayload();
+              if (payload && srcId !== targetModuleId) {
+                onMoveComponentToModule(payload, targetModuleId).finally(() => {
+                  previewRefs.current[srcId]?.clearDragStyling();
+                });
+              }
+            }}
+          />
+        </aside>
       </div>
     </div>
   );
@@ -808,6 +875,7 @@ function ModuleCard({
   variants,
   componentDrag,
   busy,
+  previewRefCb,
   onActivate,
   onLiveHtmlChange,
   onComponentDragStart,
@@ -817,7 +885,15 @@ function ModuleCard({
   onDelete,
   onSwapVariant,
   onSaveContent,
+  onSelectionChange,
 }) {
+  const innerRef = useRef(null);
+  // Forward the HtmlPreview imperative handle up to EditorV2 via the
+  // callback ref, using a single stable ref node.
+  const setRef = useCallback((api) => {
+    innerRef.current = api;
+    if (previewRefCb) previewRefCb(api);
+  }, [previewRefCb]);
   const [hoverDrop, setHoverDrop] = useState(false);
   const isComponentDropCandidate =
     componentDrag && componentDrag.sourceModuleId !== mod.id;
@@ -916,6 +992,7 @@ function ModuleCard({
 
       <div className="module-card-preview">
         <HtmlPreview
+          ref={setRef}
           html={mod.html_cache}
           brandCss={brandCss}
           logos={logos}
@@ -925,11 +1002,209 @@ function ModuleCard({
           onHtmlChange={onLiveHtmlChange}
           onComponentDragStart={onComponentDragStart}
           onComponentDragEnd={onComponentDragEnd}
+          onSelectionChange={onSelectionChange}
           zoom={zoom}
           showGrid={showGrid}
           showOverflow={showOverflow}
         />
       </div>
+    </section>
+  );
+}
+
+// ─── InspectorPanels (Illustrator-style right sidebar) ─────────────────
+/**
+ * Stacked panels:
+ *   • Element  — what's selected + actions (big buttons). Shows a
+ *     draggable handle that moves the element to another page.
+ *   • Sida     — metadata for the active page + module-level actions.
+ *   • Flytta till — quick-picker that lists every page; clicking moves
+ *     the selected element there. Reliable alternative to drag-drop.
+ *
+ * All actions operate via imperative refs into the HtmlPreview, which
+ * lets us bypass the brittle shadow-DOM dragstart that the floating
+ * element bar depended on.
+ */
+function InspectorPanels({
+  modules,
+  activeModuleId,
+  activeSelection,
+  variants,
+  onGoToModule,
+  onStartEdit,
+  onDuplicateElement,
+  onDeleteElement,
+  onReplaceImage,
+  onEditAlt,
+  onElementDragStart,
+  onElementDragEnd,
+  onDuplicateModule,
+  onDeleteModule,
+  onSwapVariant,
+  onMoveElementTo,
+}) {
+  const [elementOpen, setElementOpen] = useState(true);
+  const [pageOpen, setPageOpen] = useState(true);
+  const [moveOpen, setMoveOpen] = useState(true);
+
+  const activeMod = modules.find((m) => m.id === activeModuleId) || null;
+  const selModuleId = activeSelection?.moduleId;
+  const sel = activeSelection;
+
+  return (
+    <div className="ins-root">
+      {/* ── Element panel ─────────────────────────────────────── */}
+      <InsSection
+        title="Element"
+        open={elementOpen}
+        onToggle={() => setElementOpen(!elementOpen)}
+        subtitle={sel ? `<${sel.tagName}>` : "Inget valt"}
+      >
+        {!sel ? (
+          <p className="ins-empty">Klicka på ett element i förhandsgranskningen för att redigera det.</p>
+        ) : (
+          <>
+            <div className="ins-sample">{sel.textSample || (sel.isImage ? "Bild" : `<${sel.tagName}>`)}</div>
+
+            <div className="ins-btn-row">
+              {sel.isEditable && (
+                <button className="ins-btn ins-btn--primary" type="button" onClick={onStartEdit}>
+                  <span className="ins-btn-icon">✎</span>
+                  <span>Redigera text</span>
+                </button>
+              )}
+              {sel.isImage && (
+                <button className="ins-btn ins-btn--primary" type="button" onClick={onReplaceImage}>
+                  <span className="ins-btn-icon">🖼</span>
+                  <span>Byt bild</span>
+                </button>
+              )}
+            </div>
+
+            {/* Drag handle — lives in light DOM, always fires reliably */}
+            <div className="ins-drag-hint">Dra till en annan sida:</div>
+            <button
+              className="ins-drag-handle"
+              type="button"
+              draggable="true"
+              onDragStart={onElementDragStart}
+              onDragEnd={onElementDragEnd}
+              onMouseDown={(e) => { e.currentTarget.style.cursor = "grabbing"; }}
+              onMouseUp={(e) => { e.currentTarget.style.cursor = "grab"; }}
+            >
+              <span className="ins-drag-grip">⋮⋮</span>
+              <span>Håll och dra till sida i listan</span>
+            </button>
+
+            <div className="ins-btn-row">
+              <button className="ins-btn" type="button" onClick={onDuplicateElement}>
+                <span className="ins-btn-icon">⎘</span>
+                <span>Duplicera</span>
+              </button>
+              {sel.isImage && (
+                <button className="ins-btn" type="button" onClick={onEditAlt}>
+                  <span className="ins-btn-icon">ALT</span>
+                  <span>Alt-text</span>
+                </button>
+              )}
+              <button className="ins-btn ins-btn--danger" type="button" onClick={onDeleteElement}>
+                <span className="ins-btn-icon">🗑</span>
+                <span>Ta bort</span>
+              </button>
+            </div>
+          </>
+        )}
+      </InsSection>
+
+      {/* ── Move-to panel ─────────────────────────────────────── */}
+      {sel && (
+        <InsSection
+          title="Flytta till sida"
+          open={moveOpen}
+          onToggle={() => setMoveOpen(!moveOpen)}
+        >
+          <div className="ins-move-list">
+            {modules.map((m, idx) => {
+              const isSource = m.id === selModuleId;
+              return (
+                <button
+                  key={m.id}
+                  className={`ins-move-item${isSource ? " is-source" : ""}`}
+                  type="button"
+                  disabled={isSource}
+                  onClick={() => onMoveElementTo(m.id)}
+                  title={isSource ? "Samma sida som källan" : `Flytta till ${moduleDisplayName(m)}`}
+                >
+                  <span className="ins-move-idx">{idx + 1}</span>
+                  <span className="ins-move-type">{m.module_type}</span>
+                  <span className="ins-move-title">{moduleDisplayName(m)}</span>
+                  {isSource ? <span className="ins-move-tag">källa</span> : <span className="ins-move-arrow">→</span>}
+                </button>
+              );
+            })}
+          </div>
+        </InsSection>
+      )}
+
+      {/* ── Page panel ────────────────────────────────────────── */}
+      <InsSection
+        title="Sida"
+        open={pageOpen}
+        onToggle={() => setPageOpen(!pageOpen)}
+        subtitle={activeMod ? `${(activeMod.order_index ?? 0) + 1} · ${activeMod.module_type}` : "—"}
+      >
+        {!activeMod ? (
+          <p className="ins-empty">Välj en sida i mittkolumnen.</p>
+        ) : (
+          <>
+            <div className="ins-page-title">{moduleDisplayName(activeMod)}</div>
+            {variants[activeMod.module_type] && variants[activeMod.module_type].length > 1 && (
+              <div className="ins-row">
+                <label className="ins-label">Variant</label>
+                <select
+                  className="ins-select"
+                  defaultValue=""
+                  onChange={(e) => {
+                    if (e.target.value) onSwapVariant(activeMod, e.target.value);
+                    e.target.selectedIndex = 0;
+                  }}
+                >
+                  <option value="" disabled>Byt variant…</option>
+                  {variants[activeMod.module_type].map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.variant_name || v.label || v.id.slice(0, 6)}
+                      {v.is_default ? " ★" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="ins-btn-row">
+              <button className="ins-btn" type="button" onClick={() => onDuplicateModule(activeMod)}>
+                <span className="ins-btn-icon">⎘</span>
+                <span>Duplicera sida</span>
+              </button>
+              <button className="ins-btn ins-btn--danger" type="button" onClick={() => onDeleteModule(activeMod)}>
+                <span className="ins-btn-icon">🗑</span>
+                <span>Ta bort sida</span>
+              </button>
+            </div>
+          </>
+        )}
+      </InsSection>
+    </div>
+  );
+}
+
+function InsSection({ title, subtitle, open, onToggle, children }) {
+  return (
+    <section className={`ins-section${open ? " is-open" : ""}`}>
+      <button type="button" className="ins-section-head" onClick={onToggle}>
+        <span className={`ins-chev${open ? " is-open" : ""}`}>▸</span>
+        <span className="ins-section-title">{title}</span>
+        {subtitle ? <span className="ins-section-sub">{subtitle}</span> : null}
+      </button>
+      {open && <div className="ins-section-body">{children}</div>}
     </section>
   );
 }
