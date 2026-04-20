@@ -1,0 +1,30 @@
+-- 022_module_background.sql
+-- Per-module background spec: lets a cover, chapter break, or any
+-- layout page carry a full-bleed photo + gradient overlay + vignette
+-- + CSS filter. Renders as an absolutely-positioned layer under the
+-- page content so existing module HTML stays untouched.
+--
+-- Shape (all keys optional):
+--   {
+--     "asset_id":      "<tenant_asset_id>",         -- preferred
+--     "image_url":     "https://...",                -- fallback
+--     "position":      "center|top|bottom|left|right|custom",
+--     "size":          "cover|contain",
+--     "overlay":       {                             -- gradient overlay
+--       "type":        "linear|radial|none",
+--       "from":        "#00000066",
+--       "to":          "#00000000",
+--       "angle":       180                            -- degrees, for linear
+--     },
+--     "vignette":      0.35,                          -- 0..1 strength
+--     "filter": {
+--       "grayscale":   0,                             -- 0..1
+--       "sepia":       0,
+--       "saturate":    1,                             -- 0..3
+--       "contrast":    1,
+--       "brightness":  1,
+--       "blur_px":     0
+--     }
+--   }
+ALTER TABLE v2_report_modules
+  ADD COLUMN IF NOT EXISTS background JSONB NOT NULL DEFAULT '{}'::jsonb;

@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useUiStore } from "../stores/uiStore";
 import HtmlPreview from "../components/v2/HtmlPreview";
+import ImagePickerDialog from "../components/v2/ImagePickerDialog";
 import "./EditorV2.css";
 
 const MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout"];
@@ -611,6 +612,58 @@ export default function EditorV2() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.report_id, modules, selectedId]);
 
+  // Per-page background patch. Writes to v2_report_modules.background
+  // with debouncing, updates local module state so HtmlPreview picks
+  // up the change instantly (layer re-renders without touching
+  // html_cache).
+  const bgSaveTimerRef = useRef({});
+  const patchModuleBackground = (moduleId, partial) => {
+    setModules((prev) =>
+      prev.map((m) => {
+        if (m.id !== moduleId) return m;
+        // Merge partial into existing background, stripping empty keys
+        // so "clear" semantics work (pass {asset_id: null} to remove).
+        const next = { ...(m.background || {}) };
+        for (const [k, v] of Object.entries(partial)) {
+          if (v === null || v === undefined) delete next[k];
+          else next[k] = v;
+        }
+        // Queue debounced save
+        if (bgSaveTimerRef.current[moduleId]) clearTimeout(bgSaveTimerRef.current[moduleId]);
+        bgSaveTimerRef.current[moduleId] = setTimeout(async () => {
+          try {
+            await api.updateV2Module(moduleId, { background: next });
+            setSaveStatus("saved");
+            setTimeout(() => setSaveStatus((s) => (s === "saved" ? "" : s)), 1200);
+          } catch (err) {
+            setError(`Kunde inte spara bakgrund: ${err.message}`);
+          }
+        }, 450);
+        setSaveStatus("saving");
+        return { ...m, background: next };
+      })
+    );
+  };
+  const clearModuleBackground = (moduleId) => {
+    setModules((prev) =>
+      prev.map((m) => {
+        if (m.id !== moduleId) return m;
+        if (bgSaveTimerRef.current[moduleId]) clearTimeout(bgSaveTimerRef.current[moduleId]);
+        bgSaveTimerRef.current[moduleId] = setTimeout(async () => {
+          try {
+            await api.updateV2Module(moduleId, { background: {} });
+            setSaveStatus("saved");
+            setTimeout(() => setSaveStatus((s) => (s === "saved" ? "" : s)), 1200);
+          } catch (err) {
+            setError(`Kunde inte rensa bakgrund: ${err.message}`);
+          }
+        }, 200);
+        setSaveStatus("saving");
+        return { ...m, background: {} };
+      })
+    );
+  };
+
   // Report-level style overrides (Rapport-stil panel). Writes to
   // v2_reports.style_overrides and live-patches the existing brand
   // CSS so the shadow-DOM preview reflects the change immediately
@@ -989,6 +1042,10 @@ export default function EditorV2() {
             onDuplicateModule={(mod) => onDuplicateModule(mod)}
             onDeleteModule={(mod) => onDeleteModule(mod)}
             onSwapVariant={(mod, id) => onSwapVariant(mod, id)}
+            tenantAssets={assets}
+            tenantId={session?.report?.tenant_id || null}
+            onPatchBackground={(moduleId, partial) => patchModuleBackground(moduleId, partial)}
+            onClearBackground={(moduleId) => clearModuleBackground(moduleId)}
           />
         </aside>
       </div>
@@ -1156,6 +1213,7 @@ function ModuleCard({
           assets={assets}
           tenantId={tenantId}
           moduleId={mod.id}
+          background={mod.background || null}
           onHtmlChange={onLiveHtmlChange}
           onComponentDragStart={onComponentDragStart}
           onComponentDragEnd={onComponentDragEnd}
@@ -1183,18 +1241,23 @@ function ModuleCard({
  * element bar depended on.
  */
 // ─── Token → CSS variable mapping ───────────────────────────────────
-// Keeps the editor's panel keys in sync with what buildTokenCss emits
-// on the server. If you add a key here, also handle it in
-// v2-brand-css.js buildTokenCss or the override won't apply.
+// Keys must match v2-brand-css.js buildTokenCss so overrides surface
+// in the emitted stylesheet. Font keys quote the value (single quotes)
+// so rewriteTokenInCss produces `--font-heading: 'Playfair Display', …`.
 const TOKEN_CSS_VAR = {
-  primary: "--primary",
-  accent: "--accent",
-  text: "--text",
-  bg: "--bg",
-  surface: "--surface",
-  heading_font: "--font-heading",
-  body_font: "--font-body",
+  primary_color: "--primary",
+  accent_color: "--accent",
+  text_color: "--text",
+  bg_color: "--bg",
+  surface_color: "--surface",
+  border_color: "--border",
+  link_color: "--link",
+  font_heading: "--font-heading",
+  font_body: "--font-body",
 };
+// Which keys store fonts (affects how values are serialised — fonts
+// are wrapped in quotes server-side).
+const FONT_KEYS = new Set(["font_heading", "font_body"]);
 
 /**
  * Rewrite a single `--foo: <value>;` line inside the brand CSS string
@@ -1205,14 +1268,22 @@ function rewriteTokenInCss(css, tokenKey, newValue) {
   if (!css) return css;
   const varName = TOKEN_CSS_VAR[tokenKey];
   if (!varName) return css;
+  // Font values need to be passed as-is (already include quoted
+  // family names + fallbacks). Colors are pasted raw. Empty string
+  // = remove override — append a `unset` rule so the cascade reverts
+  // to brand defaults.
+  const cssValue = newValue || "unset";
   const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`(${escaped}\\s*:\\s*)[^;\\n]*`, "g");
-  if (!re.test(css)) {
-    // Add a trailing :host rule that wins cascade order.
-    return css + `\n:host{${varName}:${newValue};}`;
-  }
+  // Always append a late :host rule so overrides win the cascade even
+  // when the server-baked document_css already has a :root version.
+  const override = `\n:host{${varName}:${cssValue};}`;
+  if (!re.test(css)) return css + override;
+  // Replace inline + still append override block so :host beats :root
+  // (shadow DOM quirk: :root doesn't match inside a shadow tree, but
+  // may be present via a rewrite on the server — belt & braces).
   re.lastIndex = 0;
-  return css.replace(re, `$1${newValue}`);
+  return css.replace(re, `$1${cssValue}`) + override;
 }
 
 // Curated system-font stacks for the font dropdowns. Each entry is
@@ -1265,12 +1336,18 @@ function InspectorPanels({
   onDuplicateModule,
   onDeleteModule,
   onSwapVariant,
+  tenantAssets,
+  tenantId,
+  onPatchBackground,
+  onClearBackground,
 }) {
   const [reportStyleOpen, setReportStyleOpen] = useState(true);
   const [structureOpen, setStructureOpen] = useState(true);
   const [actionsOpen, setActionsOpen] = useState(true);
   const [styleOpen, setStyleOpen] = useState(true);
   const [pageOpen, setPageOpen] = useState(true);
+  const [bgOpen, setBgOpen] = useState(false);
+  const [bgImagePickerOpen, setBgImagePickerOpen] = useState(false);
 
   const activeMod = modules.find((m) => m.id === activeModuleId) || null;
   const sel = activeSelection;
@@ -1308,54 +1385,63 @@ function InspectorPanels({
         <div className="ins-style-grid">
           <label className="ins-style-label">Primär</label>
           <ColorField
-            value={tokens?.primary || ""}
-            brandDefault={brandTokens?.primary || ""}
-            isOverride={!!overrides?.primary}
-            onChange={(v) => onStyleOverride("primary", v)}
-            onReset={() => onResetOverride("primary")}
+            value={tokens?.primary_color || ""}
+            brandDefault={brandTokens?.primary_color || ""}
+            isOverride={!!overrides?.primary_color}
+            onChange={(v) => onStyleOverride("primary_color", v)}
+            onReset={() => onResetOverride("primary_color")}
           />
 
           <label className="ins-style-label">Accent</label>
           <ColorField
-            value={tokens?.accent || ""}
-            brandDefault={brandTokens?.accent || ""}
-            isOverride={!!overrides?.accent}
-            onChange={(v) => onStyleOverride("accent", v)}
-            onReset={() => onResetOverride("accent")}
+            value={tokens?.accent_color || ""}
+            brandDefault={brandTokens?.accent_color || ""}
+            isOverride={!!overrides?.accent_color}
+            onChange={(v) => onStyleOverride("accent_color", v)}
+            onReset={() => onResetOverride("accent_color")}
           />
 
           <label className="ins-style-label">Textfärg</label>
           <ColorField
-            value={tokens?.text || ""}
-            brandDefault={brandTokens?.text || ""}
-            isOverride={!!overrides?.text}
-            onChange={(v) => onStyleOverride("text", v)}
-            onReset={() => onResetOverride("text")}
+            value={tokens?.text_color || ""}
+            brandDefault={brandTokens?.text_color || ""}
+            isOverride={!!overrides?.text_color}
+            onChange={(v) => onStyleOverride("text_color", v)}
+            onReset={() => onResetOverride("text_color")}
           />
 
           <label className="ins-style-label">Bakgrund</label>
           <ColorField
-            value={tokens?.bg || ""}
-            brandDefault={brandTokens?.bg || ""}
-            isOverride={!!overrides?.bg}
-            onChange={(v) => onStyleOverride("bg", v)}
-            onReset={() => onResetOverride("bg")}
+            value={tokens?.bg_color || ""}
+            brandDefault={brandTokens?.bg_color || ""}
+            isOverride={!!overrides?.bg_color}
+            onChange={(v) => onStyleOverride("bg_color", v)}
+            onReset={() => onResetOverride("bg_color")}
+          />
+
+          <label className="ins-style-label">Länkfärg</label>
+          <ColorField
+            value={tokens?.link_color || ""}
+            brandDefault={brandTokens?.link_color || tokens?.primary_color || ""}
+            isOverride={!!overrides?.link_color}
+            onChange={(v) => onStyleOverride("link_color", v)}
+            onReset={() => onResetOverride("link_color")}
           />
 
           <label className="ins-style-label">Rubriker</label>
           <FontField
-            value={tokens?.heading_font || ""}
-            isOverride={!!overrides?.heading_font}
-            onChange={(v) => onStyleOverride("heading_font", v)}
-            onReset={() => onResetOverride("heading_font")}
+            value={tokens?.font_heading || ""}
+            isOverride={!!overrides?.font_heading}
+            onChange={(v) => onStyleOverride("font_heading", v)}
+            onReset={() => onResetOverride("font_heading")}
           />
 
           <label className="ins-style-label">Brödtext</label>
           <FontField
-            value={tokens?.body_font || ""}
-            isOverride={!!overrides?.body_font}
-            onChange={(v) => onStyleOverride("body_font", v)}
-            onReset={() => onResetOverride("body_font")}
+            value={tokens?.font_body || ""}
+            isOverride={!!overrides?.font_body}
+            onChange={(v) => onStyleOverride("font_body", v)}
+            onReset={() => onResetOverride("font_body")}
           />
         </div>
         {Object.keys(overrides || {}).length > 0 && (
@@ -1630,6 +1716,217 @@ function InspectorPanels({
           </>
         )}
       </InsSection>
+
+      {/* ── Sidbakgrund — full-bleed photo + overlay + vignette + filter ── */}
+      {activeMod ? (
+        <InsSection
+          title="Sidbakgrund"
+          open={bgOpen}
+          onToggle={() => setBgOpen(!bgOpen)}
+          subtitle={
+            activeMod.background?.asset_id || activeMod.background?.image_url
+              ? "Bild vald"
+              : "Ingen"
+          }
+        >
+          <BackgroundControls
+            background={activeMod.background || {}}
+            tenantAssets={tenantAssets}
+            tenantId={tenantId}
+            onPatch={(partial) => onPatchBackground(activeMod.id, partial)}
+            onClear={() => onClearBackground(activeMod.id)}
+            pickerOpen={bgImagePickerOpen}
+            setPickerOpen={setBgImagePickerOpen}
+          />
+        </InsSection>
+      ) : null}
+    </div>
+  );
+}
+
+// ─── BackgroundControls (module background panel) ──────────────────────
+function BackgroundControls({ background, tenantAssets, tenantId, onPatch, onClear, pickerOpen, setPickerOpen }) {
+  const hasImage = !!(background?.asset_id || background?.image_url);
+  const filter = background?.filter || {};
+  const overlay = background?.overlay || {};
+
+  return (
+    <>
+      {/* Image picker */}
+      <div className="ins-btn-row">
+        <button
+          className="ins-btn ins-btn--primary"
+          type="button"
+          onClick={() => setPickerOpen(true)}
+        >
+          <span className="ins-btn-icon">🖼</span>
+          <span>{hasImage ? "Byt bild" : "Välj bild"}</span>
+        </button>
+        {hasImage && (
+          <button className="ins-btn ins-btn--danger" type="button" onClick={onClear}>
+            <span className="ins-btn-icon">×</span>
+            <span>Rensa</span>
+          </button>
+        )}
+      </div>
+
+      {pickerOpen && (
+        <ImagePickerDialog
+          open={pickerOpen}
+          tenantId={tenantId}
+          initialTab={tenantAssets?.length ? "library" : "upload"}
+          onClose={() => setPickerOpen(false)}
+          onPick={({ assetId, url }) => {
+            onPatch({
+              asset_id: assetId || null,
+              image_url: assetId ? null : (url || null),
+              size: background?.size || "cover",
+              position: background?.position || "center",
+            });
+            setPickerOpen(false);
+          }}
+        />
+      )}
+
+      {/* Overlay gradient */}
+      <div className="ins-style-grid" style={{ marginTop: 12 }}>
+        <label className="ins-style-label">Overlay</label>
+        <select
+          className="ins-select"
+          value={overlay.type || "none"}
+          onChange={(e) => {
+            const type = e.target.value;
+            if (type === "none") onPatch({ overlay: null });
+            else onPatch({ overlay: { ...overlay, type } });
+          }}
+        >
+          <option value="none">Ingen</option>
+          <option value="linear">Linjär gradient</option>
+          <option value="radial">Radial gradient</option>
+        </select>
+
+        {overlay.type && overlay.type !== "none" && (
+          <>
+            <label className="ins-style-label">Från</label>
+            <ColorField
+              value={overlay.from || "rgba(0,0,0,0.5)"}
+              brandDefault=""
+              isOverride={false}
+              onChange={(v) => onPatch({ overlay: { ...overlay, from: v } })}
+              onReset={() => onPatch({ overlay: { ...overlay, from: "rgba(0,0,0,0.5)" } })}
+            />
+            <label className="ins-style-label">Till</label>
+            <ColorField
+              value={overlay.to || "rgba(0,0,0,0)"}
+              brandDefault=""
+              isOverride={false}
+              onChange={(v) => onPatch({ overlay: { ...overlay, to: v } })}
+              onReset={() => onPatch({ overlay: { ...overlay, to: "rgba(0,0,0,0)" } })}
+            />
+            {overlay.type === "linear" && (
+              <>
+                <label className="ins-style-label">Vinkel</label>
+                <SliderField
+                  value={overlay.angle ?? 180}
+                  min={0} max={360} step={5} suffix="°"
+                  onChange={(v) => onPatch({ overlay: { ...overlay, angle: v } })}
+                />
+              </>
+            )}
+          </>
+        )}
+
+        <label className="ins-style-label">Vinjett</label>
+        <SliderField
+          value={background?.vignette ?? 0}
+          min={0} max={1} step={0.05} suffix=""
+          onChange={(v) => onPatch({ vignette: v || null })}
+        />
+      </div>
+
+      {/* Filter stack */}
+      <div className="ins-children-label" style={{ marginTop: 14 }}>Filter</div>
+      <div className="ins-style-grid">
+        <label className="ins-style-label">Svart/vitt</label>
+        <SliderField
+          value={filter.grayscale ?? 0}
+          min={0} max={1} step={0.05}
+          onChange={(v) => onPatch({ filter: { ...filter, grayscale: v || null } })}
+        />
+        <label className="ins-style-label">Sepia</label>
+        <SliderField
+          value={filter.sepia ?? 0}
+          min={0} max={1} step={0.05}
+          onChange={(v) => onPatch({ filter: { ...filter, sepia: v || null } })}
+        />
+        <label className="ins-style-label">Mättnad</label>
+        <SliderField
+          value={filter.saturate ?? 1}
+          min={0} max={3} step={0.1}
+          onChange={(v) => onPatch({ filter: { ...filter, saturate: v === 1 ? null : v } })}
+        />
+        <label className="ins-style-label">Kontrast</label>
+        <SliderField
+          value={filter.contrast ?? 1}
+          min={0.5} max={2} step={0.05}
+          onChange={(v) => onPatch({ filter: { ...filter, contrast: v === 1 ? null : v } })}
+        />
+        <label className="ins-style-label">Ljusstyrka</label>
+        <SliderField
+          value={filter.brightness ?? 1}
+          min={0.3} max={1.7} step={0.05}
+          onChange={(v) => onPatch({ filter: { ...filter, brightness: v === 1 ? null : v } })}
+        />
+        <label className="ins-style-label">Blur</label>
+        <SliderField
+          value={filter.blur_px ?? 0}
+          min={0} max={20} step={0.5} suffix="px"
+          onChange={(v) => onPatch({ filter: { ...filter, blur_px: v || null } })}
+        />
+      </div>
+
+      {/* Filter presets */}
+      <div className="ins-btn-row" style={{ marginTop: 10 }}>
+        <button
+          className="ins-btn" type="button"
+          onClick={() => onPatch({ filter: { grayscale: 1 } })}
+        >B/W</button>
+        <button
+          className="ins-btn" type="button"
+          onClick={() => onPatch({ filter: { sepia: 0.8, saturate: 0.7 } })}
+        >Sepia</button>
+        <button
+          className="ins-btn" type="button"
+          onClick={() => onPatch({ filter: { saturate: 1.35, contrast: 1.1 } })}
+        >Vibrant</button>
+        <button
+          className="ins-btn" type="button"
+          onClick={() => onPatch({ filter: null })}
+        >Rensa</button>
+      </div>
+    </>
+  );
+}
+
+function SliderField({ value, min, max, step, suffix = "", onChange }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ flex: 1, accentColor: "var(--rose-600)" }}
+      />
+      <span style={{
+        minWidth: 48, textAlign: "right",
+        fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace",
+        color: "var(--ink)",
+      }}>
+        {typeof value === "number" ? (value % 1 === 0 ? value : value.toFixed(2)) : value}{suffix}
+      </span>
     </div>
   );
 }
@@ -1716,16 +2013,40 @@ function FontSizeField({ value, onChange, onReset }) {
   );
 }
 
+// Robust CSS color → hex conversion. Previous version only handled
+// hex + rgb() literals — missed named colors, hsl(), and var()
+// references. Using a throwaway <canvas> 2D context forces the browser
+// to normalise any valid CSS color into a computed rgba string, which
+// we then turn into #RRGGBB. Falls back to "" (picker shows black).
 function toHex(color) {
-  if (!color) return "";
-  if (color.startsWith("#")) {
-    if (color.length === 4) return `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`;
-    return color.length >= 7 ? color.slice(0, 7) : "";
+  if (!color || typeof color !== "string") return "";
+  const trimmed = color.trim();
+  if (!trimmed) return "";
+  // Fast path: already a 6/8-digit hex
+  if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(trimmed)) return trimmed.slice(0, 7);
+  // Fast path: 3-digit hex
+  if (/^#[0-9a-f]{3}$/i.test(trimmed)) {
+    const [, r, g, b] = trimmed.match(/^#(.)(.)(.)$/);
+    return `#${r}${r}${g}${g}${b}${b}`;
   }
-  const m = color.match(/^rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/);
-  if (!m) return "";
-  const hex2 = (n) => Number(n).toString(16).padStart(2, "0");
-  return `#${hex2(m[1])}${hex2(m[2])}${hex2(m[3])}`;
+  // var() / currentColor / etc. — can't resolve without computed-style;
+  // return empty so the picker shows default without throwing.
+  if (/^(var|currentColor|inherit|unset|initial|none|transparent)/i.test(trimmed)) return "";
+  // Use canvas to let the browser normalise named colors, hsl(), etc.
+  try {
+    if (typeof document === "undefined") return "";
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.fillStyle = "#000";
+    ctx.fillStyle = trimmed;
+    const v = ctx.fillStyle; // "#rrggbb" or "rgba(r, g, b, a)"
+    if (/^#[0-9a-f]{6}$/i.test(v)) return v;
+    const m = v.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (!m) return "";
+    const hex2 = (n) => Number(n).toString(16).padStart(2, "0");
+    return `#${hex2(m[1])}${hex2(m[2])}${hex2(m[3])}`;
+  } catch {
+    return "";
+  }
 }
 
 function InsSection({ title, subtitle, open, onToggle, children }) {

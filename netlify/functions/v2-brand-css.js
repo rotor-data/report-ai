@@ -91,6 +91,7 @@ function buildTokenCss(brandTokens) {
     bg_light_color: "--bg-light",
     surface_color: "--surface",
     border_color: "--border",
+    link_color: "--link",
   };
   const spacingMap = {
     margin_top_mm: "--margin-top",
@@ -141,6 +142,7 @@ function buildTokenCss(brandTokens) {
     "--bg-light": "#f5f5f5",
     "--surface": "#ffffff",
     "--border": "#e5e7eb",
+    "--link": "var(--primary)",
     "--font-display": "system-ui, sans-serif",
     "--font-heading": "system-ui, sans-serif",
     "--font-body": "system-ui, sans-serif",
@@ -242,6 +244,13 @@ export const handler = async (event) => {
     // prepended — those are per-brand, not per-report.
     let bundle;
     if (report.document_css && report.document_css.trim()) {
+      // Build a late-cascade override block that lets the editor's
+      // Rapport-stil panel outrank the :root tokens baked into
+      // document_css at compose time. Without this, changes only
+      // show up when the report is re-composed.
+      const overrideTokenCss = Object.keys(overrides || {}).length
+        ? buildTokenCss(overrides).replace(/^:root/, ":root, :host")
+        : "";
       bundle = [
         "/* ========== @font-face (brand fonts) ========== */",
         fontFaceCss,
@@ -249,6 +258,11 @@ export const handler = async (event) => {
         report.document_css,
         "/* ========== template css_base ========== */",
         cssBase,
+        "/* ========== report-level overrides (wins cascade) ========== */",
+        overrideTokenCss,
+        // Default <a> rule so link color actually applies — brand
+        // stylesheets often forget this.
+        `a { color: var(--link, var(--primary)); }`,
       ].join("\n\n");
     } else {
       // Legacy degraded fallback — tokens + @font-face + css_base only.

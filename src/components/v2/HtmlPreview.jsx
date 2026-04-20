@@ -450,6 +450,11 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   showGrid = false,
   showOverflow = true,
   moduleId = null,
+  // Per-module background layer: photo + gradient overlay + vignette + filter.
+  // Shape in migration 022. Rendered as an absolutely-positioned
+  // layer under the page content so existing module HTML stays
+  // untouched. null / {} = no background.
+  background = null,
   // Fired on dragstart of a selected component. The parent listens so
   // it can react on sidebar drop (cross-module move). Signature:
   //   ({ sourceModuleId, tempId, outerHTML })
@@ -782,6 +787,22 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         width: 100%;
         min-height: ${pageSize.h}mm;
         box-sizing: border-box;
+        position: relative;
+        z-index: 1;
+      }
+      /* Per-module background image + filter layer */
+      .page-frame > .page-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+      }
+      /* Gradient overlay + vignette layer sits above image but below content */
+      .page-frame > .page-bg-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
       }
       /* When the module HTML already contains a .page wrapper, let it drive
          its own dimensions; otherwise we add padding so raw fragments still
@@ -934,6 +955,64 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // Resolve data-logo / data-asset-ref / chart placeholders before we
     // tag selectables so the rewritten DOM is what the user sees and edits.
     resolveAssetRefs(root, logos, assets);
+
+    // Per-module background layer — sits behind the preview content.
+    // Rendered as two stacked divs: image (with CSS filter) on bottom,
+    // overlay+vignette gradients on top. All optional.
+    if (background && typeof background === "object" && Object.keys(background).length) {
+      const bg = document.createElement("div");
+      bg.className = "page-bg";
+      bg.setAttribute("aria-hidden", "true");
+      // Resolve image source
+      let imageUrl = "";
+      if (background.asset_id) {
+        const asset = (assets || []).find((a) => String(a.id) === String(background.asset_id));
+        imageUrl = asset?.url || asset?.data_uri || "";
+      }
+      if (!imageUrl && background.image_url) imageUrl = background.image_url;
+      if (imageUrl) {
+        bg.style.backgroundImage = `url("${imageUrl}")`;
+        bg.style.backgroundSize = background.size === "contain" ? "contain" : "cover";
+        bg.style.backgroundPosition = background.position || "center";
+        bg.style.backgroundRepeat = "no-repeat";
+      }
+      // CSS filter stack
+      const f = background.filter || {};
+      const parts = [];
+      if (typeof f.grayscale === "number" && f.grayscale > 0) parts.push(`grayscale(${f.grayscale})`);
+      if (typeof f.sepia === "number" && f.sepia > 0) parts.push(`sepia(${f.sepia})`);
+      if (typeof f.saturate === "number" && f.saturate !== 1) parts.push(`saturate(${f.saturate})`);
+      if (typeof f.contrast === "number" && f.contrast !== 1) parts.push(`contrast(${f.contrast})`);
+      if (typeof f.brightness === "number" && f.brightness !== 1) parts.push(`brightness(${f.brightness})`);
+      if (typeof f.blur_px === "number" && f.blur_px > 0) parts.push(`blur(${f.blur_px}px)`);
+      if (parts.length) bg.style.filter = parts.join(" ");
+
+      // Overlay + vignette as stacked backgrounds on a sibling layer.
+      // Using a separate div so filter() above doesn't apply to overlays.
+      const overlay = document.createElement("div");
+      overlay.className = "page-bg-overlay";
+      overlay.setAttribute("aria-hidden", "true");
+      const layers = [];
+      const ov = background.overlay;
+      if (ov && ov.type && ov.type !== "none") {
+        const from = ov.from || "rgba(0,0,0,0.4)";
+        const to = ov.to || "rgba(0,0,0,0)";
+        if (ov.type === "radial") {
+          layers.push(`radial-gradient(circle at center, ${from} 0%, ${to} 70%)`);
+        } else {
+          const angle = typeof ov.angle === "number" ? ov.angle : 180;
+          layers.push(`linear-gradient(${angle}deg, ${from} 0%, ${to} 100%)`);
+        }
+      }
+      if (typeof background.vignette === "number" && background.vignette > 0) {
+        const strength = Math.max(0, Math.min(1, background.vignette));
+        layers.push(`radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,${strength}) 120%)`);
+      }
+      if (layers.length) overlay.style.backgroundImage = layers.join(", ");
+
+      frame.appendChild(bg);
+      frame.appendChild(overlay);
+    }
 
     frame.appendChild(root);
     shadow.appendChild(frame);
@@ -1272,14 +1351,14 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // shadow (e.g. user just clicked a toolbar button that blurred the
     // contenteditable).
     node.ownerDocument.addEventListener("keydown", onDocKey);
-  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleId]);
+  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleId, background]);
 
   // Re-run injection when structural props change. Callback props are
   // intentionally NOT in this list (they're read via refs above), so
   // parent-driven rerenders don't nuke the shadow DOM + selection.
   useEffect(() => {
     if (containerRef.current) injectHtml(containerRef.current);
-  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, injectHtml]);
+  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, background, injectHtml]);
 
   // Make getUpdatedHtml reachable from pushUndoSnapshot's ref callback
   useEffect(() => { getUpdatedHtmlRef.current = getUpdatedHtml; });

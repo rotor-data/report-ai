@@ -36,6 +36,10 @@ const updateSchema = z.object({
   style: z.record(z.string(), z.any()).optional(),
   html_content: z.string().optional(),
   order_index: z.number().int().min(0).optional(),
+  // Per-module background spec. See migration 022 for full shape.
+  // Stored as JSONB; editor-side writes the whole object or null to
+  // clear.
+  background: z.record(z.string(), z.any()).nullable().optional(),
 });
 
 function parseBody(event) {
@@ -201,7 +205,7 @@ export const handler = async (event) => {
       }
 
       const rows = await sql`
-        SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, created_at, updated_at
+        SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, background, created_at, updated_at
         FROM v2_report_modules WHERE id = ${newId}
       `;
       return json(event, 201, { item: rows[0] });
@@ -214,7 +218,7 @@ export const handler = async (event) => {
     if (event.httpMethod === "POST" && moduleId && action === "duplicate") {
       const srcRows = await sql`
         SELECT id, report_id, module_type, order_index, content, style,
-               html_content, html_cache, height_mm
+               html_content, html_cache, height_mm, background
         FROM v2_report_modules WHERE id = ${moduleId} LIMIT 1
       `;
       if (!srcRows.length) return json(event, 404, { error: "Module not found" });
@@ -232,20 +236,21 @@ export const handler = async (event) => {
       await sql`
         INSERT INTO v2_report_modules (
           id, report_id, module_type, order_index,
-          content, style, html_content, html_cache, height_mm
+          content, style, html_content, html_cache, height_mm, background
         ) VALUES (
           ${newId}, ${src.report_id}, ${src.module_type}, ${src.order_index + 1},
           ${JSON.stringify(src.content || {})}::jsonb,
           ${JSON.stringify(src.style || {})}::jsonb,
           ${src.html_content || null},
           ${src.html_cache || null},
-          ${src.height_mm || null}
+          ${src.height_mm || null},
+          ${JSON.stringify(src.background || {})}::jsonb
         )
       `;
 
       const rows = await sql`
         SELECT id, report_id, page_id, module_type, order_index, content, style,
-               html_cache, height_mm, created_at, updated_at
+               html_cache, height_mm, background, created_at, updated_at
         FROM v2_report_modules WHERE id = ${newId}
       `;
       return json(event, 201, { item: rows[0] });
@@ -261,9 +266,10 @@ export const handler = async (event) => {
         !parsed.data.content &&
         !parsed.data.style &&
         !parsed.data.html_content &&
-        parsed.data.order_index === undefined
+        parsed.data.order_index === undefined &&
+        parsed.data.background === undefined
       ) {
-        return json(event, 400, { error: "Provide html_content, content, style, or order_index" });
+        return json(event, 400, { error: "Provide html_content, content, style, order_index, or background" });
       }
 
       const mods = await sql`
@@ -278,6 +284,30 @@ export const handler = async (event) => {
 
       const scopeErr = await assertEditorScopeForReport(mod.report_id);
       if (scopeErr) return scopeErr;
+
+      // Background-only request — update the JSONB column without
+      // touching html_cache or re-rendering. The HtmlPreview layer
+      // reads background from the module row client-side, so no
+      // render round-trip needed.
+      if (
+        parsed.data.background !== undefined &&
+        !parsed.data.content &&
+        !parsed.data.style &&
+        !parsed.data.html_content &&
+        parsed.data.order_index === undefined
+      ) {
+        await sql`
+          UPDATE v2_report_modules
+          SET background = ${JSON.stringify(parsed.data.background || {})}::jsonb,
+              updated_at = NOW()
+          WHERE id = ${moduleId}
+        `;
+        const rows = await sql`
+          SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, background, created_at, updated_at
+          FROM v2_report_modules WHERE id = ${moduleId}
+        `;
+        return json(event, 200, { item: rows[0] });
+      }
 
       // Reorder-only request: adjust order_index of all modules to keep
       // a contiguous sequence, then return the updated row.
@@ -316,7 +346,7 @@ export const handler = async (event) => {
           `;
         }
         const rows = await sql`
-          SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, created_at, updated_at
+          SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, background, created_at, updated_at
           FROM v2_report_modules WHERE id = ${moduleId}
         `;
         return json(event, 200, { item: rows[0] });
@@ -357,7 +387,7 @@ export const handler = async (event) => {
       }
 
       const rows = await sql`
-        SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, created_at, updated_at
+        SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, background, created_at, updated_at
         FROM v2_report_modules WHERE id = ${moduleId}
       `;
       return json(event, 200, { item: rows[0] });
