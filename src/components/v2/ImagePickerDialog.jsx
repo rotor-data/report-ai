@@ -48,7 +48,9 @@ export default function ImagePickerDialog({
     setLoading(true);
     setError("");
     api.listV2Assets(tenantId)
-      .then((res) => setAssets(Array.isArray(res?.assets) ? res.assets : []))
+      // API returns { items }; old code looked for { assets } which
+      // meant the library tab was always empty.
+      .then((res) => setAssets(Array.isArray(res?.items) ? res.items : Array.isArray(res?.assets) ? res.assets : []))
       .catch((e) => setError(e?.message || "Kunde inte ladda bildbibliotek"))
       .finally(() => setLoading(false));
   }, [open, tenantId, tab]);

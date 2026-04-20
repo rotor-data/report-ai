@@ -282,22 +282,27 @@ export const handler = async (event) => {
         // Default <a> rule so link color actually applies — brand
         // stylesheets often forget this.
         `a { color: var(--link, var(--primary)); }`,
-        // Base-size scaling via calc() on typography classes — the
-        // rem-based compose-pages sizes resolve against <html>, so
-        // setting font-size on .page silently shrinks generic <p>/<div>
-        // that don't carry a .t-* class. Targeting the classes by name
-        // scales body/heading copy without affecting inline images /
-        // grid columns etc. Mirror is in v2-render.buildOverrideCss.
-        `
-.t-body  { font-size: calc(var(--base-font-size, 11pt) * 0.95); }
-.t-intro { font-size: calc(var(--base-font-size, 11pt) * 1.05); }
-.t-h1    { font-size: calc(var(--base-font-size, 11pt) * 1.5);  }
-.t-h2    { font-size: calc(var(--base-font-size, 11pt) * 1.25); }
-.t-h3    { font-size: calc(var(--base-font-size, 11pt) * 1.1);  }
-.t-caption { font-size: calc(var(--base-font-size, 11pt) * 0.85); }
-.t-display    { font-size: calc(var(--base-font-size, 11pt) * 2);   }
-.t-display-xl { font-size: calc(var(--base-font-size, 11pt) * 2.5); }
-`,
+        // Base-size scaling — ONLY when the author actually set a
+        // base_font_size override. Emitting these calc() rules blankly
+        // risks zeroing body text if --base-font-size isn't in root
+        // (WeasyPrint edge cases + late-cascade timing). When unset,
+        // leave design-system.css typography defaults alone.
+        overrides.base_font_size
+          ? (() => {
+              const raw = overrides.base_font_size;
+              const base = /^\d+(\.\d+)?$/.test(String(raw).trim()) ? `${raw}pt` : raw;
+              return `
+.t-body  { font-size: calc(${base} * 0.95); }
+.t-intro { font-size: calc(${base} * 1.05); }
+.t-h1    { font-size: calc(${base} * 1.5);  }
+.t-h2    { font-size: calc(${base} * 1.25); }
+.t-h3    { font-size: calc(${base} * 1.1);  }
+.t-caption { font-size: calc(${base} * 0.85); }
+.t-display    { font-size: calc(${base} * 2);   }
+.t-display-xl { font-size: calc(${base} * 2.5); }
+`;
+            })()
+          : "",
         // Re-tint SVG icons/illustrations using brand tokens. Most
         // templates hard-code fill/stroke on <svg> shapes, so we need
         // several strategies:

@@ -72,29 +72,34 @@ function buildOverrideCss(overrides) {
     }
   }
   if (!lines.length) return "";
-  // Append typography-scale rules that re-express the rem-based
-  // compose-pages sizes as calc() against --base-font-size. Without
-  // this, changing basstorlek in the editor does nothing because
-  // rem resolves against the document root, not .page or :host.
-  //
-  // IMPORTANT: do NOT set font-size directly on .page — that would
-  // dominate any element that inherits (generic <p>, <div>) and
-  // shrink body copy in reports where text isn't wrapped in .t-body.
+  // Colors + fonts go in :root and win the cascade. Base-font-size
+  // scaling is appended ONLY if the author actually set one — an
+  // empty/absent override shouldn't rewrite the design-system
+  // typography classes, because that zeroed out body text in early
+  // iterations when var(--base-font-size, 11pt) failed in WeasyPrint's
+  // calc() parser on some edge cases.
+  let extra = "";
+  const basePx = overrides.base_font_size;
+  if (basePx) {
+    const base = /^\d+(\.\d+)?$/.test(String(basePx).trim()) ? `${basePx}pt` : basePx;
+    extra = `
+/* Typography scale tracks the author's chosen base size. Only emitted
+   when base_font_size is explicitly overridden so unset reports keep
+   the design-system.css defaults. */
+.t-body  { font-size: calc(${base} * 0.95); }
+.t-intro { font-size: calc(${base} * 1.05); }
+.t-h1    { font-size: calc(${base} * 1.5);  }
+.t-h2    { font-size: calc(${base} * 1.25); }
+.t-h3    { font-size: calc(${base} * 1.1);  }
+.t-caption { font-size: calc(${base} * 0.85); }
+.t-display    { font-size: calc(${base} * 2);   }
+.t-display-xl { font-size: calc(${base} * 2.5); }
+`;
+  }
   return `
 :root { ${lines.join(" ")} }
 a { color: var(--link, var(--primary)); }
-/* Typography scale tracks --base-font-size. These mirror compose-pages
-   defaults but in calc() form so the Rapport-stil basstorlek slider
-   actually affects rendered size. */
-.t-body  { font-size: calc(var(--base-font-size, 11pt) * 0.95); }
-.t-intro { font-size: calc(var(--base-font-size, 11pt) * 1.05); }
-.t-h1    { font-size: calc(var(--base-font-size, 11pt) * 1.5);  }
-.t-h2    { font-size: calc(var(--base-font-size, 11pt) * 1.25); }
-.t-h3    { font-size: calc(var(--base-font-size, 11pt) * 1.1);  }
-.t-caption { font-size: calc(var(--base-font-size, 11pt) * 0.85); }
-.t-display    { font-size: calc(var(--base-font-size, 11pt) * 2);   }
-.t-display-xl { font-size: calc(var(--base-font-size, 11pt) * 2.5); }
-`;
+${extra}`;
 }
 
 async function callRenderService(path, body, tenantId) {
