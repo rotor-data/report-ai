@@ -468,19 +468,21 @@ export default function EditorV2() {
   };
 
   // Variant swap — replace a module's html_content with a different
-  // library variant of the same component_type. Pulls the component's
-  // template and renders with whatever placeholder values we can extract
-  // from the current content JSONB.
+  // library variant of the same component_type. The template comes in
+  // with {{PLACEHOLDER}} tokens; we extract matching text from the
+  // currently-rendered html_cache (by heuristic — heading tags, hero
+  // classes etc.) and splice it into the template so the user doesn't
+  // lose their copy when switching e.g. "Editorial" → "Minimal" cover.
   const onSwapVariant = async (mod, componentId) => {
     if (!componentId) return;
     setBusy((b) => ({ ...b, [mod.id]: true }));
     setError("");
     try {
       const comp = await api.getV2Component(componentId);
-      // Pass as html_content — server will re-render on PATCH.
-      const res = await api.updateV2Module(mod.id, {
-        html_content: comp.item?.html_template || "",
-      });
+      const template = comp.item?.html_template || "";
+      const carry = extractTextsForVariantCarry(mod.html_cache || "");
+      const filled = fillTemplatePlaceholders(template, carry);
+      const res = await api.updateV2Module(mod.id, { html_content: filled });
       setModules((prev) => prev.map((m) => (m.id === mod.id ? res.item : m)));
     } catch (err) {
       setError(`Kunde inte byta variant: ${err.message}`);
@@ -1240,6 +1242,76 @@ function ModuleCard({
  * lets us bypass the brittle shadow-DOM dragstart that the floating
  * element bar depended on.
  */
+// ─── Variant-swap text carry ────────────────────────────────────────
+/**
+ * Pull the copy out of a rendered module so we can splice it into a
+ * sibling variant template. Maps common placeholders (TITLE, SUBTITLE,
+ * BODY, KICKER, AUTHOR, DATE, QUOTE, CITATION) from semantic HTML cues.
+ * Falls back to ordinal heading positions when no class hints exist.
+ */
+function extractTextsForVariantCarry(html) {
+  if (!html || typeof html !== "string") return {};
+  const out = {};
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString(html, "text/html");
+  } catch {
+    return {};
+  }
+
+  const firstText = (sel) => {
+    for (const s of sel.split(",")) {
+      const el = doc.querySelector(s.trim());
+      if (!el) continue;
+      const t = (el.textContent || "").trim();
+      if (t) return t;
+    }
+    return "";
+  };
+
+  // Primary title: explicit class first, then biggest heading
+  out.TITLE =
+    firstText("[data-placeholder=TITLE], .cov-title, .cov-hero__title, .hero-title, .title, h1") ||
+    firstText("h1, h2");
+  out.SUBTITLE =
+    firstText("[data-placeholder=SUBTITLE], .cov-subtitle, .subtitle, .hero-subtitle, .deck, .tagline") ||
+    firstText("h2, h3");
+  out.KICKER =
+    firstText("[data-placeholder=KICKER], .kicker, .eyebrow, .cov-kicker, .overline");
+  out.BODY =
+    firstText("[data-placeholder=BODY], .cov-body, .body, .intro, .lead, p");
+  out.AUTHOR =
+    firstText("[data-placeholder=AUTHOR], .author, .byline, .cov-author");
+  out.DATE =
+    firstText("[data-placeholder=DATE], .date, .cov-date, time");
+  out.QUOTE =
+    firstText("[data-placeholder=QUOTE], .pullquote, blockquote");
+  out.CITATION =
+    firstText("[data-placeholder=CITATION], .citation, cite, .pullquote-cite");
+
+  // Chapter break specific
+  out.CHAPTER_NUMBER = firstText("[data-placeholder=CHAPTER_NUMBER], .chapter-number, .chap-num");
+  out.CHAPTER_TITLE = firstText("[data-placeholder=CHAPTER_TITLE], .chapter-title");
+
+  // Drop empty entries so fillTemplatePlaceholders leaves the template
+  // default for anything we couldn't map.
+  for (const k of Object.keys(out)) if (!out[k]) delete out[k];
+  return out;
+}
+
+/**
+ * Substitute {{KEY}} tokens in a template with values. Unknown tokens
+ * are left in place — smyra-render uses its own placeholder pipeline
+ * at PDF time which will fill / strip anything we didn't handle here.
+ */
+function fillTemplatePlaceholders(template, values) {
+  if (!template) return template;
+  return template.replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (match, key) => {
+    if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
+    return match;
+  });
+}
+
 // ─── Token → CSS variable mapping ───────────────────────────────────
 // Keys must match v2-brand-css.js buildTokenCss so overrides surface
 // in the emitted stylesheet. Font keys quote the value (single quotes)
