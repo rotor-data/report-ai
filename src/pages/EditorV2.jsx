@@ -1135,37 +1135,48 @@ function InspectorPanels({
     <div className="ins-root">
       {/* ── Structure: parent crumbs + children list ───────────── */}
       <InsSection
-        title="Element"
+        title="Valt"
         open={structureOpen}
         onToggle={() => setStructureOpen(!structureOpen)}
-        subtitle={sel ? `<${sel.tagName}${sel.className ? "." + sel.className : ""}>` : "Inget valt"}
+        subtitle={sel ? sel.label : "Inget valt"}
       >
         {!sel ? (
-          <p className="ins-empty">Klicka på ett element i förhandsgranskningen.</p>
+          <p className="ins-empty">Klicka på ett element i förhandsgranskningen för att börja redigera.</p>
         ) : (
           <>
-            {/* Breadcrumbs: deepest-first parents, then current. Click a
-                parent to select it (useful for drilling out of a KPI
-                value back to the KPI card). */}
+            {/* "Gå upp" — single button; chain tooltip shows the path. */}
             {sel.parents?.length ? (
-              <div className="ins-crumbs">
-                {[...sel.parents].reverse().map((p, i, arr) => (
-                  <span key={i} style={{ display: "inline-flex", alignItems: "center" }}>
-                    <button
-                      className="ins-crumb"
-                      type="button"
-                      onClick={() => onSelectParent(arr.length - i)}
-                    >
-                      &lt;{p.tagName}{p.className ? "." + p.className : ""}&gt;
-                    </button>
-                    <span className="ins-crumb-sep">›</span>
-                  </span>
-                ))}
-                <span className="ins-crumb is-current">
-                  &lt;{sel.tagName}{sel.className ? "." + sel.className : ""}&gt;
-                </span>
+              <div className="ins-updrow">
+                <button
+                  type="button"
+                  className="ins-upbtn"
+                  onClick={() => onSelectParent(1)}
+                  title={
+                    "Gå upp till: " +
+                    [...sel.parents].reverse().map((p) => p.label).join(" › ")
+                  }
+                >
+                  <span className="ins-upicon">↑</span>
+                  <span>{sel.parents[0].label}</span>
+                </button>
+                {sel.parents.length > 1 && (
+                  <button
+                    type="button"
+                    className="ins-upbtn-small"
+                    onClick={() => onSelectParent(sel.parents.length)}
+                    title="Gå till översta nivån"
+                  >
+                    ↖ översta
+                  </button>
+                )}
               </div>
             ) : null}
+
+            {/* Big label + text/image preview */}
+            <div className="ins-heading-row">
+              <span className="ins-heading-icon">{sel.icon || "▫"}</span>
+              <span className="ins-heading-label">{sel.label}</span>
+            </div>
 
             {sel.textSample ? (
               <div className="ins-sample">{sel.textSample}</div>
@@ -1174,7 +1185,7 @@ function InspectorPanels({
             {/* Children — drill into KPI value, label, trend etc. */}
             {sel.children?.length ? (
               <>
-                <div className="ins-children-label">Innehåller ({sel.children.length})</div>
+                <div className="ins-children-label">Delar ({sel.children.length})</div>
                 <div className="ins-children">
                   {sel.children.map((c, i) => (
                     <button
@@ -1182,14 +1193,16 @@ function InspectorPanels({
                       type="button"
                       className="ins-child"
                       onClick={() => onSelectChild(i)}
-                      title={`Välj <${c.tagName}>`}
+                      title={`Välj: ${c.label}`}
                     >
-                      <span className="ins-child-tag">
-                        &lt;{c.tagName}{c.className ? "." + c.className : ""}&gt;
-                      </span>
-                      <span className="ins-child-text">
-                        {c.textPreview || (c.tagName === "img" ? "Bild" : "")}
-                      </span>
+                      <span className="ins-child-icon">{c.icon || "▫"}</span>
+                      <span className="ins-child-label">{c.label}</span>
+                      {c.textPreview && c.label !== c.textPreview ? (
+                        <span className="ins-child-preview">{c.textPreview}</span>
+                      ) : null}
+                      {c.childCount > 0 ? (
+                        <span className="ins-child-count">{c.childCount} delar</span>
+                      ) : null}
                     </button>
                   ))}
                 </div>

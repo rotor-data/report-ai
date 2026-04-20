@@ -35,6 +35,114 @@ function hasBlockChildren(el) {
   return false;
 }
 
+/**
+ * Safe class-name accessor — SVG elements expose `className` as an
+ * SVGAnimatedString object, not a plain string, so `.split()` crashes.
+ * Everything routes through here so the inspector can't blow up on
+ * chart markup or other embedded SVG.
+ */
+function firstClassName(el) {
+  if (!el) return "";
+  const raw =
+    typeof el.className === "string"
+      ? el.className
+      : (el.getAttribute?.("class") || "");
+  if (!raw) return "";
+  return raw.split(/\s+/).filter(Boolean)[0] || "";
+}
+
+/**
+ * Turn an element into a human-friendly label for the inspector — the
+ * user shouldn't have to read <div.kpi-card>. Tries class-based hints
+ * first (since brand components usually encode meaning in class names),
+ * then falls back to tag-based defaults, then to text content.
+ */
+function humanLabel(el) {
+  if (!el) return "Element";
+  const tag = el.tagName?.toLowerCase?.() || "";
+  const cls = firstClassName(el);
+  const text = (el.textContent || "").trim().replace(/\s+/g, " ");
+
+  // Class-name heuristics — order matters (most specific first).
+  const classMap = [
+    [/kpi[-_]?value|^val$|^value$|number$/i, "Siffra"],
+    [/kpi[-_]?label|^label$|caption$/i, "Etikett"],
+    [/kpi[-_]?trend|^trend|delta|change/i, "Trend"],
+    [/kpi[-_]?card|stat[-_]?card|metric/i, "KPI-kort"],
+    [/kpi[-_]?grid|stats?/i, "KPI-grupp"],
+    [/pullquote|blockquote/i, "Citat"],
+    [/callout|highlight|notice/i, "Utmärkning"],
+    [/eyebrow|kicker/i, "Rubrik-kicker"],
+    [/subtitle|tagline|deck/i, "Underrubrik"],
+    [/heading|headline|^title|h1|h2|h3/i, "Rubrik"],
+    [/body|paragraph|lead|intro/i, "Brödtext"],
+    [/cta|button|btn/i, "Knapp"],
+    [/logo|brand/i, "Logotyp"],
+    [/hero|cover/i, "Omslag"],
+    [/footer|colophon/i, "Sidfot"],
+    [/chapter/i, "Kapitelmarkering"],
+    [/toc/i, "Innehållsförteckning"],
+    [/^fact|fs-block|stat[-_]?strip/i, "Faktaruta"],
+    [/timeline/i, "Tidslinje"],
+    [/team|person/i, "Personkort"],
+    [/chart|graph|diagram/i, "Diagram"],
+    [/table/i, "Tabell"],
+  ];
+  for (const [re, label] of classMap) {
+    if (cls && re.test(cls)) return label;
+  }
+
+  // Tag-based defaults.
+  if (tag === "h1" || tag === "h2") return "Rubrik";
+  if (tag === "h3" || tag === "h4") return "Underrubrik";
+  if (tag === "h5" || tag === "h6") return "Småtitel";
+  if (tag === "p") return "Stycke";
+  if (tag === "img") return "Bild";
+  if (tag === "blockquote") return "Citat";
+  if (tag === "ul" || tag === "ol") return "Lista";
+  if (tag === "li") return "Listpunkt";
+  if (tag === "table") return "Tabell";
+  if (tag === "figure") return "Figur";
+  if (tag === "figcaption") return "Bildtext";
+  if (tag === "a") return "Länk";
+  if (tag === "button") return "Knapp";
+  if (tag === "span" || tag === "strong" || tag === "em") {
+    // Inline elements with short text get the text itself as label.
+    if (text && text.length < 40) return text.slice(0, 30);
+    return "Text";
+  }
+
+  if (tag === "div" || tag === "section" || tag === "article" || tag === "aside") {
+    if (el.children?.length > 0) return `Grupp (${el.children.length})`;
+    if (text && text.length < 40) return text.slice(0, 30);
+    return "Block";
+  }
+
+  return tag.toUpperCase();
+}
+
+/**
+ * Small icon glyph for the inspector's children list. Keeps the list
+ * scannable without needing tag labels.
+ */
+function elementIcon(el) {
+  if (!el) return "▫";
+  const tag = el.tagName?.toLowerCase?.() || "";
+  if (tag === "img") return "🖼";
+  if (/h[1-6]/.test(tag)) return "𝐇";
+  if (tag === "p") return "¶";
+  if (tag === "blockquote") return "❞";
+  if (tag === "ul" || tag === "ol") return "≣";
+  if (tag === "li") return "•";
+  if (tag === "a") return "↗";
+  if (tag === "button") return "▭";
+  if (tag === "table") return "⊞";
+  if (tag === "figure") return "▤";
+  if (tag === "svg") return "⊻";
+  if (el.children?.length > 0) return "▣";
+  return "▫";
+}
+
 // Standard paper sizes in millimeters. The preview tries to detect which
 // one the module HTML targets and size the frame accordingly.
 const PAPER_SIZES = {
@@ -432,7 +540,8 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     while (p && p !== root) {
       parents.push({
         tagName: p.tagName.toLowerCase(),
-        className: (p.className || "").split(/\s+/)[0] || "",
+        className: firstClassName(p),
+        label: humanLabel(p),
       });
       p = p.parentElement;
       if (parents.length > 6) break;
@@ -440,9 +549,12 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // Children — immediate only.
     const children = Array.from(selected.children || []).slice(0, 20).map((c) => ({
       tagName: c.tagName.toLowerCase(),
-      className: (c.className || "").split(/\s+/)[0] || "",
-      textPreview: (c.textContent || "").replace(/\s+/g, " ").trim().slice(0, 40),
+      className: firstClassName(c),
+      label: humanLabel(c),
+      icon: elementIcon(c),
+      textPreview: (c.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60),
       isText: EDITABLE_TEXT_TAGS.has(c.tagName.toLowerCase()) && !c.querySelector?.("img, svg, video") && !hasBlockChildren(c),
+      childCount: c.children?.length || 0,
     }));
 
     // Current inline styles the inspector can surface + reset.
@@ -452,7 +564,9 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     onSelectionChange({
       moduleId,
       tagName: tag,
-      className: (selected.className || "").split(/\s+/)[0] || "",
+      className: firstClassName(selected),
+      label: humanLabel(selected),
+      icon: elementIcon(selected),
       textSample,
       isEditable,
       isImage,
