@@ -175,11 +175,41 @@ export const handler = async (event) => {
         orderIndex = maxRows[0].max_idx + 1;
       }
 
+      // Attach to a page — either inherit from the sibling we're
+      // inserting after, or create a new page at the end. Without
+      // this the module is orphaned (page_id = null) and silently
+      // dropped from PDF rendering.
+      let pageId = null;
+      if (after_module_id) {
+        const sibling = await sql`
+          SELECT page_id FROM v2_report_modules
+          WHERE id = ${after_module_id} AND report_id = ${report_id} LIMIT 1
+        `;
+        pageId = sibling[0]?.page_id || null;
+      }
+      if (!pageId) {
+        // Create a new page slotted at the end of the report.
+        const newPageId = randomUUID();
+        const pageType = module_type === "cover" ? "cover"
+          : module_type === "back_cover" ? "back_cover"
+          : module_type === "chapter_break" ? "chapter_break"
+          : "content";
+        const maxRes = await sql`
+          SELECT COALESCE(MAX(page_number), 0) AS m FROM v2_report_pages WHERE report_id = ${report_id}
+        `;
+        const nextPageNum = (maxRes[0]?.m || 0) + 1;
+        await sql`
+          INSERT INTO v2_report_pages (id, report_id, page_number, page_type)
+          VALUES (${newPageId}, ${report_id}, ${nextPageNum}, ${pageType})
+        `;
+        pageId = newPageId;
+      }
+
       const newId = randomUUID();
       await sql`
-        INSERT INTO v2_report_modules (id, report_id, module_type, order_index, content, style, html_content)
+        INSERT INTO v2_report_modules (id, report_id, page_id, module_type, order_index, content, style, html_content)
         VALUES (
-          ${newId}, ${report_id}, ${module_type}, ${orderIndex},
+          ${newId}, ${report_id}, ${pageId}, ${module_type}, ${orderIndex},
           ${JSON.stringify(content || {})}::jsonb,
           ${JSON.stringify(style || {})}::jsonb,
           ${html_content || null}
@@ -225,7 +255,7 @@ export const handler = async (event) => {
     // shows up in the preview instantly.
     if (event.httpMethod === "POST" && moduleId && action === "duplicate") {
       const srcRows = await sql`
-        SELECT id, report_id, module_type, order_index, content, style,
+        SELECT id, report_id, page_id, module_type, order_index, content, style,
                html_content, html_cache, height_mm, background
         FROM v2_report_modules WHERE id = ${moduleId} LIMIT 1
       `;
@@ -243,10 +273,10 @@ export const handler = async (event) => {
       const newId = randomUUID();
       await sql`
         INSERT INTO v2_report_modules (
-          id, report_id, module_type, order_index,
+          id, report_id, page_id, module_type, order_index,
           content, style, html_content, html_cache, height_mm, background
         ) VALUES (
-          ${newId}, ${src.report_id}, ${src.module_type}, ${src.order_index + 1},
+          ${newId}, ${src.report_id}, ${src.page_id || null}, ${src.module_type}, ${src.order_index + 1},
           ${JSON.stringify(src.content || {})}::jsonb,
           ${JSON.stringify(src.style || {})}::jsonb,
           ${src.html_content || null},

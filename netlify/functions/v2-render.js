@@ -213,6 +213,49 @@ export const handler = async (event) => {
       `;
     }
 
+    // Repair orphaned modules: pages exist but some modules have
+    // page_id=null (happens when modules are added/duplicated after
+    // auto-paginate has already run — the insert path didn't set
+    // page_id, so they silently dropped out of rendering). Attach each
+    // orphan to a new page slotted at its order_index position.
+    const orphans = modules.filter((m) => !m.page_id);
+    if (orphans.length > 0) {
+      const { randomUUID } = await import("node:crypto");
+      // Sort by order_index so the new pages land in the right sequence
+      orphans.sort((a, b) => a.order_index - b.order_index);
+      for (const orphan of orphans) {
+        const pageId = randomUUID();
+        const pageType = orphan.module_type === "cover" ? "cover"
+          : orphan.module_type === "back_cover" ? "back_cover"
+          : orphan.module_type === "chapter_break" ? "chapter_break"
+          : "content";
+        // Pick a page_number that slots in roughly where the module
+        // sits in order_index. Since we can't reshuffle existing
+        // page_numbers here without more work, just append to the end
+        // with (max + 1 + i). Render order comes from order_index /
+        // page_number lexical sort below, so appending is fine for
+        // the per-page wrapping but the orphan will land at the
+        // bottom of the PDF. Better than disappearing.
+        const maxRes = await sql`
+          SELECT COALESCE(MAX(page_number), 0) AS m FROM v2_report_pages WHERE report_id = ${report_id}
+        `;
+        const nextPageNum = (maxRes[0]?.m || 0) + 1;
+        await sql`
+          INSERT INTO v2_report_pages (id, report_id, page_number, page_type)
+          VALUES (${pageId}, ${report_id}, ${nextPageNum}, ${pageType})
+        `;
+        await sql`
+          UPDATE v2_report_modules SET page_id = ${pageId} WHERE id = ${orphan.id}
+        `;
+        orphan.page_id = pageId;
+        console.warn(`[v2-render] repaired orphaned module ${orphan.id} (${orphan.module_type}) → page ${pageId}`);
+      }
+      pages = await sql`
+        SELECT id, page_number, page_type FROM v2_report_pages
+        WHERE report_id = ${report_id} ORDER BY page_number
+      `;
+    }
+
     if (!pages.length) {
       return json(event, 400, { error: "No pages or modules in report — nothing to render" });
     }
