@@ -183,7 +183,8 @@ export const handler = async (event) => {
 
   try {
     const [report] = await sql`
-      SELECT id, brand_id, template_id, tenant_id, document_css FROM v2_reports WHERE id = ${reportId} LIMIT 1
+      SELECT id, brand_id, template_id, tenant_id, document_css, style_overrides
+      FROM v2_reports WHERE id = ${reportId} LIMIT 1
     `;
     if (!report) return json(event, 404, { error: "Report not found" });
 
@@ -220,8 +221,19 @@ export const handler = async (event) => {
       }
     }
 
+    // Merge per-report overrides on top of the brand tokens. Shallow
+    // merge — any key present on style_overrides wins. Empty strings
+    // fall through to brand defaults so unsetting in the editor takes
+    // the author back to the brand-level look without breaking it.
+    const overrides = report.style_overrides || {};
+    const mergedTokens = { ...tokens };
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v === null || v === undefined || v === "") continue;
+      mergedTokens[k] = v;
+    }
+
     const fontFaceCss = buildFontFaceCss(fonts);
-    const tokenCss = buildTokenCss(tokens);
+    const tokenCss = buildTokenCss(mergedTokens);
 
     // Preferred path: the compose step has snapshotted a single document_css
     // that already contains brand vars + design-system + per-component CSS in
@@ -291,6 +303,14 @@ export const handler = async (event) => {
       css: bundle,
       logos,
       assets,
+      // Expose the underlying tokens so the editor's Rapport-stil panel
+      // can initialise its controls without re-parsing the CSS string.
+      // tokens = what's actually in effect (brand + overrides applied);
+      // brand_tokens = the pristine brand defaults (so "Återställ" works);
+      // overrides = what the author has set per-report.
+      tokens: mergedTokens,
+      brand_tokens: tokens,
+      overrides,
     });
   } catch (err) {
     console.error("[v2-brand-css]", err);

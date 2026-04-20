@@ -34,6 +34,12 @@ export default function EditorV2() {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // Active tokens = brand tokens merged with report-level overrides.
+  // Used by the "Rapport-stil" panel so controls reflect what's in
+  // effect (primary / accent / text / bg + heading/body font).
+  const [tokens, setTokens] = useState({});
+  const [brandTokens, setBrandTokens] = useState({}); // pristine brand defaults for "Återställ"
+  const [overrides, setOverrides] = useState({}); // per-report overrides
 
   const [selectedId, setSelectedId] = useState(null);
   const [busy, setBusy] = useState({});
@@ -263,6 +269,9 @@ export default function EditorV2() {
         setBrandCss(ctx?.css || "");
         setLogos(ctx?.logos || []);
         setAssets(ctx?.assets || []);
+        setTokens(ctx?.tokens || {});
+        setBrandTokens(ctx?.brand_tokens || {});
+        setOverrides(ctx?.overrides || r.item?.style_overrides || {});
         if (sorted.length > 0) setSelectedId(sorted[0].id);
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -602,6 +611,41 @@ export default function EditorV2() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.report_id, modules, selectedId]);
 
+  // Report-level style overrides (Rapport-stil panel). Writes to
+  // v2_reports.style_overrides and live-patches the existing brand
+  // CSS so the shadow-DOM preview reflects the change immediately
+  // without re-building every page. Debounced so color-picker drags
+  // don't spam the API.
+  const saveStyleTimerRef = useRef(null);
+  const patchStyleOverride = (key, value) => {
+    setOverrides((prev) => {
+      const next = { ...prev };
+      if (value === null || value === "") delete next[key];
+      else next[key] = value;
+      // Merged tokens follow suit so the panel and :host vars agree.
+      setTokens((t) => {
+        const merged = { ...brandTokens, ...next };
+        // Live-rewrite brandCss's :host (was :root) line for this key
+        // so existing preview shadow roots update instantly.
+        setBrandCss((css) => rewriteTokenInCss(css, key, merged[key]));
+        return merged;
+      });
+      // Debounced save
+      if (saveStyleTimerRef.current) clearTimeout(saveStyleTimerRef.current);
+      saveStyleTimerRef.current = setTimeout(async () => {
+        try {
+          await api.patchV2Report(session.report_id, { style_overrides: next });
+          setSaveStatus("saved");
+          setTimeout(() => setSaveStatus((s) => (s === "saved" ? "" : s)), 1200);
+        } catch (err) {
+          setError(`Kunde inte spara stil: ${err.message}`);
+        }
+      }, 450);
+      return next;
+    });
+    setSaveStatus("saving");
+  };
+
   // Element clipboard handlers — act on the currently-selected element
   // in whichever preview owns activeSelection.moduleId.
   const onCopyElement = () => {
@@ -919,6 +963,11 @@ export default function EditorV2() {
             activeSelection={activeSelection}
             variants={variants}
             hasClipboard={!!clipboard}
+            tokens={tokens}
+            brandTokens={brandTokens}
+            overrides={overrides}
+            onStyleOverride={patchStyleOverride}
+            onResetOverride={(key) => patchStyleOverride(key, "")}
             onGoToModule={(id) => {
               setSelectedId(id);
               const el = document.getElementById(`module-card-${id}`);
@@ -1133,6 +1182,61 @@ function ModuleCard({
  * lets us bypass the brittle shadow-DOM dragstart that the floating
  * element bar depended on.
  */
+// ─── Token → CSS variable mapping ───────────────────────────────────
+// Keeps the editor's panel keys in sync with what buildTokenCss emits
+// on the server. If you add a key here, also handle it in
+// v2-brand-css.js buildTokenCss or the override won't apply.
+const TOKEN_CSS_VAR = {
+  primary: "--primary",
+  accent: "--accent",
+  text: "--text",
+  bg: "--bg",
+  surface: "--surface",
+  heading_font: "--font-heading",
+  body_font: "--font-body",
+};
+
+/**
+ * Rewrite a single `--foo: <value>;` line inside the brand CSS string
+ * so the shadow root picks up changes without needing to re-build every
+ * module. Falls through when the variable isn't present (first use).
+ */
+function rewriteTokenInCss(css, tokenKey, newValue) {
+  if (!css) return css;
+  const varName = TOKEN_CSS_VAR[tokenKey];
+  if (!varName) return css;
+  const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(${escaped}\\s*:\\s*)[^;\\n]*`, "g");
+  if (!re.test(css)) {
+    // Add a trailing :host rule that wins cascade order.
+    return css + `\n:host{${varName}:${newValue};}`;
+  }
+  re.lastIndex = 0;
+  return css.replace(re, `$1${newValue}`);
+}
+
+// Curated system-font stacks for the font dropdowns. Each entry is
+// { label, value } — value lands in the --font-heading / --font-body
+// CSS variable.
+const SYSTEM_FONT_OPTIONS = [
+  { label: "System (fallback)", value: `ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif` },
+  { label: "Avenir Next", value: `"Avenir Next", "Avenir", "Segoe UI", sans-serif` },
+  { label: "Helvetica Neue", value: `"Helvetica Neue", Helvetica, Arial, sans-serif` },
+  { label: "Inter", value: `"Inter", "Segoe UI", sans-serif` },
+  { label: "SF Pro", value: `-apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif` },
+  { label: "Georgia", value: `Georgia, "Times New Roman", serif` },
+  { label: "Garamond", value: `"EB Garamond", Garamond, "Times New Roman", serif` },
+  { label: "Playfair Display", value: `"Playfair Display", Georgia, serif` },
+  { label: "Lora", value: `"Lora", Georgia, serif` },
+  { label: "IBM Plex Sans", value: `"IBM Plex Sans", "Segoe UI", sans-serif` },
+  { label: "IBM Plex Serif", value: `"IBM Plex Serif", Georgia, serif` },
+  { label: "Merriweather", value: `"Merriweather", Georgia, serif` },
+  { label: "Roboto", value: `"Roboto", "Segoe UI", sans-serif` },
+  { label: "Source Sans Pro", value: `"Source Sans Pro", "Segoe UI", sans-serif` },
+  { label: "Source Serif Pro", value: `"Source Serif Pro", Georgia, serif` },
+  { label: "Menlo (mono)", value: `"Menlo", "Consolas", monospace` },
+];
+
 function InspectorPanels({
   modules,
   activeModuleId,
@@ -1140,6 +1244,11 @@ function InspectorPanels({
   variants,
   hasClipboard,
   clipboardInfo,
+  tokens,
+  brandTokens,
+  overrides,
+  onStyleOverride,
+  onResetOverride,
   onGoToModule,
   onStartEdit,
   onDuplicateElement,
@@ -1157,6 +1266,7 @@ function InspectorPanels({
   onDeleteModule,
   onSwapVariant,
 }) {
+  const [reportStyleOpen, setReportStyleOpen] = useState(true);
   const [structureOpen, setStructureOpen] = useState(true);
   const [actionsOpen, setActionsOpen] = useState(true);
   const [styleOpen, setStyleOpen] = useState(true);
@@ -1187,6 +1297,80 @@ function InspectorPanels({
           </button>
         </div>
       ) : null}
+
+      {/* ── Rapport-stil: colors + fonts for the whole report ──── */}
+      <InsSection
+        title="Rapport-stil"
+        open={reportStyleOpen}
+        onToggle={() => setReportStyleOpen(!reportStyleOpen)}
+        subtitle={Object.keys(overrides || {}).length ? `${Object.keys(overrides).length} ändringar` : "Brand-standard"}
+      >
+        <div className="ins-style-grid">
+          <label className="ins-style-label">Primär</label>
+          <ColorField
+            value={tokens?.primary || ""}
+            brandDefault={brandTokens?.primary || ""}
+            isOverride={!!overrides?.primary}
+            onChange={(v) => onStyleOverride("primary", v)}
+            onReset={() => onResetOverride("primary")}
+          />
+
+          <label className="ins-style-label">Accent</label>
+          <ColorField
+            value={tokens?.accent || ""}
+            brandDefault={brandTokens?.accent || ""}
+            isOverride={!!overrides?.accent}
+            onChange={(v) => onStyleOverride("accent", v)}
+            onReset={() => onResetOverride("accent")}
+          />
+
+          <label className="ins-style-label">Textfärg</label>
+          <ColorField
+            value={tokens?.text || ""}
+            brandDefault={brandTokens?.text || ""}
+            isOverride={!!overrides?.text}
+            onChange={(v) => onStyleOverride("text", v)}
+            onReset={() => onResetOverride("text")}
+          />
+
+          <label className="ins-style-label">Bakgrund</label>
+          <ColorField
+            value={tokens?.bg || ""}
+            brandDefault={brandTokens?.bg || ""}
+            isOverride={!!overrides?.bg}
+            onChange={(v) => onStyleOverride("bg", v)}
+            onReset={() => onResetOverride("bg")}
+          />
+
+          <label className="ins-style-label">Rubriker</label>
+          <FontField
+            value={tokens?.heading_font || ""}
+            isOverride={!!overrides?.heading_font}
+            onChange={(v) => onStyleOverride("heading_font", v)}
+            onReset={() => onResetOverride("heading_font")}
+          />
+
+          <label className="ins-style-label">Brödtext</label>
+          <FontField
+            value={tokens?.body_font || ""}
+            isOverride={!!overrides?.body_font}
+            onChange={(v) => onStyleOverride("body_font", v)}
+            onReset={() => onResetOverride("body_font")}
+          />
+        </div>
+        {Object.keys(overrides || {}).length > 0 && (
+          <button
+            type="button"
+            className="ins-btn ins-btn--danger"
+            style={{ marginTop: 12, width: "100%" }}
+            onClick={() => {
+              for (const k of Object.keys(overrides)) onResetOverride(k);
+            }}
+          >
+            Återställ alla
+          </button>
+        )}
+      </InsSection>
 
       {/* ── Structure: parent crumbs + children list ───────────── */}
       <InsSection
@@ -1451,12 +1635,12 @@ function InspectorPanels({
 }
 
 // ─── Style field helpers ────────────────────────────────────────
-function ColorField({ value, onChange, onReset }) {
+function ColorField({ value, brandDefault, isOverride, onChange, onReset }) {
   // Normalise to a hex color for the <input type=color> display.
   // If value is a CSS name or rgb(), fall back to the browser default.
   const hex = toHex(value);
   return (
-    <div className="ins-color-row">
+    <div className={`ins-color-row${isOverride ? " is-override" : ""}`}>
       <input
         type="color"
         className="ins-color-input"
@@ -1470,9 +1654,45 @@ function ColorField({ value, onChange, onReset }) {
         style={{ flex: 1, minWidth: 0 }}
         value={value || ""}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="—"
+        placeholder={brandDefault || "—"}
       />
-      {value ? <button type="button" className="ins-color-reset" onClick={onReset}>Rensa</button> : null}
+      {isOverride ? (
+        <button type="button" className="ins-color-reset" onClick={onReset} title="Återställ till brand">
+          ↺
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function FontField({ value, isOverride, onChange, onReset }) {
+  // Match the current value against known labels; fall through to
+  // "Egen" if the CSS stack doesn't match any preset (edge case for
+  // legacy brand tokens).
+  const match = SYSTEM_FONT_OPTIONS.find((f) => f.value === value);
+  return (
+    <div className={`ins-color-row${isOverride ? " is-override" : ""}`}>
+      <select
+        className="ins-select"
+        style={{ flex: 1, minWidth: 0 }}
+        value={match?.value || ""}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="" disabled>— välj typsnitt —</option>
+        {SYSTEM_FONT_OPTIONS.map((f) => (
+          <option key={f.label} value={f.value}>
+            {f.label}
+          </option>
+        ))}
+        {value && !match ? (
+          <option value={value}>Egen (ej i listan)</option>
+        ) : null}
+      </select>
+      {isOverride ? (
+        <button type="button" className="ins-color-reset" onClick={onReset} title="Återställ till brand">
+          ↺
+        </button>
+      ) : null}
     </div>
   );
 }

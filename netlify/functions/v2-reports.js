@@ -27,6 +27,12 @@ const patchSchema = z.object({
   title: z.string().min(1).optional(),
   status: z.string().optional(),
   page_format: z.string().optional(),
+  // Per-report overrides on top of brand_tokens. Editor-side panels
+  // write keys like primary / accent / text / bg / heading_font /
+  // body_font. v2-brand-css merges this over the brand row at read
+  // time so the whole editor preview + PDF pick up the override
+  // without touching the shared brand.
+  style_overrides: z.record(z.string(), z.any()).optional(),
 });
 
 function parseBody(event) {
@@ -85,7 +91,7 @@ export const handler = async (event) => {
 
     if (event.httpMethod === "GET" && reportId) {
       const reports = await sql`
-        SELECT id, tenant_id, brand_id, template_id, title, document_type, status, created_at, updated_at
+        SELECT id, tenant_id, brand_id, template_id, title, document_type, status, page_format, style_overrides, created_at, updated_at
         FROM v2_reports WHERE id = ${reportId} LIMIT 1
       `;
       if (!reports[0]) return json(event, 404, { error: "Report not found" });
@@ -140,15 +146,20 @@ export const handler = async (event) => {
       // from the previous format is no longer returned as fresh. The blob key
       // already includes a timestamp, so old renders aren't overwritten — they
       // just stop being surfaced as the "current" PDF.
+      const styleJson =
+        parsed.data.style_overrides !== undefined
+          ? JSON.stringify(parsed.data.style_overrides)
+          : null;
       const rows = await sql`
         UPDATE v2_reports
         SET
           title = COALESCE(${parsed.data.title ?? null}, title),
           status = COALESCE(${parsed.data.status ?? null}, status),
           page_format = COALESCE(${parsed.data.page_format ?? null}, page_format),
+          style_overrides = COALESCE(${styleJson}::jsonb, style_overrides),
           updated_at = NOW()
         WHERE id = ${reportId}
-        RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, created_at, updated_at
+        RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, style_overrides, created_at, updated_at
       `;
       if (!rows[0]) return json(event, 404, { error: "Report not found" });
       return json(event, 200, { item: rows[0], page_format_changed: !!parsed.data.page_format });
