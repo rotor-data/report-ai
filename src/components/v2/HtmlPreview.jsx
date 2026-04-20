@@ -974,6 +974,47 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // tag selectables so the rewritten DOM is what the user sees and edits.
     resolveAssetRefs(root, logos, assets);
 
+    // Auto-recolor SVG icons/illustrations with brand tokens. Most
+    // templates hard-code hex fills, so the author can't change them
+    // by tweaking tokens. Walk every <svg> and:
+    //   - If it carries data-recolor="primary|accent|text", that wins
+    //     (CSS rule in brand-css.js handles the actual paint).
+    //   - Otherwise look at its first shape's existing fill to decide
+    //     which token it most likely wanted to be (dark = text, bright
+    //     = accent, primary-looking = primary). Rewrite all matching
+    //     fills on its descendants to currentColor + set the parent
+    //     element's color to the chosen CSS variable.
+    root.querySelectorAll("svg").forEach((svg) => {
+      if (svg.hasAttribute("data-recolor")) return;
+      if (svg.hasAttribute("data-no-recolor")) return;
+      // Collect unique fills on descendants
+      const shapes = svg.querySelectorAll("path, circle, rect, polygon, ellipse, line, polyline");
+      const fills = new Set();
+      shapes.forEach((s) => {
+        const inlineFill = s.getAttribute("fill");
+        const styleFill = (s.getAttribute("style") || "").match(/fill\s*:\s*([^;"]+)/i)?.[1];
+        const v = (inlineFill || styleFill || "").trim().toLowerCase();
+        if (v && v !== "none" && v !== "currentcolor" && !v.startsWith("url(")) {
+          fills.add(v);
+        }
+      });
+      if (fills.size === 0) return; // all transparent or already currentColor
+      // Pick the most common hex — crude but good enough
+      const primaryFill = fills.values().next().value;
+      // Rewrite descendants with matching fill → currentColor
+      shapes.forEach((s) => {
+        const f = (s.getAttribute("fill") || "").toLowerCase();
+        if (f && f === primaryFill) s.setAttribute("fill", "currentColor");
+        const style = s.getAttribute("style") || "";
+        if (style && /fill\s*:\s*[^;"]+/i.test(style)) {
+          s.setAttribute("style", style.replace(/fill\s*:\s*[^;"]+/i, "fill: currentColor"));
+        }
+      });
+      // Give the <svg> a predictable color — use --primary as default,
+      // the CSS rule above will take over if the template marks it.
+      if (!svg.style.color) svg.style.color = "var(--primary)";
+    });
+
     // Per-module background layer — sits behind the preview content.
     // Rendered as two stacked divs: image (with CSS filter) on bottom,
     // overlay+vignette gradients on top. All optional.

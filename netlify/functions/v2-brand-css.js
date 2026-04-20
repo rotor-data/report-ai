@@ -278,6 +278,28 @@ export const handler = async (event) => {
         // responds to the Rapport-stil slider without waiting for a
         // re-compose. em-based rules in design-system.css cascade.
         `.preview-root, .page { font-size: var(--base-font-size, 11pt); }`,
+        // Re-tint SVG icons/illustrations using brand tokens. Most
+        // templates hard-code fill/stroke on <svg> shapes, so we need
+        // several strategies:
+        // 1. Any svg with class "brand-primary"/"brand-accent"/"brand-text"
+        //    gets a direct fill/stroke from the token.
+        // 2. currentColor passes through color on the parent, so we
+        //    explicitly set color on svg's closest container using a
+        //    class convention.
+        // 3. A data-recolor="primary|accent|text" attribute on the svg
+        //    wins over anything above.
+        `
+svg.brand-primary, .text-primary svg { color: var(--primary); fill: var(--primary); }
+svg.brand-accent,  .text-accent  svg { color: var(--accent);  fill: var(--accent); }
+svg.brand-text,    .text-ink     svg { color: var(--text);    fill: var(--text); }
+svg[data-recolor="primary"] * { fill: var(--primary) !important; stroke: var(--primary); }
+svg[data-recolor="accent"]  * { fill: var(--accent)  !important; stroke: var(--accent); }
+svg[data-recolor="text"]    * { fill: var(--text)    !important; stroke: var(--text); }
+/* Generic: any SVG that explicitly uses currentColor already follows
+   the element's color. Make sure the inherited color is set from
+   whichever brand var the caller expects. */
+svg * { transition: fill .1s, stroke .1s; }
+`,
       ].join("\n\n");
     } else {
       // Legacy degraded fallback — tokens + @font-face + css_base only.
