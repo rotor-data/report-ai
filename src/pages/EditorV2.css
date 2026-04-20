@@ -889,6 +889,92 @@
   cursor: pointer;
 }
 
+/* Clipboard indicator — persistent when something is cut/copied */
+.smyra-editor .ins-clipboard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin: 12px 14px 0;
+  background: linear-gradient(160deg, #fff4f8 0%, #faeaf0 100%);
+  border: 1px solid var(--rose-500);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--ink);
+  box-shadow: 0 2px 6px rgba(184, 90, 115, 0.08);
+}
+.smyra-editor .ins-clipboard-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--rose-600);
+  color: #fff;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.smyra-editor .ins-clipboard-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.smyra-editor .ins-clipboard-label {
+  font-weight: 700;
+  color: var(--rose-800);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.smyra-editor .ins-clipboard-sample {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.smyra-editor .ins-clipboard-clear {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.smyra-editor .ins-clipboard-clear:hover {
+  background: rgba(126, 68, 90, 0.1);
+  color: var(--rose-800);
+}
+
+/* Per-page "Klistra in" button (in ModuleCard header) */
+.smyra-editor .module-card-paste {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  background: var(--rose-600);
+  color: #fff;
+  border: 1px solid var(--rose-700);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background .1s;
+  white-space: nowrap;
+}
+.smyra-editor .module-card-paste:hover:not(:disabled) {
+  background: var(--rose-700);
+}
+.smyra-editor .module-card-paste:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
 /* Copy / paste toast */
 .smyra-editor .ins-toast {
   position: fixed;

@@ -609,7 +609,17 @@ export default function EditorV2() {
     const payload = previewRefs.current[id]?.getClipboardPayload();
     if (!payload) return;
     setClipboard(payload);
-    flashToast(`Kopierad: <${payload.tagName}>`);
+    flashToast(`Kopierad: ${payload.label || payload.tagName}`);
+  };
+  // Cut = copy + delete in one gesture.
+  const onCutElement = () => {
+    const id = activeSelection?.moduleId;
+    const api = previewRefs.current[id];
+    const payload = api?.getClipboardPayload();
+    if (!payload) return;
+    setClipboard(payload);
+    api?.deleteSelected();
+    flashToast(`Klippt ut: ${payload.label || payload.tagName}`);
   };
   const onPasteElement = async (targetModuleId) => {
     if (!clipboard) return;
@@ -662,6 +672,9 @@ export default function EditorV2() {
       if (k === "c" && activeSelection) {
         e.preventDefault();
         onCopyElement();
+      } else if (k === "x" && activeSelection) {
+        e.preventDefault();
+        onCutElement();
       } else if (k === "v" && clipboard) {
         e.preventDefault();
         onPasteElement();
@@ -876,6 +889,7 @@ export default function EditorV2() {
                 showOverflow={showOverflow}
                 variants={variants[mod.module_type] || []}
                 componentDrag={componentDrag}
+                clipboard={clipboard}
                 busy={!!busy[mod.id]}
                 previewRefCb={(api) => {
                   if (api) previewRefs.current[mod.id] = api;
@@ -886,6 +900,7 @@ export default function EditorV2() {
                 onComponentDragStart={(info) => setComponentDrag(info)}
                 onComponentDragEnd={() => setComponentDrag(null)}
                 onMoveComponentHere={(info) => onMoveComponentToModule(info, mod.id)}
+                onPasteHere={() => onPasteElement(mod.id)}
                 onDuplicate={() => onDuplicateModule(mod)}
                 onDelete={() => onDeleteModule(mod)}
                 onSwapVariant={(vId) => onSwapVariant(mod, vId)}
@@ -915,7 +930,10 @@ export default function EditorV2() {
             onReplaceImage={() => previewRefs.current[activeSelection?.moduleId]?.openImagePicker()}
             onEditAlt={() => previewRefs.current[activeSelection?.moduleId]?.editAlt()}
             onCopyElement={onCopyElement}
+            onCutElement={onCutElement}
             onPasteElement={() => onPasteElement()}
+            clipboardInfo={clipboard}
+            onClearClipboard={() => setClipboard(null)}
             onSelectParent={(steps) => previewRefs.current[activeSelection?.moduleId]?.selectParent(steps)}
             onSelectChild={(i) => previewRefs.current[activeSelection?.moduleId]?.selectChildByIndex(i)}
             onSetStyle={(prop, val) => previewRefs.current[activeSelection?.moduleId]?.setStyle(prop, val)}
@@ -951,6 +969,7 @@ function ModuleCard({
   showOverflow,
   variants,
   componentDrag,
+  clipboard,
   busy,
   previewRefCb,
   onActivate,
@@ -958,6 +977,7 @@ function ModuleCard({
   onComponentDragStart,
   onComponentDragEnd,
   onMoveComponentHere,
+  onPasteHere,
   onDuplicate,
   onDelete,
   onSwapVariant,
@@ -1019,6 +1039,17 @@ function ModuleCard({
         </span>
         <span className="module-card-title">{moduleDisplayName(mod)}</span>
         <div className="module-card-actions">
+          {clipboard ? (
+            <button
+              className="module-card-paste"
+              type="button"
+              title={`Klistra in "${clipboard.label || clipboard.tagName}" på denna sida`}
+              onClick={(e) => { e.stopPropagation(); onPasteHere(); }}
+              disabled={busy}
+            >
+              📥 Klistra in
+            </button>
+          ) : null}
           {variants.length > 1 ? (
             <select
               className="module-card-variant"
@@ -1108,6 +1139,7 @@ function InspectorPanels({
   activeSelection,
   variants,
   hasClipboard,
+  clipboardInfo,
   onGoToModule,
   onStartEdit,
   onDuplicateElement,
@@ -1115,7 +1147,9 @@ function InspectorPanels({
   onReplaceImage,
   onEditAlt,
   onCopyElement,
+  onCutElement,
   onPasteElement,
+  onClearClipboard,
   onSelectParent,
   onSelectChild,
   onSetStyle,
@@ -1133,6 +1167,27 @@ function InspectorPanels({
 
   return (
     <div className="ins-root">
+      {/* ── Clipboard indicator (always when something's copied) ─ */}
+      {clipboardInfo ? (
+        <div className="ins-clipboard">
+          <span className="ins-clipboard-icon">{clipboardInfo.icon || "📋"}</span>
+          <span className="ins-clipboard-text">
+            <span className="ins-clipboard-label">{clipboardInfo.label || clipboardInfo.tagName}</span>
+            {clipboardInfo.textSample ? (
+              <span className="ins-clipboard-sample">{clipboardInfo.textSample}</span>
+            ) : null}
+          </span>
+          <button
+            type="button"
+            className="ins-clipboard-clear"
+            onClick={onClearClipboard}
+            title="Rensa urklipp"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+
       {/* ── Structure: parent crumbs + children list ───────────── */}
       <InsSection
         title="Valt"
@@ -1239,12 +1294,17 @@ function InspectorPanels({
               <span>Kopiera</span>
               <span className="ins-btn-kbd">⌘C</span>
             </button>
+            <button className="ins-btn" type="button" onClick={onCutElement}>
+              <span className="ins-btn-icon">✂</span>
+              <span>Klipp ut</span>
+              <span className="ins-btn-kbd">⌘X</span>
+            </button>
             <button
               className="ins-btn"
               type="button"
               disabled={!hasClipboard}
               onClick={onPasteElement}
-              title={hasClipboard ? "Klistra in på vald sida" : "Inget kopierat"}
+              title={hasClipboard ? "Klistra in här" : "Inget i urklipp"}
             >
               <span className="ins-btn-icon">📥</span>
               <span>Klistra in</span>

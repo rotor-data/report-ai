@@ -695,6 +695,8 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       return {
         sourceModuleId: moduleId,
         tagName: selected.tagName.toLowerCase(),
+        label: humanLabel(selected),
+        icon: elementIcon(selected),
         textSample: (selected.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60),
         outerHTML: selected.outerHTML,
       };
