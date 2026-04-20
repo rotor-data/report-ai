@@ -36,14 +36,37 @@ export const handler = async (event) => {
 
   try {
     const url = `${UNSPLASH_ENDPOINT}?query=${encodeURIComponent(q)}&per_page=24&orientation=landscape`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Client-ID ${key}` },
-      signal: AbortSignal.timeout(8_000),
-    });
+    // Unsplash can be slow from Netlify's us-east edge (cold-start +
+    // transatlantic hop). Try up to twice before giving up.
+    let res;
+    let lastErr;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        res = await fetch(url, {
+          headers: {
+            Authorization: `Client-ID ${key}`,
+            "Accept-Version": "v1",
+          },
+          signal: AbortSignal.timeout(18_000),
+        });
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    if (!res) {
+      return json(event, 504, {
+        error: `Unsplash timeout: ${lastErr?.message || "no response"}`,
+      });
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       return json(event, 502, { error: `Unsplash ${res.status}: ${text.slice(0, 200)}` });
     }
+    // Useful rate-limit diagnostics
+    const remaining = res.headers.get("x-ratelimit-remaining");
+    const total = res.headers.get("x-ratelimit-limit");
     const data = await res.json();
     // Keep only the fields the picker actually needs — smaller payload,
     // less surface for the access-key to leak through debugging.
@@ -58,7 +81,10 @@ export const handler = async (event) => {
       user: hit.user ? { name: hit.user.name, username: hit.user.username } : null,
       links: hit.links ? { html: hit.links.html } : null,
     }));
-    return json(event, 200, { results });
+    return json(event, 200, {
+      results,
+      rate_limit: remaining && total ? { remaining: Number(remaining), total: Number(total) } : undefined,
+    });
   } catch (err) {
     return json(event, 500, { error: err?.message || String(err) });
   }
