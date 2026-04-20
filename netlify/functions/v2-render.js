@@ -27,6 +27,54 @@ function parseBody(event) {
   }
 }
 
+/**
+ * Emit a :root/:host style block that sets the CSS variables for any
+ * tokens the author overrode in the Rapport-stil panel. Kept small and
+ * self-contained (same mapping as v2-brand-css.buildTokenCss) so the
+ * renderer gets the same semantics as the editor preview.
+ */
+function buildOverrideCss(overrides) {
+  if (!overrides || typeof overrides !== "object") return "";
+  const colorMap = {
+    primary_color: "--primary",
+    primary_dark_color: "--primary-dark",
+    secondary_color: "--secondary",
+    accent_color: "--accent",
+    text_color: "--text",
+    text_muted_color: "--text-muted",
+    bg_color: "--bg",
+    bg_light_color: "--bg-light",
+    surface_color: "--surface",
+    border_color: "--border",
+    link_color: "--link",
+    success_color: "--success",
+    warning_color: "--warning",
+    danger_color: "--danger",
+  };
+  const fontMap = {
+    font_display: "--font-display",
+    font_heading: "--font-heading",
+    font_body: "--font-body",
+  };
+  const lines = [];
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === null || v === undefined || v === "") continue;
+    if (colorMap[k]) { lines.push(`  ${colorMap[k]}: ${v};`); continue; }
+    if (fontMap[k])  { lines.push(`  ${fontMap[k]}: ${v};`); continue; }
+    if (k === "base_font_size") {
+      const val = /^\d+(\.\d+)?$/.test(String(v).trim()) ? `${v}pt` : v;
+      lines.push(`  --base-font-size: ${val};`);
+      continue;
+    }
+    if (k === "heading_scale") {
+      lines.push(`  --heading-scale: ${v};`);
+      continue;
+    }
+  }
+  if (!lines.length) return "";
+  return `:root { ${lines.join(" ")} }\na { color: var(--link, var(--primary)); }\n.preview-root, .page { font-size: var(--base-font-size, 11pt); }`;
+}
+
 async function callRenderService(path, body, tenantId) {
   const token = mintSmyraRenderToken({ tenantId });
   const res = await fetch(`${RENDER_SERVICE_URL}${path}`, {
@@ -98,7 +146,9 @@ export const handler = async (event) => {
 
   try {
     const reports = await sql`
-      SELECT id, tenant_id, brand_id, title, template_id, page_format, document_css FROM v2_reports WHERE id = ${report_id} LIMIT 1
+      SELECT id, tenant_id, brand_id, title, template_id, page_format,
+             document_css, style_overrides
+      FROM v2_reports WHERE id = ${report_id} LIMIT 1
     `;
     if (!reports.length) return json(event, 404, { error: "Report not found" });
     const report = reports[0];
@@ -108,7 +158,7 @@ export const handler = async (event) => {
       WHERE report_id = ${report_id} ORDER BY page_number
     `;
     const modules = await sql`
-      SELECT id, page_id, module_type, order_index, content, style, html_cache, html_content
+      SELECT id, page_id, module_type, order_index, content, style, html_cache, html_content, background
       FROM v2_report_modules WHERE report_id = ${report_id} ORDER BY order_index
     `;
 
@@ -148,16 +198,43 @@ export const handler = async (event) => {
       cssBase = templates[0]?.css_base || "";
     }
 
+    // Merge report-level style overrides on top of brand tokens so the
+    // PDF matches what the editor's Rapport-stil panel shows. Empty or
+    // null values fall through to brand defaults.
+    const overrides = report.style_overrides || {};
+    const mergedTokens = { ...(brand.tokens || {}) };
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v === null || v === undefined || v === "") continue;
+      mergedTokens[k] = v;
+    }
+
+    // Build a late-cascade override block so overrides beat any :root
+    // tokens baked into document_css at compose time. Uses the same
+    // buildTokenCss as v2-brand-css (shape-compatible).
+    const overrideCss = buildOverrideCss(overrides);
+
+    // Pass per-module background spec to the renderer so cover photos,
+    // gradients, vignettes and filters land in the PDF too.
+    const pagesWithBackgrounds = pages.map((p) => ({
+      ...p,
+      modules: modules
+        .filter((m) => m.page_id === p.id)
+        .map((m) => ({
+          ...m,
+          // background is a JSONB column, already parsed. Safe to pass
+          // through as-is — smyra-render builds absolutely-positioned
+          // layers with CSS filter + gradient background-image.
+          background: m.background || null,
+        })),
+    }));
+
     const pdfResult = await callRenderService("/render/pdf", {
       report_id,
       title: report.title,
       mode,
       page_format: report.page_format || 'a4_portrait',
-      pages: pages.map((p) => ({
-        ...p,
-        modules: modules.filter((m) => m.page_id === p.id),
-      })),
-      brand_tokens: brand.tokens,
+      pages: pagesWithBackgrounds,
+      brand_tokens: mergedTokens,
       brand_fonts: brand.fonts,
       brand_logos: brand.logos,
       css_base: cssBase,
@@ -166,6 +243,12 @@ export const handler = async (event) => {
       // When present, smyra-render layers it over its generic defaults so
       // WeasyPrint output matches the editor preview exactly.
       document_css: report.document_css ?? null,
+      // Late-cascade rules so report-level overrides beat the :root
+      // tokens that were baked into document_css at compose time —
+      // same approach as v2-brand-css for the editor preview.
+      document_css_overrides: overrideCss,
+      // Also include raw overrides so smyra-render can log / debug.
+      style_overrides: overrides,
     }, report.tenant_id);
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

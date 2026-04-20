@@ -282,10 +282,17 @@ export const handler = async (event) => {
         // Default <a> rule so link color actually applies — brand
         // stylesheets often forget this.
         `a { color: var(--link, var(--primary)); }`,
-        // Apply base font size to the page root so body/paragraph text
-        // responds to the Rapport-stil slider without waiting for a
-        // re-compose. em-based rules in design-system.css cascade.
-        `.preview-root, .page { font-size: var(--base-font-size, 11pt); }`,
+        // Apply base font size. compose-pages uses rem-based sizes on
+        // .t-body / .t-h1 / etc. which resolve against the document
+        // root, NOT .preview-root. So we set it on :host (shadow root
+        // host) AND html, and also ship a scaling multiplier for any
+        // pt-based rules further down the stack.
+        //
+        // Trick: browsers compute 1rem inside a shadow root against
+        // the light-DOM <html> font-size, but Chrome respects :host
+        // font-size when nothing higher wins. Set both for safety.
+        `:host, html { font-size: var(--base-font-size, 11pt); }
+         .preview-root, .page { font-size: var(--base-font-size, 11pt); }`,
         // Re-tint SVG icons/illustrations using brand tokens. Most
         // templates hard-code fill/stroke on <svg> shapes, so we need
         // several strategies:
