@@ -755,7 +755,7 @@ export default function EditorV2() {
                   {(selectedModule.order_index ?? 0) + 1}
                 </span>
                 <span className="canvas-title">{moduleDisplayName(selectedModule)}</span>
-                <span className="canvas-hint">Dubbelklicka på text för att redigera · Klicka på element för att ta bort eller duplicera</span>
+                <span className="canvas-hint">Klicka på ett element för att välja · ✎ redigerar text · ⋮⋮ drar till annan sida · 🗑 tar bort</span>
               </div>
               <HtmlPreview
                 html={selectedModule.html_cache}

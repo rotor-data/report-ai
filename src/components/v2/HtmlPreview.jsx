@@ -380,6 +380,10 @@ export default function HtmlPreview({
   // Ref wrapper so pushUndoSnapshot can reach getUpdatedHtml defined later
   // in the closure without circular init.
   const getUpdatedHtmlRef = useRef(null);
+  // Ref exposes the shadow-DOM enterEditMode helper to the React-rendered
+  // element bar so the ✎ button can put the selected element into
+  // contenteditable from light DOM.
+  const enterEditModeRef = useRef(null);
 
   const injectHtml = useCallback((node) => {
     if (!node) return;
@@ -607,8 +611,6 @@ export default function HtmlPreview({
       const el = findSelectable(e.target, root);
       if (!el) {
         clearSelection(shadow);
-        // Unmark any previously draggable element
-        root.querySelectorAll("[draggable=\"true\"]").forEach((n) => n.removeAttribute("draggable"));
         setSelected(null);
         setBarPos(null);
         return;
@@ -617,86 +619,32 @@ export default function HtmlPreview({
       if (el.getAttribute("contenteditable") === "true") return;
 
       clearSelection(shadow);
-      // Strip draggable on the previously selected element, then mark the
-      // new one. draggable=true only on the selected subtree so text
-      // selection elsewhere stays usable.
-      root.querySelectorAll("[draggable=\"true\"]").forEach((n) => n.removeAttribute("draggable"));
       el.classList.add("el-selected");
-      if (moduleId) el.setAttribute("draggable", "true");
       setSelected(el);
 
       const rect = el.getBoundingClientRect();
       const containerRect = node.getBoundingClientRect();
       setBarPos({
-        left: rect.left - containerRect.left + rect.width / 2 - 60,
+        left: rect.left - containerRect.left + rect.width / 2 - 80,
         top: rect.top - containerRect.top - 36,
       });
     });
 
-    // Component drag — fires when the user drags the selected element
-    // out of the preview (typically onto a sidebar item to move it to
-    // another page). We tag the source node with a short-lived
-    // data-editor-moving attribute so the parent can locate and strip
-    // it from html_cache after the server PATCHes commit.
-    frame.addEventListener("dragstart", (e) => {
-      if (!moduleId) return;
-      // Only honor drags that originate on a selected, draggable node.
-      const dragEl = e.target?.closest?.("[draggable=\"true\"]");
-      if (!dragEl) return;
-      const tempId = `drag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-      dragEl.setAttribute("data-editor-moving", tempId);
-      const outerHTML = dragEl.outerHTML;
-      // Remove the temp attribute from the serialized copy so the
-      // destination page doesn't inherit it.
-      const cleanHtml = outerHTML.replace(
-        new RegExp(`\\sdata-editor-moving="${tempId}"`),
-        ""
-      );
-      try {
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData(
-          "application/x-smyra-component",
-          JSON.stringify({ sourceModuleId: moduleId, tempId, outerHTML: cleanHtml })
-        );
-        // Set a text fallback so some sidebars show a drag image / tooltip.
-        e.dataTransfer.setData("text/plain", `[komponent: ${dragEl.tagName.toLowerCase()}]`);
-      } catch {
-        /* dataTransfer is read-only in some edge cases — bail silently */
-      }
-      dragEl.style.opacity = "0.4";
-      if (onComponentDragStart) onComponentDragStart({ sourceModuleId: moduleId, tempId, outerHTML: cleanHtml });
-    });
-
-    frame.addEventListener("dragend", (e) => {
-      const dragEl = e.target?.closest?.("[data-editor-moving]");
-      if (dragEl) dragEl.style.opacity = "";
-      if (onComponentDragEnd) onComponentDragEnd();
-    });
-
-    // Double-click text → inline edit
-    frame.addEventListener("dblclick", (e) => {
-      const el = findSelectable(e.target, root);
-      if (!el) return;
+    // Turn an element into an in-place contenteditable. Factored out so
+    // both the double-click gesture and the ✎ button on the element bar
+    // can invoke it. Returns true if entering edit mode succeeded.
+    const enterEditMode = (el) => {
+      if (!el) return false;
       const tag = el.tagName.toLowerCase();
-      if (!EDITABLE_TEXT_TAGS.has(tag)) return;
-      e.stopPropagation();
-      e.preventDefault();
+      if (!EDITABLE_TEXT_TAGS.has(tag)) return false;
+      if (el.querySelector("img, svg, video")) return false;
+      if (hasBlockChildren(el)) return false;
 
-      // Don't step on nested clicks — if the el has complex children
-      // with their own meaning (img, svg, video, chart, another module)
-      // or is a layout wrapper with block children, refuse and let the
-      // user drill into the child instead.
-      if (el.querySelector("img, svg, video")) return;
-      if (hasBlockChildren(el)) return;
-
-      // Snapshot BEFORE editing so Cmd/Ctrl+Z jumps back to pre-edit state
       pushUndoSnapshot();
-
       el.setAttribute("contenteditable", "true");
       el.setAttribute("spellcheck", "true");
       el.focus();
 
-      // Place caret at end of existing text for "append" feel
       const range = node.ownerDocument.createRange();
       range.selectNodeContents(el);
       range.collapse(false);
@@ -715,10 +663,6 @@ export default function HtmlPreview({
       };
       const onKey = (ev) => {
         if (ev.key === "Escape") { ev.preventDefault(); finish(); return; }
-        // Enter in a block-level element → close (finish). Inside <p>/<li>
-        // Enter should create a new paragraph/item; Shift+Enter stays as
-        // <br> in both cases. This matches user expectations from docs
-        // editors.
         if (ev.key === "Enter" && !ev.shiftKey) {
           if (tag === "p" || tag === "li") {
             // let browser insert new <p>/<li>
@@ -728,7 +672,6 @@ export default function HtmlPreview({
             return;
           }
         }
-        // Inline formatting shortcuts
         const mod = ev.metaKey || ev.ctrlKey;
         if (mod && !ev.altKey) {
           const k = ev.key.toLowerCase();
@@ -736,15 +679,11 @@ export default function HtmlPreview({
           if (k === "i") { ev.preventDefault(); execFormat("italic"); return; }
           if (k === "u") { ev.preventDefault(); execFormat("underline"); return; }
           if (k === "k") { ev.preventDefault(); promptLink(); return; }
-          // Undo/redo: fall through to document default — browser handles
-          // the contenteditable stack natively within the element.
         }
       };
-      // Show/hide format toolbar based on selection
       const onMouseup = () => {
         const selection = node.ownerDocument.getSelection?.();
         if (!selection || selection.isCollapsed) { setFormatBar(null); return; }
-        // Keep the toolbar anchored to selection rectangle
         const rng = selection.getRangeAt(0);
         const rect = rng.getBoundingClientRect();
         const containerRect = node.getBoundingClientRect();
@@ -759,6 +698,20 @@ export default function HtmlPreview({
       el.addEventListener("keydown", onKey);
       el.addEventListener("mouseup", onMouseup);
       el.addEventListener("keyup", onMouseup);
+      return true;
+    };
+    // Expose through a ref so React handlers in light DOM can call it.
+    enterEditModeRef.current = enterEditMode;
+
+    // Double-click text → inline edit (delegates to enterEditMode which
+    // is also invoked by the ✎ button on the element bar).
+    frame.addEventListener("dblclick", (e) => {
+      const el = findSelectable(e.target, root);
+      if (!el) return;
+      if (!EDITABLE_TEXT_TAGS.has(el.tagName.toLowerCase())) return;
+      e.stopPropagation();
+      e.preventDefault();
+      enterEditMode(el);
     });
 
     // Drag-n-drop from desktop → open picker prefilled with the file
@@ -967,6 +920,79 @@ export default function HtmlPreview({
             zIndex: 10,
           }}
         >
+          {/* Drag handle — draggable element in light DOM so browsers
+              reliably fire drag events. We read outerHTML from the
+              currently-selected shadow-DOM element at dragstart time
+              and tag it with a temporary marker the parent uses to
+              locate-and-strip on successful drop. */}
+          {moduleId && (
+            <button
+              title="Dra till en annan sida"
+              draggable="true"
+              onDragStart={(e) => {
+                if (!selected || !moduleId) return;
+                const tempId = `drag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+                selected.setAttribute("data-editor-moving", tempId);
+                const outerHTML = selected.outerHTML;
+                const cleanHtml = outerHTML.replace(
+                  new RegExp(`\\sdata-editor-moving="${tempId}"`),
+                  ""
+                );
+                try {
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData(
+                    "application/x-smyra-component",
+                    JSON.stringify({ sourceModuleId: moduleId, tempId, outerHTML: cleanHtml })
+                  );
+                  e.dataTransfer.setData("text/plain", `[komponent: ${selected.tagName.toLowerCase()}]`);
+                } catch { /* noop */ }
+                selected.style.opacity = "0.4";
+                if (onComponentDragStart) {
+                  onComponentDragStart({ sourceModuleId: moduleId, tempId, outerHTML: cleanHtml });
+                }
+              }}
+              onDragEnd={() => {
+                if (selected) selected.style.opacity = "";
+                if (onComponentDragEnd) onComponentDragEnd();
+              }}
+              style={{
+                width: 28, height: 28, borderRadius: 4, border: "none",
+                background: "transparent", color: "#fff",
+                cursor: "grab", fontSize: 14,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                userSelect: "none",
+              }}
+              onMouseDown={(e) => { e.currentTarget.style.cursor = "grabbing"; }}
+              onMouseUp={(e) => { e.currentTarget.style.cursor = "grab"; }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "#5b9bd5"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+            >
+              ⋮⋮
+            </button>
+          )}
+          {/* Edit text — enters contenteditable on the selected element.
+              Double-click still works as a shortcut. */}
+          {selected && EDITABLE_TEXT_TAGS.has(selected.tagName?.toLowerCase?.() || "") && (
+            <button
+              title="Redigera text"
+              onClick={() => {
+                const ok = enterEditModeRef.current?.(selected);
+                if (!ok) {
+                  // Element has block children / img / svg — give a hint.
+                  alert("Det här elementet innehåller andra block. Välj ett mer specifikt textfält.");
+                }
+              }}
+              style={{
+                width: 28, height: 28, borderRadius: 4, border: "none",
+                background: "transparent", color: "#fff", cursor: "pointer",
+                fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "#2e7b58"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+            >
+              ✎
+            </button>
+          )}
           {selected.tagName === "IMG" && (
             <>
               <button
