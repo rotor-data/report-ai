@@ -65,6 +65,21 @@ export default function EditorV2() {
   // Cached once per brand so the dropdown is instant.
   const [variants, setVariants] = useState({}); // { [component_type]: [{id, variant_name, label, is_default}] }
 
+  // Design-inspection toggles — persisted to localStorage per-session so
+  // the author doesn't have to flip them every time they reload the tab.
+  const [showGrid, setShowGrid] = useState(() => {
+    try { return localStorage.getItem("smyra-editor-grid") === "1"; } catch { return false; }
+  });
+  const [showOverflow, setShowOverflow] = useState(() => {
+    try { return localStorage.getItem("smyra-editor-overflow") !== "0"; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("smyra-editor-grid", showGrid ? "1" : "0"); } catch {}
+  }, [showGrid]);
+  useEffect(() => {
+    try { localStorage.setItem("smyra-editor-overflow", showOverflow ? "1" : "0"); } catch {}
+  }, [showOverflow]);
+
   // Verify token + load report + brand CSS
   useEffect(() => {
     let cancelled = false;
@@ -454,6 +469,26 @@ export default function EditorV2() {
           <button
             className="btn-ghost"
             type="button"
+            aria-pressed={showGrid}
+            onClick={() => setShowGrid((g) => !g)}
+            title="Visa 12-kolumners rutnät"
+            style={showGrid ? { background: "#faeef3", borderColor: "var(--rose-500)" } : undefined}
+          >
+            ⊞ Rutnät
+          </button>
+          <button
+            className="btn-ghost"
+            type="button"
+            aria-pressed={showOverflow}
+            onClick={() => setShowOverflow((v) => !v)}
+            title="Markera innehåll som spiller över sidan"
+            style={showOverflow ? { background: "#faeef3", borderColor: "var(--rose-500)" } : undefined}
+          >
+            ▼ Överspill
+          </button>
+          <button
+            className="btn-ghost"
+            type="button"
             disabled={undoCount === 0}
             onClick={onUndoModuleAction}
             title="Ångra senaste modul-ändring (⌘⇧Z)"
@@ -552,6 +587,8 @@ export default function EditorV2() {
                 tenantId={session?.report?.tenant_id || null}
                 onHtmlChange={(newHtml) => onLiveHtmlChange(selectedModule.id, newHtml)}
                 zoom={0.55}
+                showGrid={showGrid}
+                showOverflow={showOverflow}
               />
             </>
           ) : (

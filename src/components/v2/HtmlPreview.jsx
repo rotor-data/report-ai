@@ -339,6 +339,8 @@ export default function HtmlPreview({
   interactive = true,
   lang = "sv",
   tenantId = null,
+  showGrid = false,
+  showOverflow = true,
 }) {
   const containerRef = useRef(null);
   const [selected, setSelected] = useState(null);
@@ -349,6 +351,10 @@ export default function HtmlPreview({
   // image" from the element action bar. target is the DOM node to rewire
   // once the dialog returns a pick.
   const [imagePicker, setImagePicker] = useState(null); // { target } | null
+  // Overflow state: populated after injection when measured preview-root
+  // height > page height. Rendered as a red marker at the page boundary.
+  // Null = no overflow detected (or still measuring).
+  const [overflow, setOverflow] = useState(null); // { overBy, pageH, actualH } | null
   // Local undo/redo stack of HTML snapshots. We push BEFORE any destructive
   // change (typing, delete, duplicate) and pop on Cmd/Ctrl+Z. Separate from
   // the server-side save history — this is just for live editing.
@@ -424,6 +430,53 @@ export default function HtmlPreview({
       .page-frame > .preview-root.needs-padding {
         padding: var(--mg-top, 20mm) var(--mg-inner, 18mm) var(--mg-bottom, 20mm) var(--mg-outer, 18mm);
       }
+      /* 12-column grid overlay, toggled via .show-grid on .page-frame.
+         Uses CSS repeating-linear-gradient so it costs nothing at render
+         time and doesn't interfere with pointer events. The column width
+         is (100% / 12) and the lines are a 1mm-wide semi-transparent
+         magenta tint so they stand out against both light and dark
+         backgrounds in covers. */
+      .page-frame.show-grid::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 5;
+        background:
+          repeating-linear-gradient(
+            to right,
+            rgba(232, 88, 143, 0.18) 0,
+            rgba(232, 88, 143, 0.18) 1px,
+            transparent 1px,
+            transparent calc(100% / 12)
+          );
+        border-left: 1px solid rgba(232, 88, 143, 0.28);
+        border-right: 1px solid rgba(232, 88, 143, 0.28);
+      }
+      /* Overflow marker — a red horizontal bar at the nominal page
+         boundary, shown when content exceeds page height. */
+      .page-frame .overflow-marker {
+        position: absolute;
+        left: -6px;
+        right: -6px;
+        height: 2px;
+        background: #c0392b;
+        box-shadow: 0 0 0 2px rgba(192, 57, 43, 0.25);
+        pointer-events: none;
+        z-index: 6;
+      }
+      .page-frame .overflow-marker::after {
+        content: attr(data-label);
+        position: absolute;
+        right: 0;
+        top: -20px;
+        background: #c0392b;
+        color: #fff;
+        font: 600 10px/1 ui-sans-serif, system-ui, sans-serif;
+        padding: 3px 6px;
+        border-radius: 3px;
+        white-space: nowrap;
+      }
       ${interactive ? `
       .preview-root [data-editor-selectable]:hover {
         outline: 1px dashed rgba(91,155,213,0.55);
@@ -453,7 +506,7 @@ export default function HtmlPreview({
 
     // 3. Page frame sized to detected paper size
     const frame = document.createElement("div");
-    frame.className = "page-frame";
+    frame.className = "page-frame" + (showGrid ? " show-grid" : "");
     frame.style.transform = `scale(${zoom})`;
     // Language hint — helps spell-check + hyphenation pick the right
     // dictionary. Default "sv" for Rotor; override via prop.
@@ -498,6 +551,38 @@ export default function HtmlPreview({
     const pxPerMm = 3.78; // 96dpi
     node.style.height = `${(pageSize.h * pxPerMm * zoom) + 40}px`;
     node.style.minWidth = `${(pageSize.w * pxPerMm * zoom) + 40}px`;
+
+    // Overflow detection — runs once the browser has laid out the page.
+    // We measure the preview-root's actual scrollHeight (in px) and
+    // compare against the nominal page height. If it overflows by more
+    // than ~2mm we render a red bar at the page boundary. Requires
+    // rAF to wait for font + image layout.
+    if (showOverflow) {
+      requestAnimationFrame(() => {
+        // Remove any stale markers from a previous injection
+        frame.querySelectorAll(".overflow-marker").forEach((m) => m.remove());
+        const rootEl = frame.querySelector(".preview-root");
+        if (!rootEl) return;
+        const pageH = pageSize.h * pxPerMm;
+        const actualH = rootEl.scrollHeight;
+        const overBy = actualH - pageH;
+        if (overBy > 8) {
+          const marker = document.createElement("div");
+          marker.className = "overflow-marker";
+          marker.style.top = `${pageH}px`;
+          marker.setAttribute(
+            "data-label",
+            `+${Math.round(overBy / pxPerMm)} mm över sidan`
+          );
+          frame.appendChild(marker);
+          setOverflow({ overBy, pageH, actualH });
+        } else {
+          setOverflow(null);
+        }
+      });
+    } else {
+      setOverflow(null);
+    }
 
     if (!interactive) return;
 
@@ -676,12 +761,12 @@ export default function HtmlPreview({
     // shadow (e.g. user just clicked a toolbar button that blurred the
     // contenteditable).
     node.ownerDocument.addEventListener("keydown", onDocKey);
-  }, [html, brandCss, logos, assets, zoom, interactive, onHtmlChange]);
+  }, [html, brandCss, logos, assets, zoom, interactive, onHtmlChange, showGrid, showOverflow]);
 
-  // Re-run injection when html/brandCss/logos/assets change
+  // Re-run injection when html/brandCss/logos/assets/inspect-flags change
   useEffect(() => {
     if (containerRef.current) injectHtml(containerRef.current);
-  }, [html, brandCss, logos, assets, zoom, interactive, injectHtml]);
+  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, injectHtml]);
 
   // Make getUpdatedHtml reachable from pushUndoSnapshot's ref callback
   useEffect(() => { getUpdatedHtmlRef.current = getUpdatedHtml; });
