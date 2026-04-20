@@ -282,17 +282,22 @@ export const handler = async (event) => {
         // Default <a> rule so link color actually applies — brand
         // stylesheets often forget this.
         `a { color: var(--link, var(--primary)); }`,
-        // Apply base font size. compose-pages uses rem-based sizes on
-        // .t-body / .t-h1 / etc. which resolve against the document
-        // root, NOT .preview-root. So we set it on :host (shadow root
-        // host) AND html, and also ship a scaling multiplier for any
-        // pt-based rules further down the stack.
-        //
-        // Trick: browsers compute 1rem inside a shadow root against
-        // the light-DOM <html> font-size, but Chrome respects :host
-        // font-size when nothing higher wins. Set both for safety.
-        `:host, html { font-size: var(--base-font-size, 11pt); }
-         .preview-root, .page { font-size: var(--base-font-size, 11pt); }`,
+        // Base-size scaling via calc() on typography classes — the
+        // rem-based compose-pages sizes resolve against <html>, so
+        // setting font-size on .page silently shrinks generic <p>/<div>
+        // that don't carry a .t-* class. Targeting the classes by name
+        // scales body/heading copy without affecting inline images /
+        // grid columns etc. Mirror is in v2-render.buildOverrideCss.
+        `
+.t-body  { font-size: calc(var(--base-font-size, 11pt) * 0.95); }
+.t-intro { font-size: calc(var(--base-font-size, 11pt) * 1.05); }
+.t-h1    { font-size: calc(var(--base-font-size, 11pt) * 1.5);  }
+.t-h2    { font-size: calc(var(--base-font-size, 11pt) * 1.25); }
+.t-h3    { font-size: calc(var(--base-font-size, 11pt) * 1.1);  }
+.t-caption { font-size: calc(var(--base-font-size, 11pt) * 0.85); }
+.t-display    { font-size: calc(var(--base-font-size, 11pt) * 2);   }
+.t-display-xl { font-size: calc(var(--base-font-size, 11pt) * 2.5); }
+`,
         // Re-tint SVG icons/illustrations using brand tokens. Most
         // templates hard-code fill/stroke on <svg> shapes, so we need
         // several strategies:

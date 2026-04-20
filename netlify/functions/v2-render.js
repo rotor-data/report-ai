@@ -72,7 +72,29 @@ function buildOverrideCss(overrides) {
     }
   }
   if (!lines.length) return "";
-  return `:root { ${lines.join(" ")} }\na { color: var(--link, var(--primary)); }\n.preview-root, .page { font-size: var(--base-font-size, 11pt); }`;
+  // Append typography-scale rules that re-express the rem-based
+  // compose-pages sizes as calc() against --base-font-size. Without
+  // this, changing basstorlek in the editor does nothing because
+  // rem resolves against the document root, not .page or :host.
+  //
+  // IMPORTANT: do NOT set font-size directly on .page — that would
+  // dominate any element that inherits (generic <p>, <div>) and
+  // shrink body copy in reports where text isn't wrapped in .t-body.
+  return `
+:root { ${lines.join(" ")} }
+a { color: var(--link, var(--primary)); }
+/* Typography scale tracks --base-font-size. These mirror compose-pages
+   defaults but in calc() form so the Rapport-stil basstorlek slider
+   actually affects rendered size. */
+.t-body  { font-size: calc(var(--base-font-size, 11pt) * 0.95); }
+.t-intro { font-size: calc(var(--base-font-size, 11pt) * 1.05); }
+.t-h1    { font-size: calc(var(--base-font-size, 11pt) * 1.5);  }
+.t-h2    { font-size: calc(var(--base-font-size, 11pt) * 1.25); }
+.t-h3    { font-size: calc(var(--base-font-size, 11pt) * 1.1);  }
+.t-caption { font-size: calc(var(--base-font-size, 11pt) * 0.85); }
+.t-display    { font-size: calc(var(--base-font-size, 11pt) * 2);   }
+.t-display-xl { font-size: calc(var(--base-font-size, 11pt) * 2.5); }
+`;
 }
 
 async function callRenderService(path, body, tenantId) {

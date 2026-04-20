@@ -1749,43 +1749,31 @@ function InspectorPanels({
             </select>
 
             <label className="ins-style-label">Marginaler</label>
-            <input
-              type="text"
-              className="ins-number-value"
-              style={{ width: "100%" }}
-              placeholder="t.ex. 16px 0 24px"
+            <DebouncedTextField
               value={sel.style?.margin || ""}
-              onChange={(e) => onSetStyle("margin", e.target.value)}
+              placeholder="t.ex. 16px 0 24px"
+              onChange={(v) => onSetStyle("margin", v)}
             />
 
             <label className="ins-style-label">Padding</label>
-            <input
-              type="text"
-              className="ins-number-value"
-              style={{ width: "100%" }}
-              placeholder="t.ex. 12px 16px"
+            <DebouncedTextField
               value={sel.style?.padding || ""}
-              onChange={(e) => onSetStyle("padding", e.target.value)}
+              placeholder="t.ex. 12px 16px"
+              onChange={(v) => onSetStyle("padding", v)}
             />
 
             <label className="ins-style-label">Bredd</label>
-            <input
-              type="text"
-              className="ins-number-value"
-              style={{ width: "100%" }}
-              placeholder="auto / 50% / 240px"
+            <DebouncedTextField
               value={sel.style?.width || ""}
-              onChange={(e) => onSetStyle("width", e.target.value)}
+              placeholder="auto / 50% / 240px"
+              onChange={(v) => onSetStyle("width", v)}
             />
 
             <label className="ins-style-label">Höjd</label>
-            <input
-              type="text"
-              className="ins-number-value"
-              style={{ width: "100%" }}
-              placeholder="auto / 120px"
+            <DebouncedTextField
               value={sel.style?.height || ""}
-              onChange={(e) => onSetStyle("height", e.target.value)}
+              placeholder="auto / 120px"
+              onChange={(v) => onSetStyle("height", v)}
             />
           </div>
         </InsSection>
@@ -2190,12 +2178,67 @@ function FontField({ value, isOverride, onChange, onReset }) {
   );
 }
 
+/**
+ * Text input that only commits the value to the parent after the user
+ * stops typing for 350ms (or blurs). Prevents intermediate invalid CSS
+ * like "16" from being pushed to element.style.margin (which the
+ * browser silently rejects, making the field flicker back to empty).
+ */
+function DebouncedTextField({ value, onChange, placeholder, debounceMs = 350 }) {
+  const [local, setLocal] = useState(value || "");
+  const lastPropRef = useRef(value || "");
+  // Sync incoming value updates (e.g. after selection change) but
+  // avoid stomping on the user while they're actively typing.
+  useEffect(() => {
+    if ((value || "") !== lastPropRef.current) {
+      lastPropRef.current = value || "";
+      setLocal(value || "");
+    }
+  }, [value]);
+  const timer = useRef(null);
+  const commit = (v) => {
+    lastPropRef.current = v;
+    onChange(v);
+  };
+  const handleChange = (v) => {
+    setLocal(v);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => commit(v), debounceMs);
+  };
+  return (
+    <input
+      type="text"
+      className="ins-number-value"
+      style={{ width: "100%" }}
+      placeholder={placeholder}
+      value={local}
+      onChange={(e) => handleChange(e.target.value)}
+      onBlur={() => {
+        if (timer.current) clearTimeout(timer.current);
+        commit(local);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          if (timer.current) clearTimeout(timer.current);
+          commit(local);
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
 function FontSizeField({ value, onChange, onReset }) {
-  const current = parseFloat(value) || 0;
-  const unit = (String(value || "").match(/(px|pt|em|rem)$/) || [null, "px"])[1];
+  // Parse "16.5px" → 16.5, "px" safely. NaN falls back to a sensible
+  // 14 so −/+ doesn't kick the value to the 6pt clamp floor like the
+  // old version did when the input was blank.
+  const match = String(value || "").match(/^(\d+(?:\.\d+)?)(px|pt|em|rem|%)?$/);
+  const current = match ? parseFloat(match[1]) : 14;
+  const unit = match?.[2] || "px";
+  const clamp = (n) => Math.min(Math.max(6, n), 200);
   return (
     <div className="ins-number-row">
-      <button type="button" className="ins-number-btn" onClick={() => onChange(`${Math.max(6, current - 1)}${unit}`)}>−</button>
+      <button type="button" className="ins-number-btn" onClick={() => onChange(`${clamp(current - 1)}${unit}`)}>−</button>
       <input
         type="text"
         className="ins-number-value"
@@ -2203,7 +2246,7 @@ function FontSizeField({ value, onChange, onReset }) {
         onChange={(e) => onChange(e.target.value)}
         placeholder="—"
       />
-      <button type="button" className="ins-number-btn" onClick={() => onChange(`${Math.max(6, current + 1)}${unit}`)}>+</button>
+      <button type="button" className="ins-number-btn" onClick={() => onChange(`${clamp(current + 1)}${unit}`)}>+</button>
       {value ? <button type="button" className="ins-color-reset" onClick={onReset}>Rensa</button> : null}
     </div>
   );

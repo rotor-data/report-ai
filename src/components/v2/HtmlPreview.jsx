@@ -565,9 +565,21 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       childCount: c.children?.length || 0,
     }));
 
-    // Current inline styles the inspector can surface + reset.
+    // Current styles the inspector can surface + reset. Prefer inline
+    // (explicit override), fall back to computed style so the field
+    // shows the element's actual rendered size instead of an empty
+    // placeholder. That matters for the font-size stepper, which
+    // otherwise starts from 0 and jumps to the 6px clamp on first
+    // click.
     const inlineStyle = selected.getAttribute("style") || "";
-    const readStyle = (prop) => selected.style?.[prop] || "";
+    const win = selected.ownerDocument?.defaultView;
+    const computed = win ? win.getComputedStyle(selected) : null;
+    const readStyle = (prop) => {
+      const inline = selected.style?.[prop];
+      if (inline) return inline;
+      if (!computed) return "";
+      try { return computed[prop] || ""; } catch { return ""; }
+    };
 
     onSelectionChange({
       moduleId,
