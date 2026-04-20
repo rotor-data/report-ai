@@ -738,12 +738,23 @@
   overflow: auto;
 }
 
-/* Stacked canvas — all pages scroll together as a single column. */
+/* Stacked canvas — all pages scroll together as a single column.
+   The base .editor-canvas rule sets display:flex + overflow:hidden and
+   its child selector stretches the first non-meta child to flex:1 with
+   its own overflow:auto. That behaviour is wrong for the stack; we need
+   each card to keep its natural height and the WHOLE column to scroll.
+   Overriding explicitly (with > * selector) beats both base rules. */
 .smyra-editor .editor-canvas--stack {
-  overflow: auto;
-  padding: 24px 24px 120px;
+  display: flex;
+  flex-direction: column;
   gap: 24px;
+  overflow: auto !important;
+  padding: 24px 24px 120px;
   background: #eeeaec;
+}
+.smyra-editor .editor-canvas--stack > * {
+  flex: none !important;
+  overflow: visible !important;
 }
 .smyra-editor .editor-canvas--stack .canvas-empty {
   padding: 60px 0;
