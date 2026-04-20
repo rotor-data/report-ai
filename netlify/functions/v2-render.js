@@ -218,6 +218,33 @@ export const handler = async (event) => {
     // auto-paginate has already run — the insert path didn't set
     // page_id, so they silently dropped out of rendering). Attach each
     // orphan to a new page slotted at its order_index position.
+    // Sort pages by the lowest order_index of any module attached to
+    // them. Without this, pages created by the orphan-repair branch
+    // (or by the insert-path) are appended with a high page_number
+    // even though their modules live earlier in the order. Result:
+    // cover lands after back_cover in the PDF. Render order of truth
+    // = module order_index, so sort pages accordingly.
+    const sortPagesByModuleOrder = () => {
+      const firstIdxByPage = new Map();
+      for (const m of modules) {
+        if (!m.page_id) continue;
+        const cur = firstIdxByPage.get(m.page_id);
+        if (cur === undefined || m.order_index < cur) {
+          firstIdxByPage.set(m.page_id, m.order_index);
+        }
+      }
+      pages.sort((a, b) => {
+        const ai = firstIdxByPage.get(a.id);
+        const bi = firstIdxByPage.get(b.id);
+        // Pages with no modules fall to the end
+        if (ai === undefined && bi === undefined) return a.page_number - b.page_number;
+        if (ai === undefined) return 1;
+        if (bi === undefined) return -1;
+        return ai - bi;
+      });
+    };
+    sortPagesByModuleOrder();
+
     const orphans = modules.filter((m) => !m.page_id);
     if (orphans.length > 0) {
       const { randomUUID } = await import("node:crypto");
@@ -254,6 +281,7 @@ export const handler = async (event) => {
         SELECT id, page_number, page_type FROM v2_report_pages
         WHERE report_id = ${report_id} ORDER BY page_number
       `;
+      sortPagesByModuleOrder();
     }
 
     if (!pages.length) {
