@@ -383,22 +383,49 @@ const TOOLS = [
   },
   {
     name: "list_blueprints",
-    description: "List saved blueprints for a brand.",
+    description: "List blueprints visible to the caller: brand-owned + Smyra platform templates. Returns small inline thumbnails (base64) so Claude can surface them in chat, plus large thumbnail URLs for the web gallery. Filter by document_type + style to narrow.",
     inputSchema: {
       type: "object",
-      properties: { brand_id: { type: "string" } },
-      required: ["brand_id"],
+      properties: {
+        brand_id: { type: "string", description: "Include blueprints owned by this brand. Omit to only see Smyra-visibility blueprints." },
+        document_type: { type: "string", description: "Filter: 'quarterly' | 'annual' | 'whitepaper' | 'case_study' | 'pitch' | 'newsletter' | 'research_brief' | 'product_spec' | 'esg_report' | 'investor_update'" },
+        style: { type: "string", description: "Filter by style_direction, e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate', 'Technical', 'Expressive', 'Hero'" },
+        include_thumbnails: { type: "boolean", description: "Include base64 thumbnails in response. Default true — set false for leaner payloads when you only need metadata." },
+      },
+    },
+  },
+  {
+    name: "list_smyra_templates",
+    description: "List Smyra platform-level blueprints (visibility='smyra'). These are curated 'by Smyra' templates available to every tenant as a starting point. Shorthand for list_blueprints with visibility filter — use at the start of a new report when the user hasn't specified a direction.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        document_type: { type: "string", description: "e.g. 'quarterly', 'annual', 'whitepaper'" },
+        style: { type: "string", description: "e.g. 'Editorial', 'Minimal'" },
+      },
+    },
+  },
+  {
+    name: "preview_blueprint",
+    description: "Get a detailed view of one blueprint: its slot structure, narrative guidance, large thumbnail URL, and a 'chat_summary' sentence describing what Claude will ask the user for. Use when the user wants to see a template in detail before committing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        blueprint_id: { type: "string" },
+      },
+      required: ["blueprint_id"],
     },
   },
   {
     name: "create_from_blueprint",
-    description: "Create a new report from a saved blueprint.",
+    description: "Create a new report from a blueprint. For Smyra-visibility blueprints (no owner brand), pass brand_id explicitly to say which brand to create the report under. Returns the new report + the blueprint's slot structure so the caller can start filling content.",
     inputSchema: {
       type: "object",
       properties: {
         blueprint_id: { type: "string" },
         title: { type: "string" },
         document_type: { type: "string" },
+        brand_id: { type: "string", description: "Required when the blueprint is Smyra-visibility (has no owner brand). Ignored for brand-owned blueprints." },
       },
       required: ["blueprint_id", "title", "document_type"],
     },
@@ -1684,20 +1711,115 @@ async function handleSaveBlueprint(userId, args) {
   return textResult({ blueprint_id: rows[0].id, name, module_count: blueprintModules.length });
 }
 
+// ─── Blueprint helpers ──────────────────────────────────────────────────────
+
+// Minimum fields every blueprint row carries. Keeps list responses
+// shaped the same way regardless of whether thumbnails are inlined.
+function shapeBlueprintRow(r, { includeThumb = true } = {}) {
+  return {
+    id: r.id,
+    name: r.name,
+    tagline: r.tagline,
+    chat_summary: r.chat_summary,
+    document_type: r.document_type,
+    style_direction: r.style_direction,
+    visibility: r.visibility,
+    brand_id: r.brand_id,
+    tags: r.tags || [],
+    pages_estimate: r.pages_estimate,
+    page_format: r.page_format,
+    thumbnail: includeThumb ? (r.thumbnail_small_base64 || null) : undefined,
+    thumbnail_url: r.thumbnail_url || null,
+    slots_count: Array.isArray(r.slots)
+      ? r.slots.length
+      : (r.modules ? (typeof r.modules === "string" ? JSON.parse(r.modules) : r.modules).length : 0),
+    kind: Array.isArray(r.slots) && r.slots.length ? "smart" : "legacy",
+    created_at: r.created_at,
+  };
+}
+
 // ─── Handler: list_blueprints ───────────────────────────────────────────────
 
 async function handleListBlueprints(userId, args) {
   const sql = getSql();
-  const { brand_id } = args;
-  if (!brand_id) return errorResult("brand_id is required.");
+  const { brand_id, document_type, style, include_thumbnails = true } = args || {};
+
+  // Visibility rule: show Smyra-wide + brand-owned when a brand_id is
+  // supplied. Without brand_id, show only Smyra.
+  let rows;
+  if (brand_id) {
+    rows = await sql`
+      SELECT id, brand_id, visibility, name, tagline, chat_summary,
+             document_type, style_direction, tags, slots, modules,
+             thumbnail_small_base64, thumbnail_url,
+             pages_estimate, page_format, created_at
+      FROM report_blueprints
+      WHERE (visibility = 'smyra' OR brand_id = ${brand_id})
+        AND (${document_type || null}::text IS NULL OR document_type = ${document_type || null})
+        AND (${style || null}::text IS NULL OR style_direction = ${style || null})
+      ORDER BY
+        CASE visibility WHEN 'brand' THEN 0 WHEN 'smyra' THEN 1 ELSE 2 END,
+        updated_at DESC
+      LIMIT 100
+    `;
+  } else {
+    rows = await sql`
+      SELECT id, brand_id, visibility, name, tagline, chat_summary,
+             document_type, style_direction, tags, slots, modules,
+             thumbnail_small_base64, thumbnail_url,
+             pages_estimate, page_format, created_at
+      FROM report_blueprints
+      WHERE visibility = 'smyra'
+        AND (${document_type || null}::text IS NULL OR document_type = ${document_type || null})
+        AND (${style || null}::text IS NULL OR style_direction = ${style || null})
+      ORDER BY updated_at DESC
+      LIMIT 100
+    `;
+  }
+
+  const blueprints = rows.map((r) => shapeBlueprintRow(r, { includeThumb: include_thumbnails }));
+  return textResult({
+    blueprints,
+    count: blueprints.length,
+    filters: { brand_id, document_type, style },
+  });
+}
+
+// ─── Handler: list_smyra_templates ──────────────────────────────────────────
+
+async function handleListSmyraTemplates(userId, args) {
+  return handleListBlueprints(userId, { ...(args || {}), brand_id: undefined });
+}
+
+// ─── Handler: preview_blueprint ─────────────────────────────────────────────
+
+async function handlePreviewBlueprint(userId, args) {
+  const sql = getSql();
+  const { blueprint_id } = args || {};
+  if (!blueprint_id) return errorResult("blueprint_id is required.");
 
   const rows = await sql`
-    SELECT id, name, source_report_id, created_at,
-           jsonb_array_length(modules) AS module_count
-    FROM report_blueprints WHERE brand_id = ${brand_id}
-    ORDER BY created_at DESC
+    SELECT id, brand_id, visibility, name, tagline, chat_summary,
+           document_type, style_direction, tags, slots, narrative_guidance,
+           modules, thumbnail_small_base64, thumbnail_url,
+           pages_estimate, page_format, created_at, updated_at
+    FROM report_blueprints WHERE id = ${blueprint_id} LIMIT 1
   `;
-  return textResult({ blueprints: rows, count: rows.length });
+  if (!rows.length) return errorResult(`Blueprint ${blueprint_id} not found.`);
+  const r = rows[0];
+
+  const slots = typeof r.slots === "string" ? JSON.parse(r.slots) : r.slots;
+  const modules = typeof r.modules === "string" ? JSON.parse(r.modules) : r.modules;
+  const narrative = typeof r.narrative_guidance === "string"
+    ? JSON.parse(r.narrative_guidance)
+    : r.narrative_guidance;
+
+  return textResult({
+    ...shapeBlueprintRow(r, { includeThumb: true }),
+    slots: slots || null,
+    narrative_guidance: narrative || null,
+    modules: modules || null,  // legacy compat
+  });
 }
 
 // ─── Handler: create_from_blueprint ─────────────────────────────────────────
@@ -1710,40 +1832,64 @@ async function handleCreateFromBlueprint(userId, args) {
   }
 
   const blueprints = await sql`
-    SELECT id, brand_id, modules FROM report_blueprints WHERE id = ${blueprint_id} LIMIT 1
+    SELECT id, brand_id, owner_tenant_id, visibility, modules, slots, page_format
+    FROM report_blueprints WHERE id = ${blueprint_id} LIMIT 1
   `;
   if (!blueprints.length) return errorResult(`Blueprint ${blueprint_id} not found.`);
   const bp = blueprints[0];
 
-  // Look up tenant_id from brand
-  const brands = await sql`SELECT tenant_id FROM brands WHERE id = ${bp.brand_id} LIMIT 1`;
-  if (!brands.length) return errorResult(`Brand ${bp.brand_id} not found.`);
-  const tenantId = brands[0].tenant_id;
+  // Resolve brand + tenant. Smyra-visibility blueprints have no brand,
+  // so the caller must pass one to create a report under.
+  let brandId = bp.brand_id;
+  let tenantId = bp.owner_tenant_id;
+  if (!brandId && args.brand_id) brandId = args.brand_id;
+  if (!brandId) {
+    return errorResult("This is a Smyra blueprint (no owner brand). Pass brand_id in the request to say which brand the report should be created under.");
+  }
+  if (!tenantId) {
+    const brands = await sql`SELECT tenant_id FROM brands WHERE id = ${brandId} LIMIT 1`;
+    if (!brands.length) return errorResult(`Brand ${brandId} not found.`);
+    tenantId = brands[0].tenant_id;
+  }
 
-  // Create report
+  // Create report with the blueprint's page format.
   const reportRows = await sql`
-    INSERT INTO v2_reports (tenant_id, brand_id, title, document_type, status)
-    VALUES (${tenantId}, ${bp.brand_id}, ${title}, ${document_type}, 'draft')
+    INSERT INTO v2_reports (tenant_id, brand_id, title, document_type, status, page_format)
+    VALUES (${tenantId}, ${brandId}, ${title}, ${document_type}, 'draft', ${bp.page_format || 'a4_portrait'})
     RETURNING id
   `;
   const reportId = reportRows[0].id;
 
-  // Create modules from blueprint
-  const bpModules = typeof bp.modules === "string" ? JSON.parse(bp.modules) : bp.modules;
-  for (const mod of bpModules) {
-    await sql`
-      INSERT INTO v2_report_modules (report_id, module_type, order_index, content, style)
-      VALUES (${reportId}, ${mod.module_type}, ${mod.order_index}, ${JSON.stringify(mod.content || {})}::jsonb, ${JSON.stringify(mod.style || {})}::jsonb)
-    `;
+  // Legacy blueprint: seed literal modules. Smart blueprint: nothing
+  // to seed yet — next workflow step fills slots with content.
+  const legacyModules = bp.modules
+    ? (typeof bp.modules === "string" ? JSON.parse(bp.modules) : bp.modules)
+    : null;
+  let seededModules = 0;
+  if (Array.isArray(legacyModules) && legacyModules.length) {
+    for (const mod of legacyModules) {
+      await sql`
+        INSERT INTO v2_report_modules (report_id, module_type, order_index, content, style)
+        VALUES (${reportId}, ${mod.module_type}, ${mod.order_index}, ${JSON.stringify(mod.content || {})}::jsonb, ${JSON.stringify(mod.style || {})}::jsonb)
+      `;
+    }
+    seededModules = legacyModules.length;
   }
+
+  const slots = typeof bp.slots === "string" ? JSON.parse(bp.slots) : bp.slots;
+  const kind = Array.isArray(slots) && slots.length ? "smart" : "legacy";
 
   return textResult({
     report_id: reportId,
     blueprint_id,
+    blueprint_kind: kind,
     title,
     document_type,
-    module_count: bpModules.length,
-    next_step: "Use report2__get_structure to see the report, then report2__update_module to add content.",
+    module_count: seededModules,
+    slots: slots || null,
+    next_step: kind === "smart"
+      ? "The blueprint's slots are listed above. Extract as much content as possible from the user's brief, then ask about any gaps. Each slot carries an `intent` hint that tells you what to fill."
+      : "Use report2__get_structure to see the report, then report2__update_module to add content.",
   });
 }
 
@@ -3132,6 +3278,8 @@ const HANDLERS = {
   get_module_schema:     handleGetModuleSchema,
   save_blueprint:        handleSaveBlueprint,
   list_blueprints:       handleListBlueprints,
+  list_smyra_templates:  handleListSmyraTemplates,
+  preview_blueprint:     handlePreviewBlueprint,
   create_from_blueprint: handleCreateFromBlueprint,
   save_component:        handleSaveComponent,
   list_components:       handleListComponents,
