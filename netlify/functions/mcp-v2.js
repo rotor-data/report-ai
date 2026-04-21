@@ -2809,14 +2809,15 @@ async function handleRenderComponentPreview(userId, args, event) {
   const sql = getSql();
   const { component_id, html_template: directHtml, brand_id: directBrandId, placeholder_values } = args;
 
-  let htmlTemplate, brandId;
+  let htmlTemplate, brandId, cssTemplate;
 
   if (component_id) {
     const rows = await sql`
-      SELECT html_template, brand_id FROM brand_components WHERE id = ${component_id} LIMIT 1
+      SELECT html_template, css_template, brand_id FROM brand_components WHERE id = ${component_id} LIMIT 1
     `;
     if (!rows.length) return errorResult(`Component ${component_id} not found.`);
     htmlTemplate = rows[0].html_template;
+    cssTemplate = rows[0].css_template;
     brandId = rows[0].brand_id;
   } else if (directHtml && directBrandId) {
     htmlTemplate = directHtml;
@@ -2834,6 +2835,11 @@ async function handleRenderComponentPreview(userId, args, event) {
   }
   // Clean unfilled placeholders
   filled = filled.replace(/\{\{[A-Z_0-9]+\}\}/g, "");
+
+  // Wrap with component CSS so preview matches real render (compose-pages applies css_template per module)
+  const htmlWithStyle = cssTemplate
+    ? `<style>${cssTemplate}</style>\n${filled}`
+    : filled;
 
   // Fetch brand tokens + fonts
   const brands = await sql`SELECT tokens FROM brands WHERE id = ${brandId} LIMIT 1`;
@@ -2857,7 +2863,7 @@ async function handleRenderComponentPreview(userId, args, event) {
         order_index: 0,
         content: {},
         style: {},
-        html_content: filled,
+        html_content: htmlWithStyle,
       }],
     }],
     brand_tokens: brandTokens,
