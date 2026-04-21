@@ -454,6 +454,12 @@ const TOOLS = [
         is_public: { type: "boolean", description: "If true, any brand may fork this component into their own library" },
         unsplash_query: { type: "string", description: "Semantic hint for image placeholders, e.g. 'corporate boardroom blue'" },
         reference_page_numbers: { type: "array", items: { type: "integer" }, description: "Page numbers in the source PDF where this component appears" },
+        harmony: { type: "array", items: { type: "string" }, description: "Optional palette-harmony tags (e.g. ['cool','monochrome']). Used by theme-reconcile to score variant picks against brand palette." },
+        intensity: { type: "string", enum: ["quiet","medium","loud"], description: "Visual intensity of this variant. 'loud' = big display type, strong accent; 'quiet' = minimal, monochromatic." },
+        accent_usage: { type: "string", enum: ["none","tint","strong"], description: "How prominently this variant uses the brand accent color. Variant-picker penalises 'strong' when brand accent is already loud." },
+        content_tolerance: { type: "object", description: "Per-placeholder content tolerances, e.g. { TITLE: { ideal_chars: [8,24], max_chars: 40 } }. Variant-picker scores content fit against these." },
+        chart_schema: { type: "object", description: "For chart variants only. Describes editable fields for the editor UI: { chart_type: ['bar','line'], labels: 'text[]', values: 'number[]', caption: 'text' }." },
+        chart_color_mode: { type: "string", enum: ["brand","custom","brand-locked"], description: "For chart variants only. 'brand' = theme-reconcile computes palette from tokens (default). 'custom' = respect data-chart-colors attr. 'brand-locked' = ignore attr, force brand." },
       },
       required: ["brand_id", "component_type", "label", "html_template"],
     },
@@ -1116,8 +1122,17 @@ async function handleRenderPdf(userId, args, event) {
   if (!report_id || !mode) return errorResult("report_id and mode are required.");
 
   // Fetch report + brand context
+  // IMPORTANT: SELECT document_css + style_overrides + page_format — the
+  // Python render service needs the per-report stylesheet snapshot and
+  // late-cascade overrides to reproduce the editor preview in PDF.
+  // Without document_css the renderer falls back to generic defaults
+  // and every component-level class rule (.dt-*, .tx-*, .cv-*, .bc-*)
+  // drops out, which is why KPI value/label clump and cover titles
+  // render without their bespoke CSS. See v2-render.js for the
+  // original endpoint that got this right.
   const reports = await sql`
-    SELECT r.id, r.tenant_id, r.brand_id, r.title, r.template_id
+    SELECT r.id, r.tenant_id, r.brand_id, r.title, r.template_id,
+           r.page_format, r.document_css, r.style_overrides
     FROM v2_reports r WHERE r.id = ${report_id} LIMIT 1
   `;
   if (!reports.length) return errorResult(`Report ${report_id} not found.`);
@@ -1129,7 +1144,7 @@ async function handleRenderPdf(userId, args, event) {
     WHERE report_id = ${report_id} ORDER BY page_number
   `;
   const modules = await sql`
-    SELECT id, page_id, module_type, order_index, content, style, html_cache, html_content
+    SELECT id, page_id, module_type, order_index, content, style, html_cache, html_content, background
     FROM v2_report_modules WHERE report_id = ${report_id} ORDER BY order_index
   `;
 
@@ -1151,19 +1166,45 @@ async function handleRenderPdf(userId, args, event) {
     console.warn(`[render_pdf] ${cssWarning}`);
   }
 
+  // Build late-cascade overrides CSS so the Rapport-stil panel wins
+  // over any :root tokens baked into document_css at compose time.
+  // Same approach as v2-render.js.
+  const overrides = report.style_overrides || {};
+  const mergedTokens = { ...(brand.tokens || {}) };
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === null || v === undefined || v === "") continue;
+    mergedTokens[k] = v;
+  }
+  const overrideLines = Object.entries(overrides)
+    .filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .map(([k, v]) => `--${k.replace(/_/g, "-")}: ${v};`);
+  const overrideCss = overrideLines.length
+    ? `:root { ${overrideLines.join(" ")} }`
+    : "";
+
   // Call Python render service
   const pdfResult = await callRenderService("/render/pdf", {
     report_id,
     title: report.title,
     mode,
+    page_format: report.page_format || "a4_portrait",
     pages: pages.map(p => ({
       ...p,
-      modules: modules.filter(m => m.page_id === p.id),
+      modules: modules
+        .filter(m => m.page_id === p.id)
+        .map(m => ({ ...m, background: m.background || null })),
     })),
-    brand_tokens: brand.tokens,
+    brand_tokens: mergedTokens,
     brand_fonts: brand.fonts,
     brand_logos: brand.logos,
     css_base: cssBase,
+    // document_css is the authoritative stylesheet snapshot written by
+    // compose_pages — brand vars + design-system + per-component CSS.
+    // Render service layers it over its generic defaults so output
+    // matches the editor preview exactly.
+    document_css: report.document_css ?? null,
+    document_css_overrides: overrideCss,
+    style_overrides: overrides,
   }, report.tenant_id);
 
   // Store PDF in Netlify Blobs
@@ -1916,6 +1957,12 @@ async function handleSaveComponent(userId, args) {
     reference_page_numbers,
     status,
     page_format,
+    harmony,          // array of strings, default undefined
+    intensity,        // 'quiet' | 'medium' | 'loud', default undefined
+    accent_usage,     // 'none' | 'tint' | 'strong', default undefined
+    content_tolerance, // object, default undefined
+    chart_schema,     // object or null, default undefined
+    chart_color_mode, // 'brand' | 'custom' | 'brand-locked', default undefined
   } = args;
   const statusValue = ['draft', 'ready', 'deprecated'].includes(status) ? status : 'ready';
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'universal';
@@ -1959,6 +2006,12 @@ async function handleSaveComponent(userId, args) {
           reference_page_numbers = ${JSON.stringify(reference_page_numbers || [])}::jsonb,
           status = ${statusValue},
           page_format = ${pageFormatValue},
+          harmony = COALESCE(${Array.isArray(harmony) ? harmony : null}::text[], harmony),
+          intensity = COALESCE(${intensity ?? null}::text, intensity),
+          accent_usage = COALESCE(${accent_usage ?? null}::text, accent_usage),
+          content_tolerance = COALESCE(${content_tolerance ? JSON.stringify(content_tolerance) : null}::jsonb, content_tolerance),
+          chart_schema = COALESCE(${chart_schema ? JSON.stringify(chart_schema) : null}::jsonb, chart_schema),
+          chart_color_mode = COALESCE(${chart_color_mode ?? null}::text, chart_color_mode),
           version = version + 1,
           updated_at = NOW()
       WHERE id = ${component_id} AND brand_id = ${brand_id}
@@ -1995,6 +2048,12 @@ async function handleSaveComponent(userId, args) {
           reference_page_numbers = ${JSON.stringify(reference_page_numbers || [])}::jsonb,
           status = ${statusValue},
           page_format = ${pageFormatValue},
+          harmony = COALESCE(${Array.isArray(harmony) ? harmony : null}::text[], harmony),
+          intensity = COALESCE(${intensity ?? null}::text, intensity),
+          accent_usage = COALESCE(${accent_usage ?? null}::text, accent_usage),
+          content_tolerance = COALESCE(${content_tolerance ? JSON.stringify(content_tolerance) : null}::jsonb, content_tolerance),
+          chart_schema = COALESCE(${chart_schema ? JSON.stringify(chart_schema) : null}::jsonb, chart_schema),
+          chart_color_mode = COALESCE(${chart_color_mode ?? null}::text, chart_color_mode),
           version = version + 1,
           updated_at = NOW()
       WHERE id = ${existingId}
@@ -2007,7 +2066,8 @@ async function handleSaveComponent(userId, args) {
     INSERT INTO brand_components (
       brand_id, component_type, variant_name, label, html_template, css_template, splittable, placeholder_schema,
       design_notes, source, is_default,
-      extraction_id, is_public, unsplash_query, reference_page_numbers, status, page_format
+      extraction_id, is_public, unsplash_query, reference_page_numbers, status, page_format,
+      harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode
     )
     VALUES (
       ${brand_id}, ${component_type}, ${variantLabel}, ${label}, ${html_template},
@@ -2017,7 +2077,13 @@ async function handleSaveComponent(userId, args) {
       ${design_notes || null}, ${source || 'manual'}, ${is_default || false},
       ${extraction_id || null}, ${is_public === true}, ${unsplash_query || null},
       ${JSON.stringify(reference_page_numbers || [])}::jsonb,
-      ${statusValue}, ${pageFormatValue}
+      ${statusValue}, ${pageFormatValue},
+      ${Array.isArray(harmony) ? harmony : null}::text[],
+      ${intensity ?? null}::text,
+      ${accent_usage ?? null}::text,
+      ${content_tolerance ? JSON.stringify(content_tolerance) : null}::jsonb,
+      ${chart_schema ? JSON.stringify(chart_schema) : null}::jsonb,
+      ${chart_color_mode ?? null}::text
     )
     RETURNING id
   `;
@@ -2051,6 +2117,7 @@ async function handleListComponents(userId, args) {
            placeholder_schema, html_template, css_template, splittable, design_notes, source,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
            thumbnail_url, thumbnail_generated_at, status, page_format,
+           harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode,
            version, created_at, updated_at
     FROM brand_components
     WHERE (brand_id = ${brand_id} OR (${includePublic} AND is_public = true))
@@ -2059,6 +2126,7 @@ async function handleListComponents(userId, args) {
       AND (${extractionFilter}::uuid IS NULL OR extraction_id = ${extractionFilter}::uuid)
       AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
       AND (${pageFormatFilter}::text IS NULL OR page_format = ${pageFormatFilter} OR page_format = 'universal')
+      AND html_template IS NOT NULL AND trim(html_template) != ''
     ORDER BY component_type, is_default DESC, variant_name, updated_at DESC
   `;
 
