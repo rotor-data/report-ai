@@ -81,6 +81,37 @@ function getIdFromPath(path = "") {
   return next;
 }
 
+function getSubpathFromPath(path = "") {
+  // /v2-blueprints/:id/thumbnail → "thumbnail"
+  const clean = path.split("?")[0];
+  const parts = clean.split("/").filter(Boolean);
+  const idx = parts.lastIndexOf("v2-blueprints");
+  if (idx === -1) return null;
+  return parts[idx + 2] || null;
+}
+
+// Lazy-load blob store so this file doesn't break when the module is
+// imported without the Netlify runtime (e.g. local unit test).
+async function getBlobStore(event) {
+  const { connectLambda, getStore } = await import("@netlify/blobs");
+  try {
+    if (event) connectLambda(event);
+    return getStore("report-ai-blueprint-thumbs");
+  } catch {
+    const siteID = process.env.NETLIFY_SITE_ID;
+    const token = process.env.NETLIFY_API_TOKEN;
+    if (siteID && token) return getStore({ name: "report-ai-blueprint-thumbs", siteID, token });
+    throw new Error(`Cannot access blob store "report-ai-blueprint-thumbs"`);
+  }
+}
+
+function stripDataUri(b64) {
+  if (!b64 || typeof b64 !== "string") return b64;
+  const comma = b64.indexOf(",");
+  if (b64.startsWith("data:") && comma > 0) return b64.slice(comma + 1);
+  return b64;
+}
+
 function isCreateFromPath(path = "") {
   return path.split("?")[0].endsWith("/create-from");
 }
@@ -129,8 +160,54 @@ export const handler = async (event) => {
 
   const sql = getSql();
   const blueprintId = getIdFromPath(event.path);
+  const subpath = getSubpathFromPath(event.path);
 
   try {
+    // ── POST /api/v2-blueprints/:id/thumbnail ─────────────────
+    if (event.httpMethod === "POST" && blueprintId && subpath === "thumbnail") {
+      const body = parseBody(event);
+      if (!body) return json(event, 400, { error: "Invalid JSON" });
+
+      const largePng = stripDataUri(body.png_base64 || body.large_png_base64);
+      const smallPng = stripDataUri(body.small_png_base64);
+      if (!largePng) {
+        return json(event, 400, {
+          error: "png_base64 (large, ~400x567) is required. small_png_base64 (~96x128, inlined) is optional.",
+        });
+      }
+
+      // Save the large PNG as a blob — URL goes in thumbnail_url so
+      // MCP responses can point at it with no auth. The blob key embeds
+      // the blueprint id and a cache-busting timestamp so updates don't
+      // get served stale.
+      const blobKey = `bp-${blueprintId}-${Date.now()}.png`;
+      const store = await getBlobStore(event);
+      const pngBytes = Buffer.from(largePng, "base64");
+      await store.set(blobKey, pngBytes, { metadata: { blueprint_id: blueprintId } });
+
+      const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "https://rotor-report-ai.netlify.app";
+      const thumbUrl = `${siteUrl}/api/v2-blueprint-thumbnail?key=${encodeURIComponent(blobKey)}`;
+
+      // Inline small thumbnail (for chat surfacing). Data-URI form so
+      // it's embeddable verbatim in markdown / tool results.
+      const smallInline = smallPng ? `data:image/png;base64,${smallPng}` : null;
+
+      const rows = await sql`
+        UPDATE report_blueprints
+        SET thumbnail_url = ${thumbUrl},
+            thumbnail_small_base64 = ${smallInline}
+        WHERE id = ${blueprintId}
+        RETURNING id, thumbnail_url, thumbnail_small_base64
+      `;
+      if (!rows.length) return json(event, 404, { error: "Blueprint not found" });
+      return json(event, 200, {
+        blueprint_id: blueprintId,
+        thumbnail_url: rows[0].thumbnail_url,
+        has_inline: !!rows[0].thumbnail_small_base64,
+        blob_key: blobKey,
+      });
+    }
+
     // ── GET /api/v2-blueprints/:id ─────────────────────────────
     if (event.httpMethod === "GET" && blueprintId) {
       const rows = await sql`
