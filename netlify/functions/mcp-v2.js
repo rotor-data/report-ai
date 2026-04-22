@@ -837,34 +837,60 @@ async function handleAddModule(userId, args) {
             ${html_content || null})
   `;
 
-  // Call Python render service for html_cache + height_mm
+  // Fast path: when html_content is provided it IS the final rendered HTML
+  // (compose-pages builds it client-side from the designed components). The
+  // Python render service would just re-wrap the same HTML and measure
+  // height — at 3-5s per call serially, that blew the 26s Netlify timeout
+  // for any multi-page report. Write html_cache := html_content immediately
+  // and fire the render call in the background to fill height_mm. The
+  // editor + PDF pipeline tolerates height_mm=null (page_layout defaults).
   let heightMm = null;
-  try {
-    const brand = await fetchBrandContext(sql, brandId);
-    const renderPayload = html_content
-      ? { html_content, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: 'draft' }
-      : { module_type, content, style: style || {}, brand_tokens: brand.tokens, brand_fonts: brand.fonts };
-    const renderResult = await callRenderService("/render/module", renderPayload, tenantId);
-    heightMm = renderResult.height_mm ?? null;
-    const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
-    await sql`
-      UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
-      WHERE id = ${moduleId}
-    `;
-  } catch (e) {
-    console.warn(`[mcp-v2] Render failed for module ${moduleId}:`, e.message);
-    // Render service failure — fall back to raw html_content so the editor
-    // + PDF still have content. Same pattern as v2-modules PATCH. Without
-    // this, compose writes blank pages when puppeteer is flaky.
-    if (html_content) {
+  if (html_content) {
+    try {
+      await sql`
+        UPDATE v2_report_modules SET html_cache = ${html_content}
+        WHERE id = ${moduleId}
+      `;
+    } catch (e) {
+      console.warn(`[mcp-v2] html_cache seed for ${moduleId} failed:`, e.message);
+    }
+    // Background render for accurate height_mm. Fire-and-forget — response
+    // returns in ~100ms. Any failure just leaves height_mm null, which
+    // page_layout handles with a default budget.
+    Promise.resolve().then(async () => {
       try {
-        await sql`
-          UPDATE v2_report_modules SET html_cache = ${html_content}
-          WHERE id = ${moduleId}
-        `;
-      } catch (fbErr) {
-        console.warn(`[mcp-v2] html_content fallback for ${moduleId} failed:`, fbErr.message);
+        const brand = await fetchBrandContext(sql, brandId);
+        const renderResult = await callRenderService(
+          "/render/module",
+          { html_content, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: 'draft' },
+          tenantId,
+        );
+        const h = renderResult.height_mm ?? null;
+        if (h != null) {
+          await sql`UPDATE v2_report_modules SET height_mm = ${h} WHERE id = ${moduleId}`;
+        }
+      } catch (e) {
+        console.warn(`[mcp-v2] Background render for ${moduleId} failed:`, e.message);
       }
+    }).catch(() => {});
+  } else {
+    // Legacy path: no html_content, we must render from content+module_type.
+    // Kept synchronous — legacy callers need html_cache for the response.
+    try {
+      const brand = await fetchBrandContext(sql, brandId);
+      const renderResult = await callRenderService(
+        "/render/module",
+        { module_type, content, style: style || {}, brand_tokens: brand.tokens, brand_fonts: brand.fonts },
+        tenantId,
+      );
+      heightMm = renderResult.height_mm ?? null;
+      const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
+      await sql`
+        UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
+        WHERE id = ${moduleId}
+      `;
+    } catch (e) {
+      console.warn(`[mcp-v2] Render failed for module ${moduleId}:`, e.message);
     }
   }
 
