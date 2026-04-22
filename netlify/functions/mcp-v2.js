@@ -838,12 +838,13 @@ async function handleAddModule(userId, args) {
   `;
 
   // Fast path: when html_content is provided it IS the final rendered HTML
-  // (compose-pages builds it client-side from the designed components). The
-  // Python render service would just re-wrap the same HTML and measure
-  // height — at 3-5s per call serially, that blew the 26s Netlify timeout
-  // for any multi-page report. Write html_cache := html_content immediately
-  // and fire the render call in the background to fill height_mm. The
-  // editor + PDF pipeline tolerates height_mm=null (page_layout defaults).
+  // (compose-pages builds it client-side from the designed components).
+  // Write html_cache := html_content immediately so the editor/PDF have
+  // content. Then call /render/measure SYNCHRONOUSLY to populate height_mm
+  // — measure is much faster than /render/module (no re-wrapping the DOM,
+  // just chrome-height probe) and is critical for handleBuildPages's
+  // packing algorithm, which otherwise defaults to 60mm per module and
+  // stuffs unrelated content onto one page.
   let heightMm = null;
   if (html_content) {
     try {
@@ -854,25 +855,33 @@ async function handleAddModule(userId, args) {
     } catch (e) {
       console.warn(`[mcp-v2] html_cache seed for ${moduleId} failed:`, e.message);
     }
-    // Background render for accurate height_mm. Fire-and-forget — response
-    // returns in ~100ms. Any failure just leaves height_mm null, which
-    // page_layout handles with a default budget.
-    Promise.resolve().then(async () => {
-      try {
-        const brand = await fetchBrandContext(sql, brandId);
-        const renderResult = await callRenderService(
-          "/render/module",
-          { html_content, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: 'draft' },
-          tenantId,
-        );
-        const h = renderResult.height_mm ?? null;
-        if (h != null) {
-          await sql`UPDATE v2_report_modules SET height_mm = ${h} WHERE id = ${moduleId}`;
-        }
-      } catch (e) {
-        console.warn(`[mcp-v2] Background render for ${moduleId} failed:`, e.message);
+    // Synchronous measure — /render/measure now honors document_css +
+    // brand_tokens + brand_fonts (smyra-render commit 0b7644d), so the
+    // height reflects the real rendered height, not a fragment probed
+    // with browser-default fonts.
+    try {
+      const brand = await fetchBrandContext(sql, brandId);
+      // Measure on page_width - 2*margin; default 170mm matches A4 portrait
+      // minus 20mm margins.
+      const measureResult = await callRenderService(
+        "/render/measure",
+        {
+          html_fragment: html_content,
+          page_width_mm: 170,
+          brand_tokens: brand.tokens,
+          brand_fonts: brand.fonts,
+        },
+        tenantId,
+      );
+      heightMm = measureResult.height_mm ?? null;
+      if (heightMm != null) {
+        await sql`UPDATE v2_report_modules SET height_mm = ${heightMm} WHERE id = ${moduleId}`;
       }
-    }).catch(() => {});
+    } catch (e) {
+      console.warn(`[mcp-v2] Measure failed for module ${moduleId}:`, e.message);
+      // Height stays null. handleBuildPages falls back to 60mm default —
+      // not ideal but content is still present.
+    }
   } else {
     // Legacy path: no html_content, we must render from content+module_type.
     // Kept synchronous — legacy callers need html_cache for the response.
