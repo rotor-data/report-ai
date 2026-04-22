@@ -853,6 +853,19 @@ async function handleAddModule(userId, args) {
     `;
   } catch (e) {
     console.warn(`[mcp-v2] Render failed for module ${moduleId}:`, e.message);
+    // Render service failure — fall back to raw html_content so the editor
+    // + PDF still have content. Same pattern as v2-modules PATCH. Without
+    // this, compose writes blank pages when puppeteer is flaky.
+    if (html_content) {
+      try {
+        await sql`
+          UPDATE v2_report_modules SET html_cache = ${html_content}
+          WHERE id = ${moduleId}
+        `;
+      } catch (fbErr) {
+        console.warn(`[mcp-v2] html_content fallback for ${moduleId} failed:`, fbErr.message);
+      }
+    }
   }
 
   return textResult({ module_id: moduleId, order_index: orderIndex, height_mm: heightMm });
@@ -908,6 +921,18 @@ async function handleUpdateModule(userId, args) {
     `;
   } catch (e) {
     console.warn(`[mcp-v2] Re-render failed for module ${module_id}:`, e.message);
+    // Render failure — fall back to raw html_content so the editor/PDF
+    // still have content (matches v2-modules PATCH behavior).
+    if (newHtmlContent) {
+      try {
+        await sql`
+          UPDATE v2_report_modules SET html_cache = ${newHtmlContent}
+          WHERE id = ${module_id}
+        `;
+      } catch (fbErr) {
+        console.warn(`[mcp-v2] html_content fallback for ${module_id} failed:`, fbErr.message);
+      }
+    }
   }
 
   return textResult({ module_id, height_mm: heightMm });
