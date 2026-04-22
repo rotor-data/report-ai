@@ -460,6 +460,7 @@ const TOOLS = [
         content_tolerance: { type: "object", description: "Per-placeholder content tolerances, e.g. { TITLE: { ideal_chars: [8,24], max_chars: 40 } }. Variant-picker scores content fit against these." },
         chart_schema: { type: "object", description: "For chart variants only. Describes editable fields for the editor UI: { chart_type: ['bar','line'], labels: 'text[]', values: 'number[]', caption: 'text' }." },
         chart_color_mode: { type: "string", enum: ["brand","custom","brand-locked"], description: "For chart variants only. 'brand' = theme-reconcile computes palette from tokens (default). 'custom' = respect data-chart-colors attr. 'brand-locked' = ignore attr, force brand." },
+        style_family: { type: "string", description: "Visual style family (Editorial, Creative, Minimal) used by the library picker to keep variants coherent across a single report. Picker prefers variants that share a family with the cover." },
       },
       required: ["brand_id", "component_type", "label", "html_template"],
     },
@@ -1963,6 +1964,7 @@ async function handleSaveComponent(userId, args) {
     content_tolerance, // object, default undefined
     chart_schema,     // object or null, default undefined
     chart_color_mode, // 'brand' | 'custom' | 'brand-locked', default undefined
+    style_family,     // string, default undefined
   } = args;
   const statusValue = ['draft', 'ready', 'deprecated'].includes(status) ? status : 'ready';
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'universal';
@@ -2012,6 +2014,7 @@ async function handleSaveComponent(userId, args) {
           content_tolerance = COALESCE(${content_tolerance ? JSON.stringify(content_tolerance) : null}::jsonb, content_tolerance),
           chart_schema = COALESCE(${chart_schema ? JSON.stringify(chart_schema) : null}::jsonb, chart_schema),
           chart_color_mode = COALESCE(${chart_color_mode ?? null}::text, chart_color_mode),
+          style_family = COALESCE(${style_family ?? null}::text, style_family),
           version = version + 1,
           updated_at = NOW()
       WHERE id = ${component_id} AND brand_id = ${brand_id}
@@ -2054,6 +2057,7 @@ async function handleSaveComponent(userId, args) {
           content_tolerance = COALESCE(${content_tolerance ? JSON.stringify(content_tolerance) : null}::jsonb, content_tolerance),
           chart_schema = COALESCE(${chart_schema ? JSON.stringify(chart_schema) : null}::jsonb, chart_schema),
           chart_color_mode = COALESCE(${chart_color_mode ?? null}::text, chart_color_mode),
+          style_family = COALESCE(${style_family ?? null}::text, style_family),
           version = version + 1,
           updated_at = NOW()
       WHERE id = ${existingId}
@@ -2067,7 +2071,7 @@ async function handleSaveComponent(userId, args) {
       brand_id, component_type, variant_name, label, html_template, css_template, splittable, placeholder_schema,
       design_notes, source, is_default,
       extraction_id, is_public, unsplash_query, reference_page_numbers, status, page_format,
-      harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode
+      harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode, style_family
     )
     VALUES (
       ${brand_id}, ${component_type}, ${variantLabel}, ${label}, ${html_template},
@@ -2083,7 +2087,8 @@ async function handleSaveComponent(userId, args) {
       ${accent_usage ?? null}::text,
       ${content_tolerance ? JSON.stringify(content_tolerance) : null}::jsonb,
       ${chart_schema ? JSON.stringify(chart_schema) : null}::jsonb,
-      ${chart_color_mode ?? null}::text
+      ${chart_color_mode ?? null}::text,
+      ${style_family ?? null}::text
     )
     RETURNING id
   `;
@@ -2117,7 +2122,7 @@ async function handleListComponents(userId, args) {
            placeholder_schema, html_template, css_template, splittable, design_notes, source,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
            thumbnail_url, thumbnail_generated_at, status, page_format,
-           harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode,
+           harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode, style_family,
            version, created_at, updated_at
     FROM brand_components
     WHERE (brand_id = ${brand_id} OR (${includePublic} AND is_public = true))
