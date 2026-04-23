@@ -24,16 +24,31 @@ const VALID_COLUMNS = ["full", "half", "primary", "sidebar", "thirds", "wide-lef
 const MAX_SLOTS = { full: 1, half: 2, primary: 2, sidebar: 2, thirds: 3, "wide-left": 2, quarter: 2 };
 const VALID_CATEGORIES = ["text", "data", "media"];
 
-// Height budget for packing layout modules onto a single page in
-// handleBuildPages. Set conservatively to 210mm because the measurement
-// pipeline (/render/measure) systematically underestimates rendered
-// height by ~10-20% vs what Puppeteer produces at PDF time. The delta
-// comes from cumulative padding + flex gaps + font-metrics differences
-// that only show up in the full page context, not the fragment probe.
-// Real A4 content area is 257mm; 210 leaves 47mm of headroom for the
-// mismatch. Plus we deduct SECTION_GAP_MM per additional module packed
-// on the same page since compose-pages emits 6mm inter-module spacers.
-const DEFAULT_HEIGHT_BUDGET_MM = 210;
+// Per-format height budgets for packing layout modules on a single page.
+// Derived from: (page_height_mm - top_margin - bottom_margin) - headroom.
+// Headroom absorbs the known measurement/render delta (~10-20%) — /render/measure
+// fragment probe underestimates full-page context render height. When the
+// measurement pipeline tightens, these can grow closer to the real content
+// area. Formats not listed fall back to HEIGHT_BUDGET_BY_FORMAT.a4_portrait.
+//
+// Numbers: physical page / margins / content height / budget (headroom)
+//   a4_portrait:      210×297  / 18+16  /  263  /  215  (~48mm)
+//   a4_landscape:     297×210  / 15+15  /  180  /  150  (~30mm)
+//   us_letter:        216×279  / 20+20  /  239  /  195  (~44mm)
+//   us_letter_land:   279×216  / 15+15  /  186  /  155  (~31mm)
+//   presentation:     338×190  / 12+12  /  166  /  140  (~26mm)
+//   square:           210×210  / 18+16  /  176  /  150  (~26mm)
+//   digital:          1440×∞   /  n/a   /   ∞   /  800  (no hard limit; still want pagination)
+const HEIGHT_BUDGET_BY_FORMAT = {
+  a4_portrait: 215,
+  a4_landscape: 150,
+  us_letter: 195,
+  us_letter_landscape: 155,
+  presentation: 140,
+  square: 150,
+  digital: 800,
+};
+const DEFAULT_HEIGHT_BUDGET_MM = HEIGHT_BUDGET_BY_FORMAT.a4_portrait;
 const SECTION_GAP_MM = 6;
 
 const FULL_BLEED_TYPES = new Set(["cover", "chapter_break", "back_cover"]);
@@ -1144,12 +1159,16 @@ async function handleBuildPages(userId, args) {
   if (!report_id) return errorResult("report_id is required.");
 
   const reports = await sql`
-    SELECT id, template_id FROM v2_reports WHERE id = ${report_id} LIMIT 1
+    SELECT id, template_id, page_format FROM v2_reports WHERE id = ${report_id} LIMIT 1
   `;
   if (!reports.length) return errorResult(`Report ${report_id} not found.`);
 
-  // Get height budget from template schema or use default
-  let heightBudget = DEFAULT_HEIGHT_BUDGET_MM;
+  // Height budget resolution priority:
+  //   1. Template schema (if an explicit content_height_mm is set there)
+  //   2. Report's page_format → HEIGHT_BUDGET_BY_FORMAT
+  //   3. DEFAULT_HEIGHT_BUDGET_MM (A4 portrait)
+  const reportFormat = reports[0].page_format || 'a4_portrait';
+  let heightBudget = HEIGHT_BUDGET_BY_FORMAT[reportFormat] ?? DEFAULT_HEIGHT_BUDGET_MM;
   if (reports[0].template_id) {
     const templates = await sql`SELECT schema FROM report_templates WHERE id = ${reports[0].template_id} LIMIT 1`;
     if (templates[0]?.schema?.page?.content_height_mm) {
