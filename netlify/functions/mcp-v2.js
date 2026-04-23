@@ -461,13 +461,14 @@ const TOOLS = [
         chart_schema: { type: "object", description: "For chart variants only. Describes editable fields for the editor UI: { chart_type: ['bar','line'], labels: 'text[]', values: 'number[]', caption: 'text' }." },
         chart_color_mode: { type: "string", enum: ["brand","custom","brand-locked"], description: "For chart variants only. 'brand' = theme-reconcile computes palette from tokens (default). 'custom' = respect data-chart-colors attr. 'brand-locked' = ignore attr, force brand." },
         style_family: { type: "string", description: "Visual style family (Editorial, Creative, Minimal) used by the library picker to keep variants coherent across a single report. Picker prefers variants that share a family with the cover." },
+        report_id: { type: "string", description: "If set, scopes this variant to a single report (brand_components.report_id). The variant becomes available ONLY when list_components is called with that report_id. Use for redesign-for-this-report flows to avoid polluting the permanent brand library." },
       },
       required: ["brand_id", "component_type", "label", "html_template"],
     },
   },
   {
     name: "list_components",
-    description: "List components in a brand's component library. Returns all named variants per component_type. Filter by component_type to narrow results. Optionally include public components shared by other brands.",
+    description: "List components in a brand's component library. Returns all named variants per component_type. Filter by component_type to narrow results. Optionally include public components shared by other brands. Pass report_id to also include report-scoped variants.",
     inputSchema: {
       type: "object",
       properties: {
@@ -476,6 +477,7 @@ const TOOLS = [
         variant_name: { type: "string", description: "Filter to one specific variant (optional)" },
         include_public: { type: "boolean", description: "Also include is_public=true components from other brands" },
         extraction_id: { type: "string", description: "Filter to one specific extraction session" },
+        report_id: { type: "string", description: "If set, results include brand-level variants (report_id IS NULL) AND variants scoped to this report_id. Report-scoped variants appear AFTER brand-level so downstream 'last wins by (type+variant)' logic prefers them." },
       },
       required: ["brand_id"],
     },
@@ -942,31 +944,67 @@ async function handleUpdateModule(userId, args) {
 
   // Re-render
   let heightMm = null;
-  try {
-    const brand = await fetchBrandContext(sql, mod.brand_id);
-    const renderPayload = newHtmlContent
-      ? { html_content: newHtmlContent, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: 'draft' }
-      : { module_type: mod.module_type, content: newContent, style: newStyle, brand_tokens: brand.tokens, brand_fonts: brand.fonts };
-    const renderResult = await callRenderService("/render/module", renderPayload, mod.tenant_id);
-    heightMm = renderResult.height_mm ?? null;
-    const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
-    await sql`
-      UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
-      WHERE id = ${module_id}
-    `;
-  } catch (e) {
-    console.warn(`[mcp-v2] Re-render failed for module ${module_id}:`, e.message);
-    // Render failure — fall back to raw html_content so the editor/PDF
-    // still have content (matches v2-modules PATCH behavior).
-    if (newHtmlContent) {
-      try {
-        await sql`
-          UPDATE v2_report_modules SET html_cache = ${newHtmlContent}
-          WHERE id = ${module_id}
-        `;
-      } catch (fbErr) {
-        console.warn(`[mcp-v2] html_content fallback for ${module_id} failed:`, fbErr.message);
+  if (newHtmlContent) {
+    // Fast path: freeform module — html_content IS the final rendered HTML.
+    // Wrap it with any CSS-var style overrides on a :root-style shim and use
+    // /render/measure to get an accurate height without a full re-render.
+    // Mirrors handleAddModule's fast path so tweak:mN:--var:value updates are
+    // cheap and re-rendered htmls stay WYSIWYG.
+    let htmlCacheForEditor = newHtmlContent;
+    try {
+      const styleEntries = Object.entries(newStyle || {})
+        .filter(([k, v]) => typeof k === 'string' && k.startsWith('--') && (typeof v === 'string' || typeof v === 'number'))
+        .map(([k, v]) => `${k}: ${v};`)
+        .join(' ');
+      if (styleEntries) {
+        // Wrap html_content in a div that carries the CSS-var overrides.
+        // The vars cascade down to all components inside the module. We keep
+        // the wrapper HTML in html_cache so editor + PDF both see it.
+        htmlCacheForEditor = `<div class="v2-module-style-scope" style="${styleEntries}">${newHtmlContent}</div>`;
       }
+      await sql`
+        UPDATE v2_report_modules SET html_cache = ${htmlCacheForEditor}
+        WHERE id = ${module_id}
+      `;
+    } catch (e) {
+      console.warn(`[mcp-v2] html_cache seed for ${module_id} failed:`, e.message);
+    }
+    try {
+      const brand = await fetchBrandContext(sql, mod.brand_id);
+      const measureResult = await callRenderService(
+        "/render/measure",
+        {
+          html_fragment: htmlCacheForEditor,
+          page_width_mm: 170,
+          brand_tokens: brand.tokens,
+          brand_fonts: brand.fonts,
+        },
+        mod.tenant_id,
+      );
+      heightMm = measureResult.height_mm ?? null;
+      if (heightMm != null) {
+        await sql`UPDATE v2_report_modules SET height_mm = ${heightMm} WHERE id = ${module_id}`;
+      }
+    } catch (e) {
+      console.warn(`[mcp-v2] Measure failed for module ${module_id}:`, e.message);
+    }
+  } else {
+    // Legacy path: content+module_type → render from template
+    try {
+      const brand = await fetchBrandContext(sql, mod.brand_id);
+      const renderResult = await callRenderService(
+        "/render/module",
+        { module_type: mod.module_type, content: newContent, style: newStyle, brand_tokens: brand.tokens, brand_fonts: brand.fonts },
+        mod.tenant_id,
+      );
+      heightMm = renderResult.height_mm ?? null;
+      const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
+      await sql`
+        UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
+        WHERE id = ${module_id}
+      `;
+    } catch (e) {
+      console.warn(`[mcp-v2] Re-render failed for module ${module_id}:`, e.message);
     }
   }
 
@@ -2025,7 +2063,9 @@ async function handleSaveComponent(userId, args) {
     chart_schema,     // object or null, default undefined
     chart_color_mode, // 'brand' | 'custom' | 'brand-locked', default undefined
     style_family,     // string, default undefined
+    report_id,        // optional — scope variant to a single report
   } = args;
+  const reportIdValue = (report_id && typeof report_id === 'string') ? report_id : null;
   const statusValue = ['draft', 'ready', 'deprecated'].includes(status) ? status : 'ready';
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'universal';
   if (!brand_id || !component_type || !label || !html_template) {
@@ -2084,15 +2124,27 @@ async function handleSaveComponent(userId, args) {
     return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue, updated: true });
   }
 
-  // If a variant with the same (brand, type, variant_name) already exists, update it in place
+  // If a variant with the same (brand, type, variant_name, report_id) already exists, update it in place
   // rather than inserting a duplicate. Caller can explicitly pick a new variant_name to force a new row.
-  const existingSameVariant = await sql`
-    SELECT id FROM brand_components
-    WHERE brand_id = ${brand_id}
-      AND component_type = ${component_type}
-      AND variant_name = ${variantLabel}
-    LIMIT 1
-  `;
+  // report_id NULL (brand-level) and a specific report_id are treated as separate scopes — a report-scoped
+  // redesign must NOT silently overwrite the permanent brand-library variant with the same name.
+  const existingSameVariant = reportIdValue
+    ? await sql`
+        SELECT id FROM brand_components
+        WHERE brand_id = ${brand_id}
+          AND component_type = ${component_type}
+          AND variant_name = ${variantLabel}
+          AND report_id = ${reportIdValue}
+        LIMIT 1
+      `
+    : await sql`
+        SELECT id FROM brand_components
+        WHERE brand_id = ${brand_id}
+          AND component_type = ${component_type}
+          AND variant_name = ${variantLabel}
+          AND report_id IS NULL
+        LIMIT 1
+      `;
   if (existingSameVariant.length) {
     const existingId = existingSameVariant[0].id;
     const rows = await sql`
@@ -2131,7 +2183,8 @@ async function handleSaveComponent(userId, args) {
       brand_id, component_type, variant_name, label, html_template, css_template, splittable, placeholder_schema,
       design_notes, source, is_default,
       extraction_id, is_public, unsplash_query, reference_page_numbers, status, page_format,
-      harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode, style_family
+      harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode, style_family,
+      report_id
     )
     VALUES (
       ${brand_id}, ${component_type}, ${variantLabel}, ${label}, ${html_template},
@@ -2148,25 +2201,27 @@ async function handleSaveComponent(userId, args) {
       ${content_tolerance ? JSON.stringify(content_tolerance) : null}::jsonb,
       ${chart_schema ? JSON.stringify(chart_schema) : null}::jsonb,
       ${chart_color_mode ?? null}::text,
-      ${style_family ?? null}::text
+      ${style_family ?? null}::text,
+      ${reportIdValue}::uuid
     )
     RETURNING id
   `;
 
-  return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue, page_format: pageFormatValue });
+  return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue, page_format: pageFormatValue, report_id: reportIdValue });
 }
 
 // ─── Handler: list_components ───────────────────────────────────────────────
 
 async function handleListComponents(userId, args) {
   const sql = getSql();
-  const { brand_id, component_type, variant_name, include_public, extraction_id, include_drafts, status, page_format } = args;
+  const { brand_id, component_type, variant_name, include_public, extraction_id, include_drafts, status, page_format, report_id } = args;
   if (!brand_id) return errorResult("brand_id is required.");
 
   const typeFilter = component_type || null;
   const variantFilter = variant_name || null;
   const extractionFilter = extraction_id || null;
   const includePublic = include_public === true;
+  const reportIdFilter = (report_id && typeof report_id === 'string') ? report_id : null;
   // Default: only 'ready' components. Caller can pass include_drafts=true
   // or status='all' / status='<specific>' to widen the query.
   const statusFilter = status === 'all'
@@ -2177,13 +2232,22 @@ async function handleListComponents(userId, args) {
   // page_format='all' to skip the filter entirely.
   const pageFormatFilter = (page_format && page_format !== 'all' && typeof page_format === 'string') ? page_format : null;
 
+  // report_id filter:
+  //   - When reportIdFilter is set: include rows with report_id IS NULL (brand-level)
+  //     AND rows matching that specific report_id. Brand-level variants appear
+  //     first in the ORDER BY (report_id_sort=0 before 1) so downstream
+  //     "last wins by (type+variant)" consumers correctly prefer report-scoped.
+  //   - When reportIdFilter is NULL: only brand-level (report_id IS NULL). Keeps
+  //     the pre-existing behaviour for callers that don't know about report scopes.
   const rows = await sql`
     SELECT id, brand_id, component_type, variant_name, label, is_default,
            placeholder_schema, html_template, css_template, splittable, design_notes, source,
            extraction_id, is_public, unsplash_query, reference_page_numbers,
            thumbnail_url, thumbnail_generated_at, status, page_format,
            harmony, intensity, accent_usage, content_tolerance, chart_schema, chart_color_mode, style_family,
-           version, created_at, updated_at
+           report_id,
+           version, created_at, updated_at,
+           CASE WHEN report_id IS NULL THEN 0 ELSE 1 END AS report_id_sort
     FROM brand_components
     WHERE (brand_id = ${brand_id} OR (${includePublic} AND is_public = true))
       AND (${typeFilter}::text IS NULL OR component_type = ${typeFilter})
@@ -2191,8 +2255,12 @@ async function handleListComponents(userId, args) {
       AND (${extractionFilter}::uuid IS NULL OR extraction_id = ${extractionFilter}::uuid)
       AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
       AND (${pageFormatFilter}::text IS NULL OR page_format = ${pageFormatFilter} OR page_format = 'universal')
+      AND (
+        (${reportIdFilter}::uuid IS NULL AND report_id IS NULL)
+        OR (${reportIdFilter}::uuid IS NOT NULL AND (report_id IS NULL OR report_id = ${reportIdFilter}::uuid))
+      )
       AND html_template IS NOT NULL AND trim(html_template) != ''
-    ORDER BY component_type, is_default DESC, variant_name, updated_at DESC
+    ORDER BY component_type, report_id_sort, is_default DESC, variant_name, updated_at DESC
   `;
 
   return textResult({ components: rows, count: rows.length });
