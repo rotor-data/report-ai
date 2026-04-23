@@ -24,7 +24,17 @@ const VALID_COLUMNS = ["full", "half", "primary", "sidebar", "thirds", "wide-lef
 const MAX_SLOTS = { full: 1, half: 2, primary: 2, sidebar: 2, thirds: 3, "wide-left": 2, quarter: 2 };
 const VALID_CATEGORIES = ["text", "data", "media"];
 
-const DEFAULT_HEIGHT_BUDGET_MM = 240;
+// Height budget for packing layout modules onto a single page in
+// handleBuildPages. Set conservatively to 210mm because the measurement
+// pipeline (/render/measure) systematically underestimates rendered
+// height by ~10-20% vs what Puppeteer produces at PDF time. The delta
+// comes from cumulative padding + flex gaps + font-metrics differences
+// that only show up in the full page context, not the fragment probe.
+// Real A4 content area is 257mm; 210 leaves 47mm of headroom for the
+// mismatch. Plus we deduct SECTION_GAP_MM per additional module packed
+// on the same page since compose-pages emits 6mm inter-module spacers.
+const DEFAULT_HEIGHT_BUDGET_MM = 210;
+const SECTION_GAP_MM = 6;
 
 const FULL_BLEED_TYPES = new Set(["cover", "chapter_break", "back_cover"]);
 
@@ -1183,8 +1193,12 @@ async function handleBuildPages(userId, args) {
       currentPageId = null;
       currentPageHeight = 0;
     } else {
-      // Layout module: stack until height budget exceeded
-      if (!currentPageId || currentPageHeight + modHeight > heightBudget) {
+      // Layout module: stack until height budget exceeded. Account for
+      // the section-gap between modules — compose-pages emits a 6mm
+      // spacer before each non-first module on a page. Without this the
+      // packer silently under-counts by (n-1)*6mm.
+      const gap = currentPageId ? SECTION_GAP_MM : 0;
+      if (!currentPageId || currentPageHeight + gap + modHeight > heightBudget) {
         const pageRows = await sql`
           INSERT INTO v2_report_pages (report_id, page_number, page_type)
           VALUES (${report_id}, ${pageNumber}, 'content')
@@ -1194,6 +1208,8 @@ async function handleBuildPages(userId, args) {
         currentPageHeight = 0;
         pageSummary.push({ page: pageNumber, type: "content", modules: 0 });
         pageNumber++;
+      } else {
+        currentPageHeight += SECTION_GAP_MM;
       }
       await sql`UPDATE v2_report_modules SET page_id = ${currentPageId} WHERE id = ${mod.id}`;
       currentPageHeight += modHeight;
