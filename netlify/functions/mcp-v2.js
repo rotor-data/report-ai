@@ -797,7 +797,7 @@ async function handleCreate(userId, args) {
 
 async function handleAddModule(userId, args) {
   const sql = getSql();
-  const { report_id, module_type, content, style, after_module_id, html_content } = args;
+  const { report_id, module_type, content, style, after_module_id, html_content, order_index: explicitOrderIndex } = args;
 
   if (!report_id || !module_type) {
     return errorResult("report_id and module_type are required.");
@@ -834,9 +834,21 @@ async function handleAddModule(userId, args) {
   const brandId = reports[0].brand_id;
   const tenantId = reports[0].tenant_id;
 
-  // Determine order_index
+  // Determine order_index. Three resolution modes:
+  //   1. explicit order_index argument — caller knows exactly where the
+  //      module goes. Essential for compose-pages, which parallelises
+  //      addModule for 7+ pages; without explicit ordering the concurrent
+  //      MAX(order_index) queries race and produce scrambled page order
+  //      (cover ends up on page 3, back_cover on page 5 — the bug that
+  //      forced compose-pages to run serially and eat Netlify's 26s limit).
+  //   2. after_module_id — insert relative to an existing module, shift
+  //      subsequent rows. Used by the editor's "insert module" action.
+  //   3. fallback — next available order_index via MAX+1. Used by
+  //      single-shot additions like the legacy append path.
   let orderIndex;
-  if (after_module_id) {
+  if (typeof explicitOrderIndex === 'number' && Number.isFinite(explicitOrderIndex) && explicitOrderIndex >= 0) {
+    orderIndex = Math.floor(explicitOrderIndex);
+  } else if (after_module_id) {
     const afterMods = await sql`
       SELECT order_index FROM v2_report_modules WHERE id = ${after_module_id} AND report_id = ${report_id} LIMIT 1
     `;
