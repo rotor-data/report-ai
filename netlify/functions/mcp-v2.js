@@ -1891,6 +1891,9 @@ async function handleSaveBlueprint(userId, args) {
 // Minimum fields every blueprint row carries. Keeps list responses
 // shaped the same way regardless of whether thumbnails are inlined.
 function shapeBlueprintRow(r, { includeThumb = true } = {}) {
+  const count = Array.isArray(r.slots)
+    ? r.slots.length
+    : (r.modules ? (typeof r.modules === "string" ? JSON.parse(r.modules) : r.modules).length : 0);
   return {
     id: r.id,
     name: r.name,
@@ -1905,9 +1908,11 @@ function shapeBlueprintRow(r, { includeThumb = true } = {}) {
     page_format: r.page_format,
     thumbnail: includeThumb ? (r.thumbnail_small_base64 || null) : undefined,
     thumbnail_url: r.thumbnail_url || null,
-    slots_count: Array.isArray(r.slots)
-      ? r.slots.length
-      : (r.modules ? (typeof r.modules === "string" ? JSON.parse(r.modules) : r.modules).length : 0),
+    slots_count: count,
+    // Legacy alias — smyra-core's setup.ts and template-select.ts read
+    // bp.module_count. Previously missing, which rendered as
+    // "Saved template with undefined modules" in the brand_review UI.
+    module_count: count,
     kind: Array.isArray(r.slots) && r.slots.length ? "smart" : "legacy",
     created_at: r.created_at,
   };
