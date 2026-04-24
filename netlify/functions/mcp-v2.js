@@ -3813,161 +3813,86 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   const assetStore = await getBlobStore("report-ai-assets", event);
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
 
-  // ── 5. Render all pages in parallel ────────────────────────────────────────
-  // Use Promise.allSettled so one slow/failing page doesn't wipe the batch.
-  // Each page that fails is logged explicitly; the successful ones still
-  // come back to the caller. Next test can use the log to trace root cause.
-  const settled = await Promise.allSettled(pages.map(async (page) => {
+  // ── 5. Plan cache keys ─────────────────────────────────────────────────────
+  // Cache version — bump when render-pipeline behaviour changes in a way
+  // that makes old cached blobs incorrect.
+  //   v2 = module_type="freeform" (was "freeform_page"): render.py takes the
+  //        freeform path instead of legacy path that nested .page wrappers.
+  //   v3 = unified render: one multi-page PDF + one rasterize call for the
+  //        whole batch (was N separate single-page PDFs). Rasterize output
+  //        for a page at index i may differ bit-for-bit vs. the old single-
+  //        page path (same content, different page-count metadata in the
+  //        PDF) — bump the suffix so v2 blobs don't leak through.
+  const CACHE_VERSION = "v3";
+  const dpiSuffix = effectiveDpi ? `-d${effectiveDpi}` : "";
+
+  const pagePlans = pages.map((page) => {
     const pageHash = createHash("sha256").update(page.html).digest("hex").slice(0, 8);
-    // DPI suffix on the cache key so low-DPI base64 renders don't collide
-    // with full-res URL renders. Default URL path (no base64) stays on the
-    // original key so existing cached blobs remain valid.
-    const dpiSuffix = effectiveDpi ? `-d${effectiveDpi}` : "";
-    // Cache version — bump when render-pipeline behaviour changes in a way
-    // that makes old cached blobs incorrect. v2 = module_type="freeform"
-    // (was "freeform_page") so render.py takes the freeform path with no
-    // outer padding wrapper; cached v1 blobs had the nested-.page overflow.
-    const CACHE_VERSION = "v2";
-    const blobKey = `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}${dpiSuffix}-${CACHE_VERSION}.png`;
+    return {
+      page_num: page.page_num,
+      html: page.html,
+      blobKey: `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}${dpiSuffix}-${CACHE_VERSION}.png`,
+    };
+  });
 
-    // Cache hit: skip render if blob already exists
-    try {
-      const existing = await assetStore.getMetadata(blobKey);
-      if (existing) {
-        const cachedResult = {
-          page_num: page.page_num,
-          thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
-          cached: true,
-        };
-        // If the caller wants inline base64 (for MCP image content blocks),
-        // fetch the cached blob back and include the PNG bytes. Costs one
-        // extra blob read but avoids a full re-render.
-        if (return_base64) {
-          try {
-            const cachedBytes = await assetStore.get(blobKey, { type: "arrayBuffer" });
-            if (cachedBytes) cachedResult.png_base64 = Buffer.from(cachedBytes).toString("base64");
-          } catch { /* blob fetch failed — return URL only */ }
-        }
-        return cachedResult;
-      }
-    } catch { /* cache miss — fall through to render */ }
+  const allPagesHash = createHash("sha256")
+    .update(pages.map((p) => `${p.page_num}:${p.html}`).join("\n"))
+    .digest("hex").slice(0, 16);
+  const pdfBlobKey = `preview-pdfs/${brand_id}/${cssHash}-${allPagesHash}-${page_format}.pdf`;
+  const pdfStore = await getBlobStore("report-ai-pdfs", event);
 
-    // Synthesise a single-page payload for /render/pdf. report_id must be a
-    // UUID (render service validates); was "thumb-N" which failed validation
-    // silently. Use a fresh random UUID per page — render service only uses
-    // it for log-correlation, not DB lookup.
-    const syntheticReportId = randomUUID();
-    const syntheticPage = {
+  // ── 6. Per-page cache probe ────────────────────────────────────────────────
+  // Concurrent probe of every thumbnail key. Fully cached pages skip the
+  // render entirely; if ALL pages are cached AND the preview PDF exists,
+  // no render service call at all.
+  const cachedResults = new Array(pagePlans.length).fill(null);
+  const cacheProbes = await Promise.allSettled(pagePlans.map(async (plan, i) => {
+    const meta = await assetStore.getMetadata(plan.blobKey).catch(() => null);
+    if (!meta) return;
+    const result = {
+      page_num: plan.page_num,
+      thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(plan.blobKey)}`,
+      cached: true,
+    };
+    if (return_base64) {
+      const bytes = await assetStore.get(plan.blobKey, { type: "arrayBuffer" }).catch(() => null);
+      if (bytes) result.png_base64 = Buffer.from(bytes).toString("base64");
+    }
+    cachedResults[i] = result;
+  }));
+  // Silent if probe throws; treat as cache miss.
+  void cacheProbes;
+
+  const missingIndices = pagePlans
+    .map((_, i) => (cachedResults[i] == null ? i : -1))
+    .filter((i) => i >= 0);
+
+  const pdfMeta = await pdfStore.getMetadata(pdfBlobKey).catch(() => null);
+  const pdfCached = !!pdfMeta;
+
+  // ── 7. Render path — 2 calls total, regardless of page count ──────────────
+  // Only fires when at least one thumbnail is missing OR the preview PDF
+  // is missing. Full cache hit = zero render calls.
+  const errors = [];
+  let pdfBuffer = null;
+
+  if (missingIndices.length > 0 || !pdfCached) {
+    const allSyntheticPages = pages.map((p) => ({
       id: randomUUID(),
-      page_number: page.page_num,
-      page_type: page.page_num === 1 ? "cover" : "content",
+      page_number: p.page_num,
+      page_type: p.page_num === 1 ? "cover" : "content",
       modules: [{
-        // Must be "freeform" (not "freeform_page") so render.py takes the
-        // freeform path and wraps in `.page page--freeform` (padding: 0)
-        // instead of the legacy path which wraps in `.page page--content`
-        // with base-template padding — that would nest a padded outer
-        // .page around the inner `.page` in the sample HTML and the inner
-        // would overflow by ~20mm on the right.
         module_type: "freeform",
         order_index: 0,
-        html_content: page.html,
-        html_cache: page.html,
+        html_content: p.html,
+        html_cache: p.html,
         content: {},
         style: {},
         background: null,
       }],
-    };
+    }));
 
-    const pdfResult = await callRenderService("/render/pdf", {
-      report_id: syntheticReportId,
-      title: "Preview",
-      mode: "draft",
-      page_format,
-      pages: [syntheticPage],
-      brand_tokens: brand.tokens ?? {},
-      brand_fonts: brand.fonts ?? [],
-      brand_logos: brand.logos ?? [],
-      css_base: "",
-      document_css: design_system_css,
-      document_css_overrides: "",
-      style_overrides: {},
-    }, tenantId);
-
-    const pdfBuffer = pdfResult.pdf_bytes
-      ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
-    if (!pdfBuffer) throw new Error(`render returned no PDF bytes`);
-
-    const raster = await callRenderService("/render/rasterize", {
-      pdf_base64: pdfBuffer.toString("base64"),
-      ...(effectiveDpi ? { dpi: effectiveDpi } : {}),
-    }, tenantId);
-
-    const rasterPage = raster.pages?.[0];
-    if (!rasterPage?.png_base64) throw new Error(`rasterize returned no PNG`);
-
-    const pngBuffer = Buffer.from(rasterPage.png_base64, "base64");
-    await assetStore.set(blobKey, pngBuffer, { contentType: "image/png" });
-
-    const result = {
-      page_num: page.page_num,
-      thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
-      cached: false,
-    };
-    if (rasterPage.height_mm != null) result.height_mm = rasterPage.height_mm;
-    if (return_base64) result.png_base64 = rasterPage.png_base64;
-    return result;
-  }));
-
-  // Collect successes + log failures. Never 500 the whole call for a per-page
-  // render error; the caller prefers partial previews over zero previews.
-  const thumbnails = [];
-  const errors = [];
-  for (let i = 0; i < settled.length; i++) {
-    const result = settled[i];
-    const pageNum = pages[i]?.page_num;
-    if (result.status === "fulfilled") {
-      thumbnails.push(result.value);
-    } else {
-      const reason = result.reason instanceof Error
-        ? `${result.reason.message}${result.reason.stack ? "\n" + result.reason.stack.split("\n").slice(0, 3).join("\n") : ""}`
-        : String(result.reason);
-      errors.push({ page_num: pageNum, error: reason });
-      console.error(`[render_freeform_thumbnails] page ${pageNum} failed: ${reason}`);
-    }
-  }
-
-  // ── 6. Render one multi-page PDF for a single "preview all" URL ──────────
-  // Content-addressed on cssHash + concatenated pageHash so the preview URL
-  // is stable across re-renders of the same content. Stored in the same
-  // PDF blob store that /api/v2-pdf serves — one URL, all pages visible
-  // inline when the user clicks through.
-  const allPagesHash = createHash("sha256")
-    .update(pages.map(p => `${p.page_num}:${p.html}`).join("\n"))
-    .digest("hex").slice(0, 16);
-  const pdfBlobKey = `preview-pdfs/${brand_id}/${cssHash}-${allPagesHash}-${page_format}.pdf`;
-  let preview_url = null;
-  try {
-    const pdfStore = await getBlobStore("report-ai-pdfs", event);
-    let pdfExists = false;
     try {
-      if (await pdfStore.getMetadata(pdfBlobKey)) pdfExists = true;
-    } catch { /* cache miss */ }
-
-    if (!pdfExists) {
-      const allSyntheticPages = pages.map(p => ({
-        id: randomUUID(),
-        page_number: p.page_num,
-        page_type: p.page_num === 1 ? "cover" : "content",
-        modules: [{
-          module_type: "freeform",
-          order_index: 0,
-          html_content: p.html,
-          html_cache: p.html,
-          content: {},
-          style: {},
-          background: null,
-        }],
-      }));
       const pdfResult = await callRenderService("/render/pdf", {
         report_id: randomUUID(),
         title: "Preview",
@@ -3982,19 +3907,77 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
         document_css_overrides: "",
         style_overrides: {},
       }, tenantId);
-      const pdfBuffer = pdfResult.pdf_bytes
+      pdfBuffer = pdfResult.pdf_bytes
         ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
-      if (pdfBuffer) {
+      if (!pdfBuffer) throw new Error("render returned no PDF bytes");
+      if (!pdfCached) {
         await pdfStore.set(pdfBlobKey, pdfBuffer, { contentType: "application/pdf" });
       }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error("[render_freeform_thumbnails] PDF render failed:", reason);
+      // No PDF means no rasterize source → mark all missing pages as errored
+      // so the caller sees them in errors[] and can fall back to cached URLs.
+      for (const i of missingIndices) {
+        errors.push({ page_num: pagePlans[i].page_num, error: `PDF render failed: ${reason}` });
+      }
     }
-    preview_url = `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(pdfBlobKey)}`;
-  } catch (err) {
-    console.warn("[render_freeform_thumbnails] multi-page PDF render failed:", err?.message || err);
+
+    // Rasterize the full multi-page PDF in one call, then split per page.
+    if (pdfBuffer && missingIndices.length > 0) {
+      try {
+        const raster = await callRenderService("/render/rasterize", {
+          pdf_base64: pdfBuffer.toString("base64"),
+          ...(effectiveDpi ? { dpi: effectiveDpi } : {}),
+        }, tenantId);
+        const rasterPages = Array.isArray(raster.pages) ? raster.pages : [];
+        // rasterize returns 1-indexed `page` numbers. Map back to our plans.
+        const byPageNum = new Map();
+        for (const rp of rasterPages) {
+          if (typeof rp?.page === "number") byPageNum.set(rp.page, rp);
+        }
+        for (const i of missingIndices) {
+          const plan = pagePlans[i];
+          const rp = byPageNum.get(plan.page_num);
+          if (!rp?.png_base64) {
+            errors.push({ page_num: plan.page_num, error: "rasterize returned no PNG for this page" });
+            console.error(`[render_freeform_thumbnails] page ${plan.page_num}: no PNG from rasterize`);
+            continue;
+          }
+          try {
+            const pngBuffer = Buffer.from(rp.png_base64, "base64");
+            await assetStore.set(plan.blobKey, pngBuffer, { contentType: "image/png" });
+            const result = {
+              page_num: plan.page_num,
+              thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(plan.blobKey)}`,
+              cached: false,
+            };
+            if (rp.height_mm != null) result.height_mm = rp.height_mm;
+            if (return_base64) result.png_base64 = rp.png_base64;
+            cachedResults[i] = result;
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            errors.push({ page_num: plan.page_num, error: `blob store failed: ${reason}` });
+            console.error(`[render_freeform_thumbnails] page ${plan.page_num} blob write failed: ${reason}`);
+          }
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error("[render_freeform_thumbnails] rasterize failed:", reason);
+        for (const i of missingIndices) {
+          if (cachedResults[i] == null) {
+            errors.push({ page_num: pagePlans[i].page_num, error: `rasterize failed: ${reason}` });
+          }
+        }
+      }
+    }
   }
 
+  // Compose final thumbnails array (preserve request order, drop nulls).
+  const thumbnails = cachedResults.filter(Boolean);
+
   const summary = { thumbnails, count: thumbnails.length, requested: pages.length };
-  if (preview_url) summary.preview_url = preview_url;
+  summary.preview_url = `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(pdfBlobKey)}`;
   if (errors.length > 0) {
     summary.errors = errors;
     summary.partial = true;
