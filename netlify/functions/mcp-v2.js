@@ -2037,7 +2037,99 @@ async function handleSaveBlueprint(userId, args) {
     RETURNING id
   `;
 
-  return textResult({ blueprint_id: rows[0].id });
+  const blueprintId = rows[0].id;
+
+  // Fire-and-forget: render a cover thumbnail from sample_pages_html[0] so
+  // the setup picker can show a visual preview. Only for rows with a
+  // brand_id (smyra-visibility starter packs are admin-seeded and get
+  // covers via tooling). Errors are logged and swallowed — a missing
+  // cover just means the picker falls back to a text-only choice.
+  if (brand_id && typeof sample_pages_html[0] === "string") {
+    Promise.resolve().then(() =>
+      renderBlueprintCover(sql, {
+        blueprintId,
+        sampleHtml: sample_pages_html[0],
+        designSystemCss: design_system_css,
+        brandId: brand_id,
+      })
+    ).catch((err) =>
+      console.error(`[blueprint_cover] ${blueprintId} background render failed:`, err?.message || err)
+    );
+  }
+
+  return textResult({ blueprint_id: blueprintId });
+}
+
+// Renders sample_pages_html[0] once and stores the URL on the blueprint.
+// Reuses the same content-addressed cache as render_freeform_thumbnails —
+// if the page+CSS combo was ever rendered for preview, the blob already
+// exists and we just record the URL. Called as background work from
+// save_blueprint so the save response returns immediately.
+async function renderBlueprintCover(sql, { blueprintId, sampleHtml, designSystemCss, brandId, pageFormat = "a4_portrait" }) {
+  try {
+    const brandRows = await sql`SELECT tenant_id FROM brands WHERE id = ${brandId} LIMIT 1`;
+    const tenantId = brandRows[0]?.tenant_id;
+    if (!tenantId) return;
+
+    const { createHash } = await import("node:crypto");
+    const cssHash = createHash("sha256").update(designSystemCss).digest("hex").slice(0, 8);
+    const pageHash = createHash("sha256").update(sampleHtml).digest("hex").slice(0, 8);
+    const blobKey = `thumbnails/${brandId}/${cssHash}-${pageHash}-p1.png`;
+    const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+    const url = `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`;
+
+    const assetStore = await getBlobStore("report-ai-assets");
+    let cached = false;
+    try {
+      if (await assetStore.getMetadata(blobKey)) cached = true;
+    } catch { /* cache miss */ }
+
+    if (!cached) {
+      const brand = await fetchBrandContext(sql, brandId);
+      const syntheticPage = {
+        id: randomUUID(),
+        page_number: 1,
+        page_type: "cover",
+        modules: [{
+          module_type: "freeform_page",
+          order_index: 0,
+          html_content: sampleHtml,
+          html_cache: sampleHtml,
+          content: {},
+          style: {},
+          background: null,
+        }],
+      };
+      const pdfResult = await callRenderService("/render/pdf", {
+        report_id: randomUUID(),
+        title: "Blueprint cover",
+        mode: "draft",
+        page_format: pageFormat,
+        pages: [syntheticPage],
+        brand_tokens: brand.tokens ?? {},
+        brand_fonts: brand.fonts ?? [],
+        brand_logos: brand.logos ?? [],
+        css_base: "",
+        document_css: designSystemCss,
+        document_css_overrides: "",
+        style_overrides: {},
+      }, tenantId);
+      const pdfBuffer = pdfResult.pdf_bytes
+        ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+      if (!pdfBuffer) throw new Error("render returned no PDF bytes");
+      const raster = await callRenderService("/render/rasterize", {
+        pdf_base64: pdfBuffer.toString("base64"),
+      }, tenantId);
+      const rasterPage = raster.pages?.[0];
+      if (!rasterPage?.png_base64) throw new Error("rasterize returned no PNG");
+      await assetStore.set(blobKey, Buffer.from(rasterPage.png_base64, "base64"), { contentType: "image/png" });
+    }
+
+    await sql`UPDATE report_blueprints SET cover_thumbnail_url = ${url} WHERE id = ${blueprintId}`;
+    console.log(`[blueprint_cover] ${blueprintId} cover ${cached ? "reused" : "rendered"}`);
+  } catch (err) {
+    console.error(`[blueprint_cover] ${blueprintId} failed:`, err?.message || err);
+  }
 }
 
 // ─── Blueprint helpers ──────────────────────────────────────────────────────
@@ -2053,6 +2145,7 @@ function shapeBlueprintListRow(r) {
     module_count: r.module_count != null ? r.module_count : null,
     // Rename document_type → doctype_hint in output to match alpha-v3 contract
     doctype_hint: r.document_type || null,
+    cover_thumbnail_url: r.cover_thumbnail_url || null,
     created_at: r.created_at,
   };
 }
@@ -2088,7 +2181,7 @@ async function handleListBlueprints(userId, args) {
   if (brand_id) {
     rows = await sql`
       SELECT id, brand_id, visibility, name, document_type, style_direction,
-             module_count, created_at
+             module_count, cover_thumbnail_url, created_at
       FROM report_blueprints
       WHERE design_system_css IS NOT NULL
         AND (visibility = 'smyra' OR brand_id = ${brand_id})
@@ -2102,7 +2195,7 @@ async function handleListBlueprints(userId, args) {
   } else {
     rows = await sql`
       SELECT id, brand_id, visibility, name, document_type, style_direction,
-             module_count, created_at
+             module_count, cover_thumbnail_url, created_at
       FROM report_blueprints
       WHERE design_system_css IS NOT NULL
         AND visibility = 'smyra'
@@ -3713,7 +3806,10 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
 
   // ── 5. Render all pages in parallel ────────────────────────────────────────
-  const results = await Promise.all(pages.map(async (page) => {
+  // Use Promise.allSettled so one slow/failing page doesn't wipe the batch.
+  // Each page that fails is logged explicitly; the successful ones still
+  // come back to the caller. Next test can use the log to trace root cause.
+  const settled = await Promise.allSettled(pages.map(async (page) => {
     const pageHash = createHash("sha256").update(page.html).digest("hex").slice(0, 8);
     const blobKey = `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}.png`;
 
@@ -3724,11 +3820,16 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
         return {
           page_num: page.page_num,
           thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
+          cached: true,
         };
       }
     } catch { /* cache miss — fall through to render */ }
 
-    // Synthesise a single-page payload for /render/pdf
+    // Synthesise a single-page payload for /render/pdf. report_id must be a
+    // UUID (render service validates); was "thumb-N" which failed validation
+    // silently. Use a fresh random UUID per page — render service only uses
+    // it for log-correlation, not DB lookup.
+    const syntheticReportId = randomUUID();
     const syntheticPage = {
       id: randomUUID(),
       page_number: page.page_num,
@@ -3745,7 +3846,7 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
     };
 
     const pdfResult = await callRenderService("/render/pdf", {
-      report_id: `thumb-${page.page_num}`,
+      report_id: syntheticReportId,
       title: "Preview",
       mode: "draft",
       page_format,
@@ -3761,14 +3862,14 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
 
     const pdfBuffer = pdfResult.pdf_bytes
       ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
-    if (!pdfBuffer) throw new Error(`page ${page.page_num}: render returned no PDF`);
+    if (!pdfBuffer) throw new Error(`render returned no PDF bytes`);
 
     const raster = await callRenderService("/render/rasterize", {
       pdf_base64: pdfBuffer.toString("base64"),
     }, tenantId);
 
     const rasterPage = raster.pages?.[0];
-    if (!rasterPage?.png_base64) throw new Error(`page ${page.page_num}: rasterize returned no PNG`);
+    if (!rasterPage?.png_base64) throw new Error(`rasterize returned no PNG`);
 
     const pngBuffer = Buffer.from(rasterPage.png_base64, "base64");
     await assetStore.set(blobKey, pngBuffer, { contentType: "image/png" });
@@ -3776,12 +3877,36 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
     const result = {
       page_num: page.page_num,
       thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
+      cached: false,
     };
     if (rasterPage.height_mm != null) result.height_mm = rasterPage.height_mm;
     return result;
   }));
 
-  return textResult({ thumbnails: results, count: results.length });
+  // Collect successes + log failures. Never 500 the whole call for a per-page
+  // render error; the caller prefers partial previews over zero previews.
+  const thumbnails = [];
+  const errors = [];
+  for (let i = 0; i < settled.length; i++) {
+    const result = settled[i];
+    const pageNum = pages[i]?.page_num;
+    if (result.status === "fulfilled") {
+      thumbnails.push(result.value);
+    } else {
+      const reason = result.reason instanceof Error
+        ? `${result.reason.message}${result.reason.stack ? "\n" + result.reason.stack.split("\n").slice(0, 3).join("\n") : ""}`
+        : String(result.reason);
+      errors.push({ page_num: pageNum, error: reason });
+      console.error(`[render_freeform_thumbnails] page ${pageNum} failed: ${reason}`);
+    }
+  }
+
+  const summary = { thumbnails, count: thumbnails.length, requested: pages.length };
+  if (errors.length > 0) {
+    summary.errors = errors;
+    summary.partial = true;
+  }
+  return textResult(summary);
 }
 
 // ─── HANDLERS map ───────────────────────────────────────────────────────────
