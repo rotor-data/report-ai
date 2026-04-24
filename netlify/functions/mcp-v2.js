@@ -3775,9 +3775,11 @@ async function handleCreateSlotVariant(userId, args) {
 async function handleRenderFreeformThumbnails(userId, args, event) {
   const sql = getSql();
   const { pages, design_system_css, brand_id, page_format = "a4_portrait", return_base64 = false, thumbnail_dpi } = args || {};
-  // When base64 is requested, default to 72 DPI so the payload fits in the
-  // MCP response budget. Full-res 150 DPI PNGs are 1-3 MB each; 72 DPI is
-  // ~250-400 KB which keeps a typical 3-page design review under 2 MB.
+  // When base64 is requested, default back to 72 DPI — base64 now ships
+  // only as the MCP image content block (vision input to Claude), NOT in
+  // the message text as a data URI, so no token inflation concern. 72 DPI
+  // gives Claude enough detail to read typography. A typical 3-page pause
+  // ≈ 1 MB image content which is fine for multimodal.
   const effectiveDpi = return_base64 ? (typeof thumbnail_dpi === "number" && thumbnail_dpi > 0 ? thumbnail_dpi : 72) : null;
 
   // ── 1. Validate input ──────────────────────────────────────────────────────
@@ -3934,7 +3936,65 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
     }
   }
 
+  // ── 6. Render one multi-page PDF for a single "preview all" URL ──────────
+  // Content-addressed on cssHash + concatenated pageHash so the preview URL
+  // is stable across re-renders of the same content. Stored in the same
+  // PDF blob store that /api/v2-pdf serves — one URL, all pages visible
+  // inline when the user clicks through.
+  const allPagesHash = createHash("sha256")
+    .update(pages.map(p => `${p.page_num}:${p.html}`).join("\n"))
+    .digest("hex").slice(0, 16);
+  const pdfBlobKey = `preview-pdfs/${brand_id}/${cssHash}-${allPagesHash}-${page_format}.pdf`;
+  let preview_url = null;
+  try {
+    const pdfStore = await getBlobStore("report-ai-pdfs", event);
+    let pdfExists = false;
+    try {
+      if (await pdfStore.getMetadata(pdfBlobKey)) pdfExists = true;
+    } catch { /* cache miss */ }
+
+    if (!pdfExists) {
+      const allSyntheticPages = pages.map(p => ({
+        id: randomUUID(),
+        page_number: p.page_num,
+        page_type: p.page_num === 1 ? "cover" : "content",
+        modules: [{
+          module_type: "freeform",
+          order_index: 0,
+          html_content: p.html,
+          html_cache: p.html,
+          content: {},
+          style: {},
+          background: null,
+        }],
+      }));
+      const pdfResult = await callRenderService("/render/pdf", {
+        report_id: randomUUID(),
+        title: "Preview",
+        mode: "draft",
+        page_format,
+        pages: allSyntheticPages,
+        brand_tokens: brand.tokens ?? {},
+        brand_fonts: brand.fonts ?? [],
+        brand_logos: brand.logos ?? [],
+        css_base: "",
+        document_css: design_system_css,
+        document_css_overrides: "",
+        style_overrides: {},
+      }, tenantId);
+      const pdfBuffer = pdfResult.pdf_bytes
+        ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+      if (pdfBuffer) {
+        await pdfStore.set(pdfBlobKey, pdfBuffer, { contentType: "application/pdf" });
+      }
+    }
+    preview_url = `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(pdfBlobKey)}`;
+  } catch (err) {
+    console.warn("[render_freeform_thumbnails] multi-page PDF render failed:", err?.message || err);
+  }
+
   const summary = { thumbnails, count: thumbnails.length, requested: pages.length };
+  if (preview_url) summary.preview_url = preview_url;
   if (errors.length > 0) {
     summary.errors = errors;
     summary.partial = true;
