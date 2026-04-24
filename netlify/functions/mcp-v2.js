@@ -3821,7 +3821,12 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
     // with full-res URL renders. Default URL path (no base64) stays on the
     // original key so existing cached blobs remain valid.
     const dpiSuffix = effectiveDpi ? `-d${effectiveDpi}` : "";
-    const blobKey = `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}${dpiSuffix}.png`;
+    // Cache version — bump when render-pipeline behaviour changes in a way
+    // that makes old cached blobs incorrect. v2 = module_type="freeform"
+    // (was "freeform_page") so render.py takes the freeform path with no
+    // outer padding wrapper; cached v1 blobs had the nested-.page overflow.
+    const CACHE_VERSION = "v2";
+    const blobKey = `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}${dpiSuffix}-${CACHE_VERSION}.png`;
 
     // Cache hit: skip render if blob already exists
     try {
@@ -3855,7 +3860,13 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
       page_number: page.page_num,
       page_type: page.page_num === 1 ? "cover" : "content",
       modules: [{
-        module_type: "freeform_page",
+        // Must be "freeform" (not "freeform_page") so render.py takes the
+        // freeform path and wraps in `.page page--freeform` (padding: 0)
+        // instead of the legacy path which wraps in `.page page--content`
+        // with base-template padding — that would nest a padded outer
+        // .page around the inner `.page` in the sample HTML and the inner
+        // would overflow by ~20mm on the right.
+        module_type: "freeform",
         order_index: 0,
         html_content: page.html,
         html_cache: page.html,
