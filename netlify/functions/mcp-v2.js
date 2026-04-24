@@ -235,6 +235,41 @@ const TOOLS = [
     },
   },
   {
+    name: "render_freeform_pdf",
+    description: "alpha-v3 render path: renders a PDF from freeform HTML pages + design_system_css passed inline. Used by the rotor-platform-hub's render-worker-background when a render_jobs row carries a freeform payload. Unlike render_pdf this does NOT read v2_report_pages — the caller is the source of truth for page content. Use render_pdf for legacy v2 reports.",
+    inputSchema: {
+      type: "object",
+      required: ["payload", "report_id", "mode"],
+      properties: {
+        payload: {
+          type: "object",
+          required: ["pages", "design_system_css", "brand_id"],
+          properties: {
+            pages: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["page_num", "html"],
+                properties: {
+                  page_num: { type: "number" },
+                  module_ids: { type: "array", items: { type: "string" } },
+                  html: { type: "string" },
+                },
+              },
+            },
+            design_system_css: { type: "string" },
+            augmented_design_css_additions: { type: "string" },
+            brand_id: { type: "string" },
+            page_format: { type: "string" },
+            title: { type: "string" },
+          },
+        },
+        report_id: { type: "string" },
+        mode: { type: "string", enum: ["draft", "final"] },
+      },
+    },
+  },
+  {
     name: "render_module_thumbnails",
     description: "Render each built module in a report as an individual PNG thumbnail. Returns per-module thumbnail URLs so the workflow can show per-module design previews for user approval before final PDF assembly.",
     inputSchema: {
@@ -3612,6 +3647,125 @@ async function handleCreateSlotVariant(userId, args) {
 
 // ─── HANDLERS map ───────────────────────────────────────────────────────────
 
+// ─── Handler: render_freeform_pdf ───────────────────────────────────────────
+// alpha-v3 render path — caller provides pages as freeform HTML + CSS inline.
+// Does NOT read v2_report_pages from DB; skips template/document_css logic.
+
+async function handleRenderFreeformPdf(userId, args, event) {
+  const { payload, report_id, mode } = args;
+
+  // ── 1. Validate input ──────────────────────────────────────────────────────
+  if (!payload || !report_id || !mode) {
+    return errorResult("payload, report_id, and mode are required.");
+  }
+  if (!Array.isArray(payload.pages) || payload.pages.length === 0) {
+    return errorResult("payload.pages must be a non-empty array.");
+  }
+  for (const p of payload.pages) {
+    if (typeof p.page_num !== "number") {
+      return errorResult("Each page must have a numeric page_num.");
+    }
+    if (typeof p.html !== "string" || !p.html.trim()) {
+      return errorResult(`Page ${p.page_num} is missing a non-empty html string.`);
+    }
+  }
+  if (typeof payload.design_system_css !== "string" || !payload.design_system_css.trim()) {
+    return errorResult("payload.design_system_css must be a non-empty string.");
+  }
+  if (typeof payload.brand_id !== "string" || !/^[0-9a-f-]{36}$/i.test(payload.brand_id)) {
+    return errorResult("payload.brand_id must be a UUID string.");
+  }
+
+  const sql = getSql();
+
+  // ── 2. Resolve tenant_id from brand ────────────────────────────────────────
+  const brandRow = await sql`SELECT tenant_id FROM brands WHERE id = ${payload.brand_id} LIMIT 1`;
+  const tenantId = brandRow[0]?.tenant_id;
+  if (!tenantId) return errorResult(`Brand ${payload.brand_id} not found or has no tenant_id.`);
+
+  // ── 3. Fetch brand context (tokens, fonts, logos) ──────────────────────────
+  const brand = await fetchBrandContext(sql, payload.brand_id);
+
+  // ── 4. Synthesise smyra-render pages ──────────────────────────────────────
+  const syntheticPages = payload.pages.map(p => ({
+    id: crypto.randomUUID(),
+    page_number: p.page_num,
+    page_type: p.page_num === 1 ? "cover" : "content",
+    modules: [
+      {
+        module_type: "freeform_page",
+        order_index: p.page_num,
+        html_content: p.html,
+        html_cache: p.html,
+        content: {},
+        style: {},
+        background: null,
+      },
+    ],
+  }));
+
+  // ── 5. Compose document_css ─────────────────────────────────────────────────
+  const fullCss = payload.design_system_css + (payload.augmented_design_css_additions ?? "");
+
+  // ── 6. Call render service ──────────────────────────────────────────────────
+  const pdfResult = await callRenderService("/render/pdf", {
+    report_id,
+    title: payload.title ?? "Untitled report",
+    mode,
+    page_format: payload.page_format ?? "a4_portrait",
+    pages: syntheticPages,
+    brand_tokens: brand.tokens ?? {},
+    brand_fonts: brand.fonts ?? [],
+    brand_logos: brand.logos ?? [],
+    css_base: "",
+    document_css: fullCss,
+    document_css_overrides: "",
+    style_overrides: {},
+  }, tenantId);
+
+  // ── 7. Store PDF in Netlify Blobs ───────────────────────────────────────────
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const blobKey = `tenants/${tenantId}/reports/${report_id}/${mode}-${timestamp}.pdf`;
+  const store = await getBlobStore("report-ai-pdfs", event);
+  const pdfBuffer = pdfResult.pdf_bytes
+    ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+  if (!pdfBuffer) throw new Error("Render service returned no PDF bytes");
+  await store.set(blobKey, pdfBuffer, { contentType: "application/pdf" });
+
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+
+  // ── 8. Rasterize thumbnails for draft mode ──────────────────────────────────
+  let thumbnails = [];
+  if (mode === "draft") {
+    try {
+      const raster = await callRenderService("/render/rasterize", {
+        pdf_base64: pdfBuffer.toString("base64"),
+      }, tenantId);
+      const assetStore = await getBlobStore("report-ai-assets", event);
+      for (const page of raster.pages || []) {
+        const thumbKey = `tenants/${tenantId}/reports/${report_id}/thumbs/${timestamp}-page-${page.page}.png`;
+        const pngBuffer = Buffer.from(page.png_base64, "base64");
+        await assetStore.set(thumbKey, pngBuffer, { contentType: "image/png" });
+        thumbnails.push({
+          page: page.page,
+          url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(thumbKey)}`,
+        });
+      }
+    } catch (err) {
+      console.warn("[render_freeform_pdf] rasterize failed (non-fatal):", err.message);
+    }
+  }
+
+  // ── 9. Return result ────────────────────────────────────────────────────────
+  return textResult({
+    pdf_url: `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(blobKey)}`,
+    thumbnails,
+    mode,
+    pages_count: payload.pages.length,
+    freeform: true,
+  });
+}
+
 const HANDLERS = {
   create:                handleCreate,
   add_module:            handleAddModule,
@@ -3621,6 +3775,7 @@ const HANDLERS = {
   get_structure:         handleGetStructure,
   build_pages:           handleBuildPages,
   render_pdf:            handleRenderPdf,
+  render_freeform_pdf:   handleRenderFreeformPdf,
   preview_plan:          handlePreviewPlan,
   render_module_thumbnails: handleRenderModuleThumbnails,
   get_editor_url:        handleGetEditorUrl,
