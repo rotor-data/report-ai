@@ -235,6 +235,31 @@ const TOOLS = [
     },
   },
   {
+    name: "persist_freeform_pages",
+    description: "alpha-v3: writes the final set of freeform HTML pages into v2_report_pages + v2_report_modules so the editor (/v2/reports/<id>) and the legacy render_pdf tool can find them. Called by smyra-core at module_review approve_all, BEFORE enqueueRender. The report must already exist (created_at row in v2_reports). Existing rows for the same (report_id, page_number) are replaced so retries and patches converge. Also writes the final document_css onto v2_reports.document_css.",
+    inputSchema: {
+      type: "object",
+      required: ["report_id", "pages", "design_system_css"],
+      properties: {
+        report_id: { type: "string", description: "UUID of the v2_reports row to populate." },
+        pages: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["page_num", "html"],
+            properties: {
+              page_num: { type: "number", description: "1-indexed page number." },
+              page_type: { type: "string", description: "cover | content | chapter_break | back_cover. Defaults to content." },
+              html: { type: "string", description: "Freeform HTML for this page (a <section class='page'> root, as produced by page_design)." },
+            },
+          },
+        },
+        design_system_css: { type: "string", description: "Final design_system_css for the report — stored on v2_reports.document_css so the editor and render_pdf can cascade it." },
+        augmented_design_css_additions: { type: "string", description: "Optional CSS appended after design_system_css (module_review patches). Stored on v2_reports.document_css_overrides." },
+      },
+    },
+  },
+  {
     name: "render_freeform_pdf",
     description: "alpha-v3 render path: renders a PDF from freeform HTML pages + design_system_css passed inline. Used by the rotor-platform-hub's render-worker-background when a render_jobs row carries a freeform payload. Unlike render_pdf this does NOT read v2_report_pages — the caller is the source of truth for page content. Use render_pdf for legacy v2 reports.",
     inputSchema: {
@@ -3987,6 +4012,94 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
 
 // ─── HANDLERS map ───────────────────────────────────────────────────────────
 
+// ─── Handler: persist_freeform_pages ───────────────────────────────────────
+// Called by smyra-core at module_review approve_all (before enqueueRender)
+// to materialise the final freeform pages into v2_report_pages +
+// v2_report_modules. Without this step the editor at /v2/reports/<id>
+// opens to an empty report and the legacy render_pdf tool fails with
+// "pages is required" because its query returns no rows. Also stores
+// the final CSS onto v2_reports so the editor cascades correctly.
+//
+// Idempotent: existing rows for the same (report_id, page_number) are
+// deleted first, then re-inserted. Safe for retries or patch-loops.
+
+async function handlePersistFreeformPages(userId, args) {
+  const sql = getSql();
+  const { report_id, pages, design_system_css, augmented_design_css_additions } = args || {};
+
+  if (!report_id || !/^[0-9a-f-]{36}$/i.test(report_id)) {
+    return errorResult("report_id is required (UUID).");
+  }
+  if (!Array.isArray(pages) || pages.length === 0) {
+    return errorResult("pages[] required and non-empty.");
+  }
+  if (typeof design_system_css !== "string" || !design_system_css.trim()) {
+    return errorResult("design_system_css is required.");
+  }
+
+  // Validate report exists (prevents orphan writes against a stale UUID).
+  const reportRows = await sql`
+    SELECT id, tenant_id FROM v2_reports WHERE id = ${report_id} LIMIT 1
+  `;
+  if (!reportRows.length) return errorResult(`Report ${report_id} not found.`);
+
+  // Validate each page.
+  for (const p of pages) {
+    if (typeof p?.page_num !== "number" || p.page_num < 1) {
+      return errorResult(`Invalid page_num: ${p?.page_num}`);
+    }
+    if (typeof p?.html !== "string" || p.html.length < 10) {
+      return errorResult(`Page ${p.page_num} missing non-empty html.`);
+    }
+  }
+
+  // Reset prior pages for this report so we don't leave stale page_numbers
+  // from earlier runs. ON DELETE CASCADE on v2_report_modules wipes the
+  // module rows automatically.
+  await sql`DELETE FROM v2_report_pages WHERE report_id = ${report_id}`;
+
+  // Insert new page rows + module rows in-order. One module per page is
+  // enough for the freeform case — render_pdf reads html_cache off the
+  // module and treats each as a standalone page.
+  let inserted = 0;
+  for (const p of pages) {
+    const pageType = typeof p.page_type === "string" && p.page_type.length > 0
+      ? p.page_type
+      : (p.page_num === 1 ? "cover" : "content");
+    const pageRows = await sql`
+      INSERT INTO v2_report_pages (report_id, page_number, page_type)
+      VALUES (${report_id}, ${p.page_num}, ${pageType})
+      RETURNING id
+    `;
+    const pageId = pageRows[0].id;
+    await sql`
+      INSERT INTO v2_report_modules (
+        report_id, page_id, module_type, order_index,
+        content, style, html_cache, html_content
+      ) VALUES (
+        ${report_id}, ${pageId}, 'freeform', 0,
+        '{}'::jsonb, '{}'::jsonb, ${p.html}, ${p.html}
+      )
+    `;
+    inserted++;
+  }
+
+  // Persist the final CSS so editor + render_pdf have the full cascade.
+  await sql`
+    UPDATE v2_reports
+    SET document_css = ${design_system_css},
+        document_css_overrides = ${augmented_design_css_additions || ""},
+        updated_at = NOW()
+    WHERE id = ${report_id}
+  `;
+
+  return textResult({
+    report_id,
+    pages_written: inserted,
+    editor_url: `${process.env.URL || process.env.DEPLOY_PRIME_URL || ""}/v2/reports/${report_id}`,
+  });
+}
+
 // ─── Handler: render_freeform_pdf ───────────────────────────────────────────
 // alpha-v3 render path — caller provides pages as freeform HTML + CSS inline.
 // Does NOT read v2_report_pages from DB; skips template/document_css logic.
@@ -4115,8 +4228,9 @@ const HANDLERS = {
   get_structure:         handleGetStructure,
   build_pages:           handleBuildPages,
   render_pdf:            handleRenderPdf,
-  render_freeform_pdf:        handleRenderFreeformPdf,
-  render_freeform_thumbnails: handleRenderFreeformThumbnails,
+  render_freeform_pdf:         handleRenderFreeformPdf,
+  render_freeform_thumbnails:  handleRenderFreeformThumbnails,
+  persist_freeform_pages:      handlePersistFreeformPages,
   preview_plan:          handlePreviewPlan,
   render_module_thumbnails: handleRenderModuleThumbnails,
   get_editor_url:        handleGetEditorUrl,
