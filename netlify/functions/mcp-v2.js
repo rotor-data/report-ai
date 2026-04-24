@@ -295,6 +295,7 @@ const TOOLS = [
         brand_id: { type: "string", description: "Brand UUID for token resolution + blob-scoping." },
         page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait." },
         return_base64: { type: "boolean", description: "If true, each returned thumbnail also carries png_base64 alongside the URL. Used by workflow pauses that want to attach the image as an MCP image content block for Claude's multimodal view." },
+        thumbnail_dpi: { type: "number", description: "When return_base64 is true, rasterize at this DPI instead of the default 150 so the base64 payload stays under MCP response-size limits. Recommended: 72 for design review, 48 for dense multi-page overviews. Ignored when return_base64 is false." },
       },
     },
   },
@@ -3773,7 +3774,11 @@ async function handleCreateSlotVariant(userId, args) {
 
 async function handleRenderFreeformThumbnails(userId, args, event) {
   const sql = getSql();
-  const { pages, design_system_css, brand_id, page_format = "a4_portrait", return_base64 = false } = args || {};
+  const { pages, design_system_css, brand_id, page_format = "a4_portrait", return_base64 = false, thumbnail_dpi } = args || {};
+  // When base64 is requested, default to 72 DPI so the payload fits in the
+  // MCP response budget. Full-res 150 DPI PNGs are 1-3 MB each; 72 DPI is
+  // ~250-400 KB which keeps a typical 3-page design review under 2 MB.
+  const effectiveDpi = return_base64 ? (typeof thumbnail_dpi === "number" && thumbnail_dpi > 0 ? thumbnail_dpi : 72) : null;
 
   // ── 1. Validate input ──────────────────────────────────────────────────────
   if (!Array.isArray(pages) || pages.length === 0) {
@@ -3812,7 +3817,11 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   // come back to the caller. Next test can use the log to trace root cause.
   const settled = await Promise.allSettled(pages.map(async (page) => {
     const pageHash = createHash("sha256").update(page.html).digest("hex").slice(0, 8);
-    const blobKey = `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}.png`;
+    // DPI suffix on the cache key so low-DPI base64 renders don't collide
+    // with full-res URL renders. Default URL path (no base64) stays on the
+    // original key so existing cached blobs remain valid.
+    const dpiSuffix = effectiveDpi ? `-d${effectiveDpi}` : "";
+    const blobKey = `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}${dpiSuffix}.png`;
 
     // Cache hit: skip render if blob already exists
     try {
@@ -3877,6 +3886,7 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
 
     const raster = await callRenderService("/render/rasterize", {
       pdf_base64: pdfBuffer.toString("base64"),
+      ...(effectiveDpi ? { dpi: effectiveDpi } : {}),
     }, tenantId);
 
     const rasterPage = raster.pages?.[0];
