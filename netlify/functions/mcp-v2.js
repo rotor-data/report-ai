@@ -270,6 +270,34 @@ const TOOLS = [
     },
   },
   {
+    name: "render_freeform_thumbnails",
+    description: "Render a list of freeform HTML pages as PNG thumbnails. Used by smyra-core workflow steps (design_language, page_design, module_review) to show the user visual previews of what Claude is about to approve, so they don't sign off blindly. Stores PNGs in the report-ai-assets blob store and returns hash-stable URLs.",
+    inputSchema: {
+      type: "object",
+      required: ["pages", "design_system_css", "brand_id"],
+      properties: {
+        pages: {
+          type: "array",
+          description: "Pages to render. Each entry must have page_num (number) and html (non-empty string).",
+          items: {
+            type: "object",
+            required: ["page_num", "html"],
+            properties: {
+              page_num: { type: "number" },
+              html: { type: "string" },
+            },
+          },
+        },
+        design_system_css: {
+          type: "string",
+          description: "The report's design_system_css. Injected as document_css into each rendered page.",
+        },
+        brand_id: { type: "string", description: "Brand UUID for token resolution + blob-scoping." },
+        page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait." },
+      },
+    },
+  },
+  {
     name: "render_module_thumbnails",
     description: "Render each built module in a report as an individual PNG thumbnail. Returns per-module thumbnail URLs so the workflow can show per-module design previews for user approval before final PDF assembly.",
     inputSchema: {
@@ -3645,6 +3673,117 @@ async function handleCreateSlotVariant(userId, args) {
   });
 }
 
+// ─── Handler: render_freeform_thumbnails ────────────────────────────────────
+// alpha-v3 preview rendering — returns content-addressed PNG thumbnail URLs
+// for a set of freeform HTML pages without writing a full report PDF.
+
+async function handleRenderFreeformThumbnails(userId, args, event) {
+  const sql = getSql();
+  const { pages, design_system_css, brand_id, page_format = "a4_portrait" } = args || {};
+
+  // ── 1. Validate input ──────────────────────────────────────────────────────
+  if (!Array.isArray(pages) || pages.length === 0) {
+    return errorResult("pages[] required and non-empty");
+  }
+  if (!design_system_css || typeof design_system_css !== "string") {
+    return errorResult("design_system_css required");
+  }
+  if (!brand_id || !/^[0-9a-f-]{8,}$/i.test(brand_id)) {
+    return errorResult("brand_id required (UUID)");
+  }
+  for (const p of pages) {
+    if (typeof p?.page_num !== "number" || typeof p?.html !== "string" || p.html.length < 10) {
+      return errorResult("each page must have numeric page_num + non-empty html");
+    }
+  }
+
+  // ── 2. Resolve tenant_id from brand ────────────────────────────────────────
+  const brandRows = await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`;
+  const tenantId = brandRows[0]?.tenant_id;
+  if (!tenantId) return errorResult(`brand ${brand_id} not found`);
+
+  // ── 3. Fetch brand context (tokens, fonts, logos) ──────────────────────────
+  const brand = await fetchBrandContext(sql, brand_id);
+
+  // ── 4. Content-address: hash CSS once, hash each page's HTML individually ──
+  const { createHash } = await import("node:crypto");
+  const cssHash = createHash("sha256").update(design_system_css).digest("hex").slice(0, 8);
+
+  const assetStore = await getBlobStore("report-ai-assets", event);
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+
+  // ── 5. Render all pages in parallel ────────────────────────────────────────
+  const results = await Promise.all(pages.map(async (page) => {
+    const pageHash = createHash("sha256").update(page.html).digest("hex").slice(0, 8);
+    const blobKey = `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}.png`;
+
+    // Cache hit: skip render if blob already exists
+    try {
+      const existing = await assetStore.getMetadata(blobKey);
+      if (existing) {
+        return {
+          page_num: page.page_num,
+          thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
+        };
+      }
+    } catch { /* cache miss — fall through to render */ }
+
+    // Synthesise a single-page payload for /render/pdf
+    const syntheticPage = {
+      id: randomUUID(),
+      page_number: page.page_num,
+      page_type: page.page_num === 1 ? "cover" : "content",
+      modules: [{
+        module_type: "freeform_page",
+        order_index: 0,
+        html_content: page.html,
+        html_cache: page.html,
+        content: {},
+        style: {},
+        background: null,
+      }],
+    };
+
+    const pdfResult = await callRenderService("/render/pdf", {
+      report_id: `thumb-${page.page_num}`,
+      title: "Preview",
+      mode: "draft",
+      page_format,
+      pages: [syntheticPage],
+      brand_tokens: brand.tokens ?? {},
+      brand_fonts: brand.fonts ?? [],
+      brand_logos: brand.logos ?? [],
+      css_base: "",
+      document_css: design_system_css,
+      document_css_overrides: "",
+      style_overrides: {},
+    }, tenantId);
+
+    const pdfBuffer = pdfResult.pdf_bytes
+      ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
+    if (!pdfBuffer) throw new Error(`page ${page.page_num}: render returned no PDF`);
+
+    const raster = await callRenderService("/render/rasterize", {
+      pdf_base64: pdfBuffer.toString("base64"),
+    }, tenantId);
+
+    const rasterPage = raster.pages?.[0];
+    if (!rasterPage?.png_base64) throw new Error(`page ${page.page_num}: rasterize returned no PNG`);
+
+    const pngBuffer = Buffer.from(rasterPage.png_base64, "base64");
+    await assetStore.set(blobKey, pngBuffer, { contentType: "image/png" });
+
+    const result = {
+      page_num: page.page_num,
+      thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
+    };
+    if (rasterPage.height_mm != null) result.height_mm = rasterPage.height_mm;
+    return result;
+  }));
+
+  return textResult({ thumbnails: results, count: results.length });
+}
+
 // ─── HANDLERS map ───────────────────────────────────────────────────────────
 
 // ─── Handler: render_freeform_pdf ───────────────────────────────────────────
@@ -3775,7 +3914,8 @@ const HANDLERS = {
   get_structure:         handleGetStructure,
   build_pages:           handleBuildPages,
   render_pdf:            handleRenderPdf,
-  render_freeform_pdf:   handleRenderFreeformPdf,
+  render_freeform_pdf:        handleRenderFreeformPdf,
+  render_freeform_thumbnails: handleRenderFreeformThumbnails,
   preview_plan:          handlePreviewPlan,
   render_module_thumbnails: handleRenderModuleThumbnails,
   get_editor_url:        handleGetEditorUrl,
