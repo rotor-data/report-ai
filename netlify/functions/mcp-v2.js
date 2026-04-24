@@ -294,6 +294,7 @@ const TOOLS = [
         },
         brand_id: { type: "string", description: "Brand UUID for token resolution + blob-scoping." },
         page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait." },
+        return_base64: { type: "boolean", description: "If true, each returned thumbnail also carries png_base64 alongside the URL. Used by workflow pauses that want to attach the image as an MCP image content block for Claude's multimodal view." },
       },
     },
   },
@@ -3772,7 +3773,7 @@ async function handleCreateSlotVariant(userId, args) {
 
 async function handleRenderFreeformThumbnails(userId, args, event) {
   const sql = getSql();
-  const { pages, design_system_css, brand_id, page_format = "a4_portrait" } = args || {};
+  const { pages, design_system_css, brand_id, page_format = "a4_portrait", return_base64 = false } = args || {};
 
   // ── 1. Validate input ──────────────────────────────────────────────────────
   if (!Array.isArray(pages) || pages.length === 0) {
@@ -3817,11 +3818,21 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
     try {
       const existing = await assetStore.getMetadata(blobKey);
       if (existing) {
-        return {
+        const cachedResult = {
           page_num: page.page_num,
           thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
           cached: true,
         };
+        // If the caller wants inline base64 (for MCP image content blocks),
+        // fetch the cached blob back and include the PNG bytes. Costs one
+        // extra blob read but avoids a full re-render.
+        if (return_base64) {
+          try {
+            const cachedBytes = await assetStore.get(blobKey, { type: "arrayBuffer" });
+            if (cachedBytes) cachedResult.png_base64 = Buffer.from(cachedBytes).toString("base64");
+          } catch { /* blob fetch failed — return URL only */ }
+        }
+        return cachedResult;
       }
     } catch { /* cache miss — fall through to render */ }
 
@@ -3880,6 +3891,7 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
       cached: false,
     };
     if (rasterPage.height_mm != null) result.height_mm = rasterPage.height_mm;
+    if (return_base64) result.png_base64 = rasterPage.png_base64;
     return result;
   }));
 
