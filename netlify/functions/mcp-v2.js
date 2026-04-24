@@ -396,32 +396,52 @@ const TOOLS = [
   },
   {
     name: "save_blueprint",
-    description: "Save a report's structure as a reusable blueprint (keeps styles, removes content).",
+    description: "Save an alpha-v3 design-language blueprint (design_system_css + sample_pages_html + design_rules). Called by smyra-core after a design-extraction or user-driven design session. Returns blueprint_id. Visibility: 'brand' (default), 'tenant', or 'smyra' (requires ALLOW_SMYRA_WRITE env var).",
     inputSchema: {
       type: "object",
+      required: ["name", "design_system_css", "sample_pages_html", "design_rules"],
       properties: {
-        report_id: { type: "string" },
-        name: { type: "string" },
+        brand_id: { type: "string", description: "Required when visibility='brand'. The brand this blueprint belongs to." },
+        tenant_id: { type: "string", description: "Required when visibility='tenant'. Stored as owner_tenant_id." },
+        name: { type: "string", description: "Human-readable blueprint name." },
+        visibility: { type: "string", enum: ["smyra", "tenant", "brand"], description: "Access scope. Default 'brand'. 'smyra' requires ALLOW_SMYRA_WRITE=true on server." },
+        style_direction: { type: "string", description: "e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate'" },
+        design_system_css: { type: "string", description: "Full CSS design system — custom properties, base resets, component classes." },
+        sample_pages_html: { type: "array", items: { type: "string" }, description: "Array of HTML strings, one per sample page. Stored as JSONB." },
+        design_rules: { type: "string", description: "Plain-text art-direction rules describing when and how to use this design system." },
+        doctype_hint: { type: "string", description: "Document type hint, e.g. 'quarterly', 'annual'. Stored in document_type column." },
+        reference_source: { type: "string", enum: ["extracted_from_pdf", "user_created", "starter_pack"], description: "How the blueprint was produced." },
+        module_count: { type: "number", description: "Approximate number of report modules this blueprint is designed for." },
+        source_report_id: { type: "string", description: "Audit trail: the report_id this blueprint was extracted from (if any)." },
       },
-      required: ["report_id", "name"],
     },
   },
   {
     name: "list_blueprints",
-    description: "List blueprints visible to the caller: brand-owned + Smyra platform templates. Returns small inline thumbnails (base64) so Claude can surface them in chat, plus large thumbnail URLs for the web gallery. Filter by document_type + style to narrow.",
+    description: "List alpha-v3 blueprints visible to the caller (brand-owned + Smyra templates). Returns only rows with a design_system_css payload — legacy blueprints are excluded. Filter by document_type or style.",
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string", description: "Include blueprints owned by this brand. Omit to only see Smyra-visibility blueprints." },
+        brand_id: { type: "string", description: "Include blueprints owned by this brand. Omit to see only Smyra-visibility blueprints." },
         document_type: { type: "string", description: "Filter: 'quarterly' | 'annual' | 'whitepaper' | 'case_study' | 'pitch' | 'newsletter' | 'research_brief' | 'product_spec' | 'esg_report' | 'investor_update'" },
         style: { type: "string", description: "Filter by style_direction, e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate', 'Technical', 'Expressive', 'Hero'" },
-        include_thumbnails: { type: "boolean", description: "Include base64 thumbnails in response. Default true — set false for leaner payloads when you only need metadata." },
+      },
+    },
+  },
+  {
+    name: "get_blueprint",
+    description: "Fetch the full alpha-v3 payload for a blueprint: design_system_css + sample_pages_html + design_rules + visibility. Called by smyra-core setup.ts right after the user picks a blueprint in the start-point. Enforces visibility-based auth.",
+    inputSchema: {
+      type: "object",
+      required: ["blueprint_id"],
+      properties: {
+        blueprint_id: { type: "string", description: "UUID of the blueprint to fetch." },
       },
     },
   },
   {
     name: "list_smyra_templates",
-    description: "List Smyra platform-level blueprints (visibility='smyra'). These are curated 'by Smyra' templates available to every tenant as a starting point. Shorthand for list_blueprints with visibility filter — use at the start of a new report when the user hasn't specified a direction.",
+    description: "List Smyra platform-level alpha-v3 blueprints (visibility='smyra'). Curated templates available to every tenant as a starting point. Returns alpha-v3 shape only (design_system_css required).",
     inputSchema: {
       type: "object",
       properties: {
@@ -443,7 +463,7 @@ const TOOLS = [
   },
   {
     name: "create_from_blueprint",
-    description: "Create a new report from a blueprint. For Smyra-visibility blueprints (no owner brand), pass brand_id explicitly to say which brand to create the report under. Returns the new report + the blueprint's slot structure so the caller can start filling content.",
+    description: "Create a new report linked to an alpha-v3 blueprint. For Smyra-visibility blueprints (no owner brand), pass brand_id explicitly. The blueprint must have design_system_css set (alpha-v3 only — legacy blueprints are rejected). Returns report_id; call get_blueprint separately for the full design payload.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1867,66 +1887,128 @@ async function handleGetModuleSchema(userId, args) {
 
 async function handleSaveBlueprint(userId, args) {
   const sql = getSql();
-  const { report_id, name } = args;
-  if (!report_id || !name) return errorResult("report_id and name are required.");
 
-  // Fetch report and its brand
-  const reports = await sql`SELECT id, brand_id FROM v2_reports WHERE id = ${report_id} LIMIT 1`;
-  if (!reports.length) return errorResult(`Report ${report_id} not found.`);
-  const brandId = reports[0].brand_id;
-  if (!brandId) return errorResult("Report has no brand_id — cannot save blueprint without a brand.");
+  // Legacy shape detection: old callers passed { report_id, name }.
+  // Alpha-v3 requires design_system_css + sample_pages_html + design_rules.
+  if (args.report_id && !args.design_system_css) {
+    return errorResult(
+      "save_blueprint: alpha-v3 requires the full payload (design_system_css, sample_pages_html, design_rules). " +
+      "Legacy {report_id, name} shape is no longer supported."
+    );
+  }
 
-  // Extract module structure (styles preserved, content cleared)
-  const modules = await sql`
-    SELECT module_type, order_index, style
-    FROM v2_report_modules WHERE report_id = ${report_id}
-    ORDER BY order_index
-  `;
-  const blueprintModules = modules.map(m => ({
-    module_type: m.module_type,
-    order_index: m.order_index,
-    style: m.style,
-    content: {}, // Empty content — blueprint is structure only
-  }));
+  const {
+    brand_id,
+    tenant_id,
+    name,
+    visibility = "brand",
+    style_direction,
+    design_system_css,
+    sample_pages_html,
+    design_rules,
+    doctype_hint,
+    reference_source,
+    module_count,
+    source_report_id,
+  } = args;
+
+  // Validate required alpha-v3 fields
+  if (!name) return errorResult("name is required.");
+  if (!design_system_css) return errorResult("design_system_css is required.");
+  if (!Array.isArray(sample_pages_html) || sample_pages_html.length === 0) {
+    return errorResult("sample_pages_html is required and must be a non-empty array of HTML strings.");
+  }
+  if (!design_rules) return errorResult("design_rules is required.");
+
+  // Validate visibility-specific requirements
+  if (visibility === "brand" && !brand_id) {
+    return errorResult("brand_id is required when visibility='brand'.");
+  }
+  if (visibility === "tenant" && !tenant_id) {
+    return errorResult("tenant_id is required when visibility='tenant'.");
+  }
+
+  // Smyra-visibility writes are restricted.
+  // Decision: no admin concept exists in the JWT claims at this time.
+  // We gate 'smyra' writes on the ALLOW_SMYRA_WRITE env var so that only
+  // internal tooling/CI (which sets the env var) can publish platform templates.
+  // Long-term fix: add an 'admin' scope to hub-minted JWTs and check that here.
+  if (visibility === "smyra" && process.env.ALLOW_SMYRA_WRITE !== "true") {
+    return errorResult("smyra visibility requires admin access (ALLOW_SMYRA_WRITE not enabled on this server).");
+  }
+
+  const samplePagesJson = JSON.stringify(sample_pages_html);
 
   const rows = await sql`
-    INSERT INTO report_blueprints (brand_id, name, source_report_id, modules)
-    VALUES (${brandId}, ${name}, ${report_id}, ${JSON.stringify(blueprintModules)}::jsonb)
-    RETURNING id, brand_id, name, created_at
+    INSERT INTO report_blueprints (
+      brand_id,
+      owner_tenant_id,
+      name,
+      visibility,
+      style_direction,
+      design_system_css,
+      sample_pages_html,
+      design_rules,
+      document_type,
+      reference_source,
+      module_count,
+      source_report_id,
+      modules,
+      slots
+    ) VALUES (
+      ${brand_id || null},
+      ${tenant_id || null},
+      ${name},
+      ${visibility},
+      ${style_direction || null},
+      ${design_system_css},
+      ${samplePagesJson}::jsonb,
+      ${design_rules},
+      ${doctype_hint || null},
+      ${reference_source || null},
+      ${module_count != null ? module_count : null},
+      ${source_report_id || null},
+      NULL,
+      NULL
+    )
+    RETURNING id
   `;
 
-  return textResult({ blueprint_id: rows[0].id, name, module_count: blueprintModules.length });
+  return textResult({ blueprint_id: rows[0].id });
 }
 
 // ─── Blueprint helpers ──────────────────────────────────────────────────────
 
-// Minimum fields every blueprint row carries. Keeps list responses
-// shaped the same way regardless of whether thumbnails are inlined.
-function shapeBlueprintRow(r, { includeThumb = true } = {}) {
-  const count = Array.isArray(r.slots)
-    ? r.slots.length
-    : (r.modules ? (typeof r.modules === "string" ? JSON.parse(r.modules) : r.modules).length : 0);
+// Alpha-v3 list shape. Keeps responses lean — full CSS/HTML payload is only
+// returned by handleGetBlueprint (called after the user picks a blueprint).
+function shapeBlueprintListRow(r) {
   return {
     id: r.id,
     name: r.name,
-    tagline: r.tagline,
-    chat_summary: r.chat_summary,
-    document_type: r.document_type,
-    style_direction: r.style_direction,
     visibility: r.visibility,
-    brand_id: r.brand_id,
-    tags: r.tags || [],
-    pages_estimate: r.pages_estimate,
-    page_format: r.page_format,
-    thumbnail: includeThumb ? (r.thumbnail_small_base64 || null) : undefined,
-    thumbnail_url: r.thumbnail_url || null,
-    slots_count: count,
-    // Legacy alias — smyra-core's setup.ts and template-select.ts read
-    // bp.module_count. Previously missing, which rendered as
-    // "Saved template with undefined modules" in the brand_review UI.
-    module_count: count,
-    kind: Array.isArray(r.slots) && r.slots.length ? "smart" : "legacy",
+    style_direction: r.style_direction,
+    module_count: r.module_count != null ? r.module_count : null,
+    // Rename document_type → doctype_hint in output to match alpha-v3 contract
+    doctype_hint: r.document_type || null,
     created_at: r.created_at,
+  };
+}
+
+// Full alpha-v3 payload shape — used by handleGetBlueprint.
+function shapeBlueprintFullRow(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    visibility: r.visibility,
+    style_direction: r.style_direction,
+    design_system_css: r.design_system_css,
+    sample_pages_html: typeof r.sample_pages_html === "string"
+      ? JSON.parse(r.sample_pages_html)
+      : (r.sample_pages_html || []),
+    design_rules: r.design_rules,
+    doctype_hint: r.document_type || null,
+    reference_source: r.reference_source || null,
+    module_count: r.module_count != null ? r.module_count : null,
   };
 }
 
@@ -1934,34 +2016,33 @@ function shapeBlueprintRow(r, { includeThumb = true } = {}) {
 
 async function handleListBlueprints(userId, args) {
   const sql = getSql();
-  const { brand_id, document_type, style, include_thumbnails = true } = args || {};
+  const { brand_id, document_type, style } = args || {};
 
-  // Visibility rule: show Smyra-wide + brand-owned when a brand_id is
-  // supplied. Without brand_id, show only Smyra.
+  // Alpha-v3 only: filter to rows that have design_system_css populated.
+  // Visibility: show Smyra-wide + tenant + brand-owned when brand_id supplied;
+  // without brand_id, show only Smyra-visibility blueprints.
   let rows;
   if (brand_id) {
     rows = await sql`
-      SELECT id, brand_id, visibility, name, tagline, chat_summary,
-             document_type, style_direction, tags, slots, modules,
-             thumbnail_small_base64, thumbnail_url,
-             pages_estimate, page_format, created_at
+      SELECT id, brand_id, visibility, name, document_type, style_direction,
+             module_count, created_at
       FROM report_blueprints
-      WHERE (visibility = 'smyra' OR brand_id = ${brand_id})
+      WHERE design_system_css IS NOT NULL
+        AND (visibility = 'smyra' OR brand_id = ${brand_id})
         AND (${document_type || null}::text IS NULL OR document_type = ${document_type || null})
         AND (${style || null}::text IS NULL OR style_direction = ${style || null})
       ORDER BY
-        CASE visibility WHEN 'brand' THEN 0 WHEN 'smyra' THEN 1 ELSE 2 END,
+        CASE visibility WHEN 'brand' THEN 0 WHEN 'tenant' THEN 1 WHEN 'smyra' THEN 2 END,
         updated_at DESC
       LIMIT 100
     `;
   } else {
     rows = await sql`
-      SELECT id, brand_id, visibility, name, tagline, chat_summary,
-             document_type, style_direction, tags, slots, modules,
-             thumbnail_small_base64, thumbnail_url,
-             pages_estimate, page_format, created_at
+      SELECT id, brand_id, visibility, name, document_type, style_direction,
+             module_count, created_at
       FROM report_blueprints
-      WHERE visibility = 'smyra'
+      WHERE design_system_css IS NOT NULL
+        AND visibility = 'smyra'
         AND (${document_type || null}::text IS NULL OR document_type = ${document_type || null})
         AND (${style || null}::text IS NULL OR style_direction = ${style || null})
       ORDER BY updated_at DESC
@@ -1969,7 +2050,7 @@ async function handleListBlueprints(userId, args) {
     `;
   }
 
-  const blueprints = rows.map((r) => shapeBlueprintRow(r, { includeThumb: include_thumbnails }));
+  const blueprints = rows.map(shapeBlueprintListRow);
   return textResult({
     blueprints,
     count: blueprints.length,
@@ -1980,7 +2061,48 @@ async function handleListBlueprints(userId, args) {
 // ─── Handler: list_smyra_templates ──────────────────────────────────────────
 
 async function handleListSmyraTemplates(userId, args) {
+  // Shorthand for list_blueprints with visibility='smyra' — brand_id omitted
+  // so only Smyra-visibility blueprints are returned.
   return handleListBlueprints(userId, { ...(args || {}), brand_id: undefined });
+}
+
+// ─── Handler: get_blueprint ─────────────────────────────────────────────────
+
+async function handleGetBlueprint(userId, args) {
+  const sql = getSql();
+  const { blueprint_id } = args || {};
+  if (!blueprint_id) return errorResult("blueprint_id is required.");
+
+  const rows = await sql`
+    SELECT id, brand_id, owner_tenant_id, visibility, name, document_type,
+           style_direction, design_system_css, sample_pages_html, design_rules,
+           reference_source, module_count
+    FROM report_blueprints
+    WHERE id = ${blueprint_id}
+    LIMIT 1
+  `;
+  if (!rows.length) return errorResult("blueprint not found.");
+  const r = rows[0];
+
+  // Alpha-v3 only — legacy rows have no design_system_css
+  if (!r.design_system_css) {
+    return errorResult("blueprint is legacy (no alpha-v3 payload).");
+  }
+
+  // Visibility auth:
+  //   'smyra'  → always accessible (platform-wide)
+  //   'tenant' → owner_tenant_id must match (we trust the hub JWT sub as the
+  //               tenant identifier; if it doesn't match, reject)
+  //   'brand'  → brand_id is non-null and the hub is the authoritative caller;
+  //               we trust the hub for brand auth (no brand ACL in this module)
+  if (r.visibility === "tenant") {
+    if (r.owner_tenant_id && r.owner_tenant_id !== userId) {
+      return errorResult("blueprint not accessible.");
+    }
+  }
+  // 'brand' and 'smyra' are accessible to any authenticated hub caller.
+
+  return textResult(shapeBlueprintFullRow(r));
 }
 
 // ─── Handler: preview_blueprint ─────────────────────────────────────────────
@@ -2024,11 +2146,16 @@ async function handleCreateFromBlueprint(userId, args) {
   }
 
   const blueprints = await sql`
-    SELECT id, brand_id, owner_tenant_id, visibility, modules, slots, page_format
+    SELECT id, brand_id, owner_tenant_id, visibility, design_system_css, page_format
     FROM report_blueprints WHERE id = ${blueprint_id} LIMIT 1
   `;
   if (!blueprints.length) return errorResult(`Blueprint ${blueprint_id} not found.`);
   const bp = blueprints[0];
+
+  // Alpha-v3 only — legacy blueprints (no design_system_css) must be recreated.
+  if (!bp.design_system_css) {
+    return errorResult("blueprint is legacy v2 — re-create it in alpha-v3 to use.");
+  }
 
   // Resolve brand + tenant. Smyra-visibility blueprints have no brand,
   // so the caller must pass one to create a report under.
@@ -2044,7 +2171,9 @@ async function handleCreateFromBlueprint(userId, args) {
     tenantId = brands[0].tenant_id;
   }
 
-  // Create report with the blueprint's page format.
+  // Create report linked to the blueprint. No modules are seeded — the hub
+  // calls get_blueprint separately to fetch design payload and drive the
+  // workflow from there.
   const reportRows = await sql`
     INSERT INTO v2_reports (tenant_id, brand_id, title, document_type, status, page_format)
     VALUES (${tenantId}, ${brandId}, ${title}, ${document_type}, 'draft', ${bp.page_format || 'a4_portrait'})
@@ -2052,37 +2181,7 @@ async function handleCreateFromBlueprint(userId, args) {
   `;
   const reportId = reportRows[0].id;
 
-  // Legacy blueprint: seed literal modules. Smart blueprint: nothing
-  // to seed yet — next workflow step fills slots with content.
-  const legacyModules = bp.modules
-    ? (typeof bp.modules === "string" ? JSON.parse(bp.modules) : bp.modules)
-    : null;
-  let seededModules = 0;
-  if (Array.isArray(legacyModules) && legacyModules.length) {
-    for (const mod of legacyModules) {
-      await sql`
-        INSERT INTO v2_report_modules (report_id, module_type, order_index, content, style)
-        VALUES (${reportId}, ${mod.module_type}, ${mod.order_index}, ${JSON.stringify(mod.content || {})}::jsonb, ${JSON.stringify(mod.style || {})}::jsonb)
-      `;
-    }
-    seededModules = legacyModules.length;
-  }
-
-  const slots = typeof bp.slots === "string" ? JSON.parse(bp.slots) : bp.slots;
-  const kind = Array.isArray(slots) && slots.length ? "smart" : "legacy";
-
-  return textResult({
-    report_id: reportId,
-    blueprint_id,
-    blueprint_kind: kind,
-    title,
-    document_type,
-    module_count: seededModules,
-    slots: slots || null,
-    next_step: kind === "smart"
-      ? "The blueprint's slots are listed above. Extract as much content as possible from the user's brief, then ask about any gaps. Each slot carries an `intent` hint that tells you what to fill."
-      : "Use report2__get_structure to see the report, then report2__update_module to add content.",
-  });
+  return textResult({ report_id: reportId });
 }
 
 // ─── Handler: save_component ────────────────────────────────────────────────
@@ -3537,6 +3636,7 @@ const HANDLERS = {
   get_module_schema:     handleGetModuleSchema,
   save_blueprint:        handleSaveBlueprint,
   list_blueprints:       handleListBlueprints,
+  get_blueprint:         handleGetBlueprint,
   list_smyra_templates:  handleListSmyraTemplates,
   preview_blueprint:     handlePreviewBlueprint,
   create_from_blueprint: handleCreateFromBlueprint,
