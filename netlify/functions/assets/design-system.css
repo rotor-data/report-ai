@@ -20,7 +20,7 @@
 .page {
   width: 210mm;
   height: 297mm;
-  padding: var(--mg-top) var(--mg-inner) var(--mg-bottom) var(--mg-outer);
+  padding: var(--mg-top, 20mm) var(--mg-inner, 18mm) var(--mg-bottom, 20mm) var(--mg-outer, 18mm);
   position: relative;
   overflow: hidden;
   page-break-after: always;
@@ -761,8 +761,8 @@
 .page-footer {
   position: absolute;
   bottom: 10mm;
-  left: var(--mg-outer);
-  right: var(--mg-inner);
+  left: var(--mg-outer, 18mm);
+  right: var(--mg-inner, 18mm);
   border-top: 0.5px solid var(--border);
   padding-top: 3mm;
   display: flex;

@@ -97,10 +97,10 @@ function buildTokenCss(brandTokens) {
     danger_color: "--danger",
   };
   const spacingMap = {
-    margin_top_mm: "--margin-top",
-    margin_bottom_mm: "--margin-bottom",
-    margin_inner_mm: "--margin-inner",
-    margin_outer_mm: "--margin-outer",
+    margin_top_mm: "--mg-top",
+    margin_bottom_mm: "--mg-bottom",
+    margin_inner_mm: "--mg-inner",
+    margin_outer_mm: "--mg-outer",
     column_gap_mm: "--column-gap",
     section_gap_mm: "--section-gap",
   };
