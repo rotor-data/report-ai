@@ -3793,6 +3793,25 @@ async function handleCreateSlotVariant(userId, args) {
   });
 }
 
+// Strip a single outer <section class="...page..."> wrapper from freeform
+// HTML if present. Claude's design_language and page_design prompts ask
+// for `<section class="page">…</section>` blocks, but render.py's freeform
+// path adds its own <div class="page page--freeform"> wrapper around the
+// fragment. Without unwrapping, both wrappers receive the design-system
+// CSS's .page page-break + full-height rules → one logical page renders
+// as two physical pages.
+function unwrapSectionPage(html) {
+  if (typeof html !== "string") return html;
+  const trimmed = html.trim();
+  // Allow attributes in any order; require class to contain "page".
+  const m = trimmed.match(/^<section\b([^>]*)>([\s\S]*)<\/section>\s*$/i);
+  if (!m) return html;
+  const attrs = m[1] || "";
+  const classMatch = attrs.match(/\bclass\s*=\s*["']([^"']*)["']/i);
+  if (!classMatch || !/\bpage\b/.test(classMatch[1])) return html;
+  return m[2];
+}
+
 // ─── Handler: render_freeform_thumbnails ────────────────────────────────────
 // alpha-v3 preview rendering — returns content-addressed PNG thumbnail URLs
 // for a set of freeform HTML pages without writing a full report PDF.
@@ -3848,7 +3867,10 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   //        for a page at index i may differ bit-for-bit vs. the old single-
   //        page path (same content, different page-count metadata in the
   //        PDF) — bump the suffix so v2 blobs don't leak through.
-  const CACHE_VERSION = "v3";
+  //   v4 = unwrap outer <section class="page"> before render — the old
+  //        path double-wrapped the fragment so each sample rendered as
+  //        two physical pages instead of one. Bump invalidates v3 blobs.
+  const CACHE_VERSION = "v4";
   const dpiSuffix = effectiveDpi ? `-d${effectiveDpi}` : "";
 
   const pagePlans = pages.map((page) => {
@@ -3902,20 +3924,30 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   let pdfBuffer = null;
 
   if (missingIndices.length > 0 || !pdfCached) {
-    const allSyntheticPages = pages.map((p) => ({
-      id: randomUUID(),
-      page_number: p.page_num,
-      page_type: p.page_num === 1 ? "cover" : "content",
-      modules: [{
-        module_type: "freeform",
-        order_index: 0,
-        html_content: p.html,
-        html_cache: p.html,
-        content: {},
-        style: {},
-        background: null,
-      }],
-    }));
+    const allSyntheticPages = pages.map((p) => {
+      // Strip the outer <section class="page"> wrapper if present.
+      // render.py's freeform path wraps each module's html_cache in
+      // <div class="page page--freeform"> — if the user's HTML already
+      // contains its own <section class="page"> outer, the design-system
+      // CSS targets BOTH (page-break-after, full-page sizing), producing
+      // 2 pages per sample. Unwrapping the inner duplicate keeps the
+      // outer div as the sole page-producing element.
+      const unwrapped = unwrapSectionPage(p.html);
+      return {
+        id: randomUUID(),
+        page_number: p.page_num,
+        page_type: p.page_num === 1 ? "cover" : "content",
+        modules: [{
+          module_type: "freeform",
+          order_index: 0,
+          html_content: unwrapped,
+          html_cache: unwrapped,
+          content: {},
+          style: {},
+          background: null,
+        }],
+      };
+    });
 
     try {
       const pdfResult = await callRenderService("/render/pdf", {
@@ -4072,13 +4104,18 @@ async function handlePersistFreeformPages(userId, args) {
       RETURNING id
     `;
     const pageId = pageRows[0].id;
+    // Same unwrap as render_freeform_thumbnails: render.py wraps each
+    // freeform module in <div class="page page--freeform"> — keeping
+    // Claude's outer <section class="page"> would double-wrap and
+    // double-page every saved page in the editor and final PDF.
+    const html = unwrapSectionPage(p.html);
     await sql`
       INSERT INTO v2_report_modules (
         report_id, page_id, module_type, order_index,
         content, style, html_cache, html_content
       ) VALUES (
         ${report_id}, ${pageId}, 'freeform', 0,
-        '{}'::jsonb, '{}'::jsonb, ${p.html}, ${p.html}
+        '{}'::jsonb, '{}'::jsonb, ${html}, ${html}
       )
     `;
     inserted++;
@@ -4140,22 +4177,31 @@ async function handleRenderFreeformPdf(userId, args, event) {
   const brand = await fetchBrandContext(sql, payload.brand_id);
 
   // ── 4. Synthesise smyra-render pages ──────────────────────────────────────
-  const syntheticPages = payload.pages.map(p => ({
-    id: crypto.randomUUID(),
-    page_number: p.page_num,
-    page_type: p.page_num === 1 ? "cover" : "content",
-    modules: [
-      {
-        module_type: "freeform_page",
-        order_index: p.page_num,
-        html_content: p.html,
-        html_cache: p.html,
-        content: {},
-        style: {},
-        background: null,
-      },
-    ],
-  }));
+  // module_type="freeform" routes through render.py's freeform path
+  // (one <div class="page page--freeform"> per module, no nested
+  // wrappers). The legacy "freeform_page" string falls into the
+  // module-template path which double-wraps. unwrapSectionPage strips
+  // any leading <section class="page"> Claude included so we don't
+  // double-wrap from the OTHER direction.
+  const syntheticPages = payload.pages.map(p => {
+    const html = unwrapSectionPage(p.html);
+    return {
+      id: crypto.randomUUID(),
+      page_number: p.page_num,
+      page_type: p.page_num === 1 ? "cover" : "content",
+      modules: [
+        {
+          module_type: "freeform",
+          order_index: p.page_num,
+          html_content: html,
+          html_cache: html,
+          content: {},
+          style: {},
+          background: null,
+        },
+      ],
+    };
+  });
 
   // ── 5. Compose document_css ─────────────────────────────────────────────────
   const fullCss = payload.design_system_css + (payload.augmented_design_css_additions ?? "");
