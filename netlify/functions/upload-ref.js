@@ -1,5 +1,5 @@
-import { getStore } from "@netlify/blobs";
-import crypto from "node:crypto";
+import { getStore, connectLambda } from "@netlify/blobs";
+import { randomBytes, createHmac } from "node:crypto";
 
 /**
  * Temporary reference file upload.
@@ -15,8 +15,29 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-function getBlobStore() {
-  return getStore({ name: "upload-refs", consistency: "strong" });
+// Resolve a Netlify Blobs store. The bare getStore() call requires Lambda
+// context which is set up automatically for Netlify Functions v2 — but
+// only after a fetch-style event arrives. POSTs from the upload page have
+// to fall back to explicit siteID + API token env vars since the Functions
+// v2 wrapper doesn't always inject Lambda context for Web Request handlers.
+function getBlobStore(req) {
+  try {
+    // The 1st-gen Netlify Functions plugin injects Lambda context onto
+    // process.env / globals; getStore() picks it up. For Web Request handlers
+    // (default async (req) =>), we can sometimes pass the Request object's
+    // Netlify-specific event body. Try the bare path first.
+    return getStore({ name: "upload-refs", consistency: "strong" });
+  } catch {
+    // Fall back to explicit credentials.
+    const siteID = process.env.NETLIFY_SITE_ID;
+    const token = process.env.NETLIFY_API_TOKEN;
+    if (!siteID || !token) {
+      throw new Error(
+        "Blob store unreachable: bare getStore() failed and NETLIFY_SITE_ID / NETLIFY_API_TOKEN env vars are not set. Configure them in the Netlify site settings."
+      );
+    }
+    return getStore({ name: "upload-refs", siteID, token, consistency: "strong" });
+  }
 }
 
 export default async (req) => {
@@ -108,10 +129,10 @@ export default async (req) => {
 
 /** Generate a signed upload token */
 export function createUploadToken() {
-  const id = crypto.randomBytes(16).toString("hex");
+  const id = randomBytes(16).toString("hex");
   const expires = Date.now() + 30 * 60 * 1000; // 30 min
   const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const sig = crypto.createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
+  const sig = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
   return { token: `${id}_${expires}_${sig}`, id, expires };
 }
 
@@ -123,7 +144,7 @@ export function verifyUploadToken(token) {
   const expires = parseInt(expiresStr);
   if (isNaN(expires) || Date.now() > expires) return false;
   const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const expected = crypto.createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
+  const expected = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
   return sig === expected;
 }
 
