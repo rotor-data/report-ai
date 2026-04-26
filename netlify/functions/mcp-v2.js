@@ -3523,14 +3523,27 @@ async function handleRasterizeUpload(userId, args, event) {
     pdfBytesBase64 = pdf_base64;
   }
 
-  const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 96;
-  const pageCap = typeof max_pages === "number" && max_pages > 0 ? max_pages : 20;
+  // Defaults are tuned for Netlify's ~26s function budget on large
+  // reference PDFs. 72 DPI gives readable type at A4 scale (595x842 px)
+  // — adequate for vision-based design analysis without the response-
+  // size cost of 96+ DPI. Page cap of 12 covers cover + 8-10 interior
+  // spreads, which is plenty for design-language extraction.
+  const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 72;
+  const pageCap = typeof max_pages === "number" && max_pages > 0 ? max_pages : 12;
+
+  // Tell render service to only rasterize the pages we'll actually use.
+  // Without this, render-side wastes time on every page in the PDF
+  // (a 50-page brand book at 96 DPI takes 30+ seconds → Netlify timeout).
+  const pageRange = Array.from({ length: pageCap }, (_, i) => i + 1);
 
   let raster;
   try {
     raster = await callRenderService("/render/rasterize", {
       pdf_base64: pdfBytesBase64,
       dpi: effectiveDpi,
+      pages: pageRange,
+      format: "jpeg",
+      quality: 75,
     }, userId || "system");
   } catch (err) {
     return errorResult(`Rasterization failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -3554,16 +3567,21 @@ async function handleRasterizeUpload(userId, args, event) {
   const { createHash, randomUUID } = await import("node:crypto");
   const sessionId = randomUUID();
 
+  // We asked render service for JPEG (smaller, faster, plenty of fidelity
+  // for vision input). Mirror the actual mime in storage + response.
   const pages = [];
   for (const rp of kept) {
     if (typeof rp?.page !== "number" || typeof rp?.png_base64 !== "string") continue;
-    const pngBuffer = Buffer.from(rp.png_base64, "base64");
-    const hash = createHash("sha256").update(pngBuffer).digest("hex").slice(0, 12);
-    const blobKey = `reference-rasters/${sessionId}/${hash}-p${rp.page}.png`;
-    await assetStore.set(blobKey, pngBuffer, { contentType: "image/png" });
+    const imgBuffer = Buffer.from(rp.png_base64, "base64");
+    const mimeType = rp.mime_type || "image/jpeg";
+    const ext = mimeType === "image/png" ? "png" : "jpg";
+    const hash = createHash("sha256").update(imgBuffer).digest("hex").slice(0, 12);
+    const blobKey = `reference-rasters/${sessionId}/${hash}-p${rp.page}.${ext}`;
+    await assetStore.set(blobKey, imgBuffer, { contentType: mimeType });
     pages.push({
       page_num: rp.page,
       png_base64: rp.png_base64,
+      mime_type: mimeType,
       url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
       width: rp.width,
       height: rp.height,
