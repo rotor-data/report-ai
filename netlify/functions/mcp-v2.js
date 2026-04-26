@@ -3526,22 +3526,24 @@ async function handleRasterizeUpload(userId, args, event) {
   // Defaults are tuned for Netlify's ~26s function budget on large
   // reference PDFs. 72 DPI gives readable type at A4 scale (595x842 px)
   // — adequate for vision-based design analysis without the response-
-  // size cost of 96+ DPI. Page cap of 12 covers cover + 8-10 interior
-  // spreads, which is plenty for design-language extraction.
+  // size cost of 96+ DPI.
   const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 72;
-  const pageCap = typeof max_pages === "number" && max_pages > 0 ? max_pages : 12;
 
-  // Tell render service to only rasterize the pages we'll actually use.
-  // Without this, render-side wastes time on every page in the PDF
-  // (a 50-page brand book at 96 DPI takes 30+ seconds → Netlify timeout).
-  const pageRange = Array.from({ length: pageCap }, (_, i) => i + 1);
+  // Sample evenly across the document instead of just pages 1..N. A
+  // brand book's first pages are often legal/intro pages that don't
+  // represent the design language; the variety lives across the doc
+  // (cover, hero spreads, KPI section, image treatments, back). The
+  // render service does the page-count read + sampling server-side so
+  // we don't have to ship the PDF buffer twice. ~6 pages is enough for
+  // design-language extraction; the cap can be overridden per call.
+  const sampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 6;
 
   let raster;
   try {
     raster = await callRenderService("/render/rasterize", {
       pdf_base64: pdfBytesBase64,
       dpi: effectiveDpi,
-      pages: pageRange,
+      sample_count: sampleCount,
       format: "jpeg",
       quality: 75,
     }, userId || "system");
