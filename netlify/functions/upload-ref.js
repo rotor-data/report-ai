@@ -82,44 +82,125 @@ export default async (req) => {
     });
   }
 
-  // --- Receive upload ---
+  // --- Receive upload (chunked or single-shot) ──────────────────────────
+  // Netlify Functions cap synchronous request bodies at ~6 MB. Reference
+  // brand books often exceed that, so we accept multi-part chunked
+  // uploads. The client splits the file into ≤ 4 MB chunks and POSTs
+  // each chunk individually with chunk_index / total_chunks; the final
+  // chunk triggers concatenation of all chunks into the canonical
+  // `${token}/file` blob. Single-shot uploads (small files, no chunking)
+  // continue to work — they're treated as a 1-of-1 chunked upload.
   if (req.method === "POST") {
     const contentType = req.headers.get("content-type") || "";
-
-    let fileBuffer, filename, mimeType;
-
-    if (contentType.includes("multipart/form-data")) {
-      const formData = await req.formData();
-      const file = formData.get("file");
-      if (!file || !(file instanceof File)) {
-        return Response.json({ error: "No file provided" }, { status: 400, headers: CORS });
-      }
-      fileBuffer = Buffer.from(await file.arrayBuffer());
-      filename = file.name;
-      mimeType = file.type || "application/octet-stream";
-    } else {
+    if (!contentType.includes("multipart/form-data")) {
       return Response.json({ error: "Expected multipart/form-data" }, { status: 400, headers: CORS });
     }
 
-    // Max 50 MB
-    if (fileBuffer.length > 50 * 1024 * 1024) {
+    const formData = await req.formData();
+    const file = formData.get("file");
+    if (!file || !(file instanceof File)) {
+      return Response.json({ error: "No file provided" }, { status: 400, headers: CORS });
+    }
+
+    const chunkIndex = parseInt(formData.get("chunk_index") ?? "0", 10);
+    const totalChunks = parseInt(formData.get("total_chunks") ?? "1", 10);
+    if (!Number.isFinite(chunkIndex) || !Number.isFinite(totalChunks)
+        || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks) {
+      return Response.json({ error: "Invalid chunk_index / total_chunks" }, { status: 400, headers: CORS });
+    }
+
+    const chunkBuffer = Buffer.from(await file.arrayBuffer());
+    if (chunkBuffer.length > 5 * 1024 * 1024) {
+      return Response.json({
+        error: `Chunk too large (${chunkBuffer.length} bytes). Use chunks ≤ 4 MB to stay under the function body limit.`,
+      }, { status: 413, headers: CORS });
+    }
+
+    const filename = formData.get("filename") || file.name;
+    const mimeType = formData.get("mime_type") || file.type || "application/octet-stream";
+
+    // Single-shot path: 1 chunk → write straight to the canonical blob.
+    if (totalChunks === 1) {
+      await store.set(`${token}/file`, chunkBuffer, {
+        metadata: {
+          filename,
+          mimeType,
+          size: String(chunkBuffer.length),
+          uploadedAt: new Date().toISOString(),
+        },
+      });
+      return Response.json({
+        ok: true,
+        filename,
+        size: chunkBuffer.length,
+        chunk_index: chunkIndex,
+        total_chunks: totalChunks,
+        finalized: true,
+        token,
+      }, { headers: CORS });
+    }
+
+    // Chunked path: write the chunk under a per-index key.
+    const chunkKey = `${token}/chunks/${String(chunkIndex).padStart(4, "0")}`;
+    await store.set(chunkKey, chunkBuffer, {
+      metadata: { size: String(chunkBuffer.length) },
+    });
+
+    // If this isn't the final chunk, return progress and wait for more.
+    if (chunkIndex + 1 < totalChunks) {
+      return Response.json({
+        ok: true,
+        chunk_index: chunkIndex,
+        total_chunks: totalChunks,
+        finalized: false,
+      }, { headers: CORS });
+    }
+
+    // Final chunk arrived — concatenate all chunks into the canonical blob.
+    const parts = [];
+    let totalSize = 0;
+    for (let i = 0; i < totalChunks; i++) {
+      const key = `${token}/chunks/${String(i).padStart(4, "0")}`;
+      const buf = await store.get(key, { type: "arrayBuffer" });
+      if (!buf) {
+        return Response.json({
+          error: `Missing chunk ${i}/${totalChunks}. Restart the upload.`,
+        }, { status: 400, headers: CORS });
+      }
+      const part = Buffer.from(buf);
+      parts.push(part);
+      totalSize += part.length;
+    }
+    const fullBuffer = Buffer.concat(parts, totalSize);
+
+    if (fullBuffer.length > 50 * 1024 * 1024) {
       return Response.json({ error: "File too large (max 50 MB)" }, { status: 413, headers: CORS });
     }
 
-    // Store file
-    await store.set(`${token}/file`, fileBuffer, {
+    await store.set(`${token}/file`, fullBuffer, {
       metadata: {
         filename,
         mimeType,
-        size: String(fileBuffer.length),
+        size: String(fullBuffer.length),
         uploadedAt: new Date().toISOString(),
       },
     });
 
+    // Best-effort cleanup of chunk blobs (don't fail the response if they
+    // can't be deleted; the canonical file is what downstream consumers
+    // read).
+    for (let i = 0; i < totalChunks; i++) {
+      const key = `${token}/chunks/${String(i).padStart(4, "0")}`;
+      await store.delete(key).catch(() => {});
+    }
+
     return Response.json({
       ok: true,
       filename,
-      size: fileBuffer.length,
+      size: fullBuffer.length,
+      chunk_index: chunkIndex,
+      total_chunks: totalChunks,
+      finalized: true,
       token,
     }, { headers: CORS });
   }
@@ -226,17 +307,42 @@ dropzone.addEventListener("drop", e => {
 });
 fileInput.addEventListener("change", () => { if (fileInput.files.length) upload(fileInput.files[0]); });
 
-async function upload(file) {
-  status.className = "status wait";
-  status.textContent = "Laddar upp " + file.name + "...";
+// 4 MB per chunk — keeps each request comfortably under Netlify's
+// ~6 MB function body limit while minimising round-trip overhead.
+const CHUNK_SIZE = 4 * 1024 * 1024;
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
-  const form = new FormData();
-  form.append("file", file);
+async function upload(file) {
+  if (file.size > MAX_FILE_SIZE) {
+    status.className = "status err";
+    status.textContent = "Filen &auml;r f&ouml;r stor (" + (file.size / 1024 / 1024).toFixed(1) + " MB, max 50 MB).";
+    return;
+  }
+
+  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+  status.className = "status wait";
+  status.textContent = "Laddar upp " + file.name + " (" + (file.size / 1024 / 1024).toFixed(1) + " MB)...";
 
   try {
-    const resp = await fetch(UPLOAD_URL, { method: "POST", body: form });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || "Uppladdning misslyckades");
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const blob = file.slice(start, end);
+
+      const form = new FormData();
+      form.append("file", new File([blob], file.name, { type: file.type }));
+      form.append("chunk_index", String(i));
+      form.append("total_chunks", String(totalChunks));
+      form.append("filename", file.name);
+      form.append("mime_type", file.type || "application/octet-stream");
+
+      const resp = await fetch(UPLOAD_URL, { method: "POST", body: form });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || ("Chunk " + (i + 1) + "/" + totalChunks + " misslyckades (HTTP " + resp.status + ")"));
+
+      status.textContent = "Laddar upp del " + (i + 1) + " av " + totalChunks + "...";
+    }
 
     status.className = "status ok";
     status.innerHTML = "<strong>" + file.name + "</strong> uppladdad. G&aring; tillbaka till Claude.ai och s&auml;g att du &auml;r klar.";
