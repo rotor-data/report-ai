@@ -811,6 +811,19 @@ const TOOLS = [
     },
   },
   {
+    name: "rasterize_upload",
+    description: "Rasterize an uploaded PDF (referenced via upload_token from request_upload) into per-page PNG images. Returns base64 PNGs + cached image URLs. Used by design.extract_blueprint to feed reference pages back to the LLM as multimodal vision input.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        upload_token: { type: "string", description: "Token from request_upload — server reads PDF from blob store." },
+        pdf_base64: { type: "string", description: "Alternative: raw PDF bytes as base64. Use upload_token for anything > ~1 MB." },
+        dpi: { type: "integer", description: "Rasterization DPI (default 96). Use 72 for thumbnails, 150 for high fidelity." },
+        max_pages: { type: "integer", description: "Hard cap on pages rasterized (default 20). Reference PDFs longer than this should be sampled." },
+      },
+    },
+  },
+  {
     name: "request_upload",
     description: "Generate a one-time upload link for the user. Use this when the user wants to provide a PDF or image as a reference document but it's too large to include in the conversation. Returns a URL where the user can drag-and-drop their file. After they confirm the upload is done, use the returned upload_token with extract_design_from_pdf or other tools.",
     inputSchema: {
@@ -3476,6 +3489,93 @@ async function handleRasterizePdf(userId, args, event) {
   return textResult({ report_id, images: imageUrls, count: imageUrls.length });
 }
 
+// ─── Handler: rasterize_upload ──────────────────────────────────────────────
+// Standalone PDF-to-PNG rasterization that does NOT require a pre-existing
+// report_id (unlike rasterize_pdf which reads from v2_reports). Used by
+// the design.extract_blueprint workflow to turn a reference PDF into per-
+// page images that get fed back to Claude as MCP image content blocks.
+
+async function handleRasterizeUpload(userId, args, event) {
+  const { upload_token, pdf_base64, dpi, max_pages } = args || {};
+  if (!upload_token && !pdf_base64) {
+    return errorResult("Provide upload_token (from request_upload) or pdf_base64.");
+  }
+
+  // Resolve the PDF bytes
+  let pdfBytesBase64;
+  if (upload_token) {
+    const { verifyUploadToken } = await import("./upload-ref.js");
+    if (!verifyUploadToken(upload_token)) {
+      return errorResult("Upload token is invalid or expired.");
+    }
+    const { getStore } = await import("@netlify/blobs");
+    const store = getStore({ name: "upload-refs", consistency: "strong" });
+    const fileData = await store.get(`${upload_token}/file`, { type: "arrayBuffer" });
+    if (!fileData) {
+      return errorResult("No file found for this upload token. Ask the user to upload the file first.");
+    }
+    pdfBytesBase64 = Buffer.from(fileData).toString("base64");
+  } else {
+    pdfBytesBase64 = pdf_base64;
+  }
+
+  const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 96;
+  const pageCap = typeof max_pages === "number" && max_pages > 0 ? max_pages : 20;
+
+  let raster;
+  try {
+    raster = await callRenderService("/render/rasterize", {
+      pdf_base64: pdfBytesBase64,
+      dpi: effectiveDpi,
+    }, userId || "system");
+  } catch (err) {
+    return errorResult(`Rasterization failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const rasterPages = Array.isArray(raster?.pages) ? raster.pages : [];
+  if (rasterPages.length === 0) {
+    return errorResult("Render service returned no pages. PDF may be malformed.");
+  }
+
+  // Cap to max_pages — for long reference PDFs we sample the first N pages
+  // (which usually carry the strongest visual signal: cover, hero spreads,
+  // KPI sections). Beyond ~20 pages the cost/benefit of more vision tokens
+  // drops off quickly.
+  const kept = rasterPages.slice(0, pageCap);
+  const truncated = rasterPages.length > pageCap;
+
+  // Cache PNGs in blob store so subsequent revise rounds don't re-rasterize.
+  const assetStore = await getBlobStore("report-ai-assets", event);
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+  const { createHash, randomUUID } = await import("node:crypto");
+  const sessionId = randomUUID();
+
+  const pages = [];
+  for (const rp of kept) {
+    if (typeof rp?.page !== "number" || typeof rp?.png_base64 !== "string") continue;
+    const pngBuffer = Buffer.from(rp.png_base64, "base64");
+    const hash = createHash("sha256").update(pngBuffer).digest("hex").slice(0, 12);
+    const blobKey = `reference-rasters/${sessionId}/${hash}-p${rp.page}.png`;
+    await assetStore.set(blobKey, pngBuffer, { contentType: "image/png" });
+    pages.push({
+      page_num: rp.page,
+      png_base64: rp.png_base64,
+      url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
+      width: rp.width,
+      height: rp.height,
+      height_mm: rp.height_mm,
+    });
+  }
+
+  return textResult({
+    pages,
+    page_count: pages.length,
+    total_pages_in_pdf: rasterPages.length,
+    truncated,
+    dpi: effectiveDpi,
+  });
+}
+
 // ─── Layer 2 meta-code helpers ──────────────────────────────────────────────
 
 /**
@@ -4314,6 +4414,7 @@ const HANDLERS = {
   list_design_extractions:  handleListDesignExtractions,
   apply_design_extraction:  handleApplyDesignExtraction,
   rasterize_pdf:         handleRasterizePdf,
+  rasterize_upload:      handleRasterizeUpload,
   request_upload:        handleRequestUpload,
   check_upload:          handleCheckUpload,
   // Layer 2 meta-code tools
