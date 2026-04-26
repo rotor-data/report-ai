@@ -8,8 +8,7 @@
  *   Modular report builder with column-based layouts,
  *   Python render service for HTML→PDF, and Netlify Blobs for storage.
  */
-import { randomUUID } from "node:crypto";
-import crypto from "node:crypto";
+import { randomUUID, randomBytes, createHmac } from "node:crypto";
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 import { getSql } from "./db.js";
 import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
@@ -3612,10 +3611,10 @@ function metaResult(meta) {
 // in a single, self-contained module).
 
 function _createUploadTokenInline() {
-  const id = crypto.randomBytes(16).toString("hex");
+  const id = randomBytes(16).toString("hex");
   const expires = Date.now() + 30 * 60 * 1000; // 30 min
   const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const sig = crypto.createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
+  const sig = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
   return { token: `${id}_${expires}_${sig}`, id, expires };
 }
 
@@ -3627,7 +3626,7 @@ function _verifyUploadTokenInline(token) {
   const expires = parseInt(expiresStr);
   if (isNaN(expires) || Date.now() > expires) return false;
   const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const expected = crypto.createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
+  const expected = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
   return sig === expected;
 }
 
@@ -4317,7 +4316,7 @@ async function handleRenderFreeformPdf(userId, args, event) {
   const syntheticPages = payload.pages.map(p => {
     const html = unwrapSectionPage(p.html);
     return {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       page_number: p.page_num,
       page_type: p.page_num === 1 ? "cover" : "content",
       modules: [
