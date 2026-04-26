@@ -20,15 +20,15 @@ const CORS = {
 // only after a fetch-style event arrives. POSTs from the upload page have
 // to fall back to explicit siteID + API token env vars since the Functions
 // v2 wrapper doesn't always inject Lambda context for Web Request handlers.
-function getBlobStore(req) {
+function getBlobStore() {
+  // Eventual consistency only — strong consistency requires an
+  // `uncachedEdgeURL` property that the bare-getStore fallback path
+  // doesn't provide, and we don't actually need it: chunks are
+  // written + read inside the same request (chunk handler reads its
+  // OWN previous writes only when finalising), so eventual is enough.
   try {
-    // The 1st-gen Netlify Functions plugin injects Lambda context onto
-    // process.env / globals; getStore() picks it up. For Web Request handlers
-    // (default async (req) =>), we can sometimes pass the Request object's
-    // Netlify-specific event body. Try the bare path first.
-    return getStore({ name: "upload-refs", consistency: "strong" });
+    return getStore({ name: "upload-refs" });
   } catch {
-    // Fall back to explicit credentials.
     const siteID = process.env.NETLIFY_SITE_ID;
     const token = process.env.NETLIFY_API_TOKEN;
     if (!siteID || !token) {
@@ -36,7 +36,7 @@ function getBlobStore(req) {
         "Blob store unreachable: bare getStore() failed and NETLIFY_SITE_ID / NETLIFY_API_TOKEN env vars are not set. Configure them in the Netlify site settings."
       );
     }
-    return getStore({ name: "upload-refs", siteID, token, consistency: "strong" });
+    return getStore({ name: "upload-refs", siteID, token });
   }
 }
 

@@ -3508,7 +3508,12 @@ async function handleRasterizeUpload(userId, args, event) {
     if (!verifyUploadToken(upload_token)) {
       return errorResult("Upload token is invalid or expired.");
     }
-    const store = await getBlobStore("upload-refs", event, { consistency: "strong" });
+    // Eventual consistency: by the time the user has clicked through the
+    // rasterize/extract step in Claude.ai, the upload has long since
+    // finalised on the upload-ref function. Strong consistency requires
+    // an `uncachedEdgeURL` property that isn't available via the
+    // siteID+token fallback path, so we'd lose the fallback entirely.
+    const store = await getBlobStore("upload-refs", event);
     const fileData = await store.get(`${upload_token}/file`, { type: "arrayBuffer" });
     if (!fileData) {
       return errorResult("No file found for this upload token. Ask the user to upload the file first.");
@@ -3695,7 +3700,12 @@ async function handleExtractDesignFromPdf(userId, args, event) {
     if (!verifyUploadToken(upload_token)) {
       return errorResult("Upload token is invalid or expired.");
     }
-    const store = await getBlobStore("upload-refs", event, { consistency: "strong" });
+    // Eventual consistency: by the time the user has clicked through the
+    // rasterize/extract step in Claude.ai, the upload has long since
+    // finalised on the upload-ref function. Strong consistency requires
+    // an `uncachedEdgeURL` property that isn't available via the
+    // siteID+token fallback path, so we'd lose the fallback entirely.
+    const store = await getBlobStore("upload-refs", event);
     const fileData = await store.get(`${upload_token}/file`, { type: "arrayBuffer" });
     if (!fileData) {
       return errorResult("No file found for this upload token. Ask the user to upload the file first.");
