@@ -9,6 +9,7 @@
  *   Python render service for HTML→PDF, and Netlify Blobs for storage.
  */
 import { randomUUID } from "node:crypto";
+import crypto from "node:crypto";
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 import { getSql } from "./db.js";
 import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
@@ -3504,7 +3505,7 @@ async function handleRasterizeUpload(userId, args, event) {
   // Resolve the PDF bytes
   let pdfBytesBase64;
   if (upload_token) {
-    const { verifyUploadToken } = await import("./upload-ref.js");
+    const verifyUploadToken = _verifyUploadTokenInline;
     if (!verifyUploadToken(upload_token)) {
       return errorResult("Upload token is invalid or expired.");
     }
@@ -3604,19 +3605,49 @@ function metaResult(meta) {
 }
 
 // ─── Handler: request_upload ────────────────────────────────────────────────
+// Inlined token generation (was dynamic import from ./upload-ref.js, but
+// that module is also a Netlify Function entrypoint — esbuild's bundling
+// of named exports from a function file is unreliable, and the dynamic
+// import would silently fail in the deployed lambda. Inlining keeps it
+// in a single, self-contained module).
+
+function _createUploadTokenInline() {
+  const id = crypto.randomBytes(16).toString("hex");
+  const expires = Date.now() + 30 * 60 * 1000; // 30 min
+  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
+  const sig = crypto.createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
+  return { token: `${id}_${expires}_${sig}`, id, expires };
+}
+
+function _verifyUploadTokenInline(token) {
+  if (typeof token !== "string") return false;
+  const parts = token.split("_");
+  if (parts.length !== 3) return false;
+  const [id, expiresStr, sig] = parts;
+  const expires = parseInt(expiresStr);
+  if (isNaN(expires) || Date.now() > expires) return false;
+  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
+  const expected = crypto.createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
+  return sig === expected;
+}
 
 async function handleRequestUpload(userId, args) {
-  const { createUploadToken } = await import("./upload-ref.js");
-  const { token } = createUploadToken();
-  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-  const uploadUrl = `${siteUrl}/upload-ref?token=${token}`;
+  try {
+    const { token } = _createUploadTokenInline();
+    const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+    const uploadUrl = `${siteUrl}/upload-ref?token=${token}`;
 
-  return textResult({
-    upload_token: token,
-    upload_url: uploadUrl,
-    expires_in_minutes: 30,
-    instruction: "Ge användaren denna länk. Filen analyseras direkt av servern — inga bilder skickas genom konversationen. När användaren bekräftar att uppladdningen är klar, använd upload_token med extract_design_from_pdf eller check_upload.",
-  });
+    return textResult({
+      upload_token: token,
+      upload_url: uploadUrl,
+      expires_in_minutes: 30,
+      instruction: "Ge användaren denna länk. Filen analyseras direkt av servern — inga bilder skickas genom konversationen. När användaren bekräftar att uppladdningen är klar, använd upload_token med rasterize_upload, extract_design_from_pdf eller check_upload.",
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[request_upload] failed:", msg, err?.stack);
+    return errorResult(`Failed to generate upload token: ${msg}`);
+  }
 }
 
 // ─── Handler: check_upload ─────────────────────────────────────────────────
@@ -3625,7 +3656,7 @@ async function handleCheckUpload(userId, args) {
   const { upload_token } = args;
   if (!upload_token) return errorResult("upload_token is required.");
 
-  const { verifyUploadToken } = await import("./upload-ref.js");
+  const verifyUploadToken = _verifyUploadTokenInline;
   if (!verifyUploadToken(upload_token)) {
     return errorResult("Upload token is invalid or expired.");
   }
@@ -3662,7 +3693,7 @@ async function handleExtractDesignFromPdf(userId, args, event) {
 
   if (upload_token) {
     // Fetch uploaded file from Blobs
-    const { verifyUploadToken } = await import("./upload-ref.js");
+    const verifyUploadToken = _verifyUploadTokenInline;
     if (!verifyUploadToken(upload_token)) {
       return errorResult("Upload token is invalid or expired.");
     }
