@@ -104,15 +104,15 @@ async function callRenderService(path, body, tenantId) {
 
 // ─── Blob store helper ──────────────────────────────────────────────────────
 
-async function getBlobStore(storeName, event) {
+async function getBlobStore(storeName, event, opts = {}) {
   const { connectLambda, getStore } = await import("@netlify/blobs");
   try {
     if (event) connectLambda(event);
-    return getStore(storeName);
+    return getStore({ name: storeName, ...opts });
   } catch {
     const siteID = process.env.NETLIFY_SITE_ID;
     const token = process.env.NETLIFY_API_TOKEN;
-    if (siteID && token) return getStore({ name: storeName, siteID, token });
+    if (siteID && token) return getStore({ name: storeName, siteID, token, ...opts });
     throw new Error(`Cannot access blob store "${storeName}"`);
   }
 }
@@ -3508,8 +3508,7 @@ async function handleRasterizeUpload(userId, args, event) {
     if (!verifyUploadToken(upload_token)) {
       return errorResult("Upload token is invalid or expired.");
     }
-    const { getStore } = await import("@netlify/blobs");
-    const store = getStore({ name: "upload-refs", consistency: "strong" });
+    const store = await getBlobStore("upload-refs", event, { consistency: "strong" });
     const fileData = await store.get(`${upload_token}/file`, { type: "arrayBuffer" });
     if (!fileData) {
       return errorResult("No file found for this upload token. Ask the user to upload the file first.");
@@ -3696,8 +3695,7 @@ async function handleExtractDesignFromPdf(userId, args, event) {
     if (!verifyUploadToken(upload_token)) {
       return errorResult("Upload token is invalid or expired.");
     }
-    const { getStore } = await import("@netlify/blobs");
-    const store = getStore({ name: "upload-refs", consistency: "strong" });
+    const store = await getBlobStore("upload-refs", event, { consistency: "strong" });
     const fileData = await store.get(`${upload_token}/file`, { type: "arrayBuffer" });
     if (!fileData) {
       return errorResult("No file found for this upload token. Ask the user to upload the file first.");
