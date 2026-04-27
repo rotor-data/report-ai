@@ -3537,7 +3537,12 @@ async function handleRasterizeUpload(userId, args, event) {
   const MAX_SAMPLE_COUNT = 12;
   const MAX_DPI = 72;
   const requestedDpi = typeof dpi === "number" && dpi > 0 ? dpi : 50;
-  const requestedSampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 8;
+  // Default 6 (was 8). Claude.ai's vision processing throughput hit a wall
+  // at 8 images on real brand books — the awaiting_brief pause sat
+  // 3-4 min before the client-side timeout fired with no progress.
+  // 6 still covers cover + key interior treatments well enough for
+  // extraction. Caller can override up to MAX_SAMPLE_COUNT.
+  const requestedSampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 6;
   const effectiveDpi = Math.min(requestedDpi, MAX_DPI);
   const sampleCount = Math.min(requestedSampleCount, MAX_SAMPLE_COUNT);
   if (effectiveDpi !== requestedDpi || sampleCount !== requestedSampleCount) {
