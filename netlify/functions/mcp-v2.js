@@ -3523,20 +3523,16 @@ async function handleRasterizeUpload(userId, args, event) {
     pdfBytesBase64 = pdf_base64;
   }
 
-  // Defaults are tuned for Netlify's ~26s function budget on large
-  // reference PDFs. 72 DPI gives readable type at A4 scale (595x842 px)
-  // — adequate for vision-based design analysis without the response-
-  // size cost of 96+ DPI.
-  const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 72;
-
-  // Sample evenly across the document instead of just pages 1..N. A
-  // brand book's first pages are often legal/intro pages that don't
-  // represent the design language; the variety lives across the doc
-  // (cover, hero spreads, KPI section, image treatments, back). The
-  // render service does the page-count read + sampling server-side so
-  // we don't have to ship the PDF buffer twice. ~6 pages is enough for
-  // design-language extraction; the cap can be overridden per call.
-  const sampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 6;
+  // Tuned to keep the FINAL hub→Claude.ai response under Lambda's 6MB
+  // body cap. Each MCP image content block contains the full base64
+  // payload, so the response size scales linearly with sample_count ×
+  // (DPI/72)² × jpeg-quality. Empirically:
+  //   6 pages × 72 DPI × q75 ≈ 9.4MB raster response → blows the cap.
+  //   4 pages × 60 DPI × q60 ≈ 2.5MB → fits comfortably.
+  // 60 DPI on A4 = 496×701 px, still readable for vision-based design
+  // analysis. Caller can override with explicit dpi / max_pages.
+  const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 60;
+  const sampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 4;
 
   let raster;
   try {
@@ -3545,7 +3541,7 @@ async function handleRasterizeUpload(userId, args, event) {
       dpi: effectiveDpi,
       sample_count: sampleCount,
       format: "jpeg",
-      quality: 75,
+      quality: 60,
     }, userId || "system");
   } catch (err) {
     return errorResult(`Rasterization failed: ${err instanceof Error ? err.message : String(err)}`);
