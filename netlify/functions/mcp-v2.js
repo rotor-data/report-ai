@@ -812,14 +812,14 @@ const TOOLS = [
   },
   {
     name: "rasterize_upload",
-    description: "Rasterize an uploaded PDF (referenced via upload_token from request_upload) into per-page PNG images. Returns base64 PNGs + cached image URLs. Used by design.extract_blueprint to feed reference pages back to the LLM as multimodal vision input.",
+    description: "Rasterize an uploaded PDF (referenced via upload_token from request_upload) into per-page PNG images. Returns base64 JPEGs + cached image URLs. Used by design.extract_blueprint to feed reference pages back to the LLM as multimodal vision input. Server-side caps apply: dpi ≤ 72, max_pages ≤ 12 — values above these clamp silently to keep the response under Lambda's 6MB cap and the function under its 60s timeout.",
     inputSchema: {
       type: "object",
       properties: {
         upload_token: { type: "string", description: "Token from request_upload — server reads PDF from blob store." },
         pdf_base64: { type: "string", description: "Alternative: raw PDF bytes as base64. Use upload_token for anything > ~1 MB." },
-        dpi: { type: "integer", description: "Rasterization DPI (default 96). Use 72 for thumbnails, 150 for high fidelity." },
-        max_pages: { type: "integer", description: "Hard cap on pages rasterized (default 20). Reference PDFs longer than this should be sampled." },
+        dpi: { type: "integer", description: "Rasterization DPI (default 50, max 72). Lower DPI = smaller payload, sufficient for vision-based design analysis (50 DPI A4 = 413×585 px)." },
+        max_pages: { type: "integer", description: "Number of pages to sample (default 8, max 12). Server picks visually-distinct pages spread across the document via perceptual-hash sampling." },
       },
     },
   },
@@ -3528,18 +3528,21 @@ async function handleRasterizeUpload(userId, args, event) {
   // payload, so the response size scales linearly with sample_count ×
   // (DPI/72)² × jpeg-quality. Empirically:
   //   6 pages × 72 DPI × q75 ≈ 9.4MB → blows the cap.
-  //   4 pages × 60 DPI × q60 ≈ 7.9MB on dense brand-book pages → still
-  //     blew the cap (rich pages + JPEG fall back to high-bitrate when
-  //     the source has lots of fine detail like type + photos).
-  //   3 pages × 50 DPI × q40 ≈ 100KB total → way under cap, but too few
-  //     samples to characterise a brand book (covers + 1-2 spreads).
-  //   8 pages × 50 DPI × q40 ≈ 250KB total → still way under cap, much
-  //     better representation of design variety across the doc.
-  // 50 DPI on A4 = 413×585 px. Still readable for vision-based design
-  // analysis (typography character + colour palette + layout rhythm),
-  // just not OCR-quality.
-  const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 50;
-  const sampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 8;
+  //   8 pages × 50 DPI × q40 ≈ 250KB total → safe.
+  //   20 pages × 96 DPI × q40 → 3-4 MB AND >35s render → 504 timeout.
+  // HARD CAPS apply even when the caller (e.g. Claude.ai calling the
+  // tool directly) passes larger values — those have caused Lambda
+  // timeouts in production. 50 DPI on A4 = 413×585 px, plenty for
+  // vision-based design analysis.
+  const MAX_SAMPLE_COUNT = 12;
+  const MAX_DPI = 72;
+  const requestedDpi = typeof dpi === "number" && dpi > 0 ? dpi : 50;
+  const requestedSampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 8;
+  const effectiveDpi = Math.min(requestedDpi, MAX_DPI);
+  const sampleCount = Math.min(requestedSampleCount, MAX_SAMPLE_COUNT);
+  if (effectiveDpi !== requestedDpi || sampleCount !== requestedSampleCount) {
+    console.log(`[rasterize_upload] clamped inputs: dpi ${requestedDpi}→${effectiveDpi}, sample_count ${requestedSampleCount}→${sampleCount}`);
+  }
 
   let raster;
   try {
