@@ -2079,6 +2079,23 @@ async function handleSaveBlueprint(userId, args) {
 
   const blueprintId = rows[0].id;
 
+  // Read-back verify: SELECT the row we just inserted to make sure it is
+  // queryable before we tell the caller "saved". Catches the rare case
+  // where INSERT succeeds at the connection but the row isn't visible
+  // (replication lag on Neon, transaction-isolation hiccups, etc.).
+  // Without this, the workflow says "saved" and the listing shows nothing.
+  const verify = await sql`
+    SELECT id, name, visibility, brand_id, owner_tenant_id
+    FROM report_blueprints
+    WHERE id = ${blueprintId}
+    LIMIT 1
+  `;
+  if (verify.length === 0) {
+    return errorResult(
+      `Blueprint INSERT returned id ${blueprintId} but read-back found no row. Save may have rolled back. Try again.`
+    );
+  }
+
   // Fire-and-forget: render a cover thumbnail from sample_pages_html[0] so
   // the setup picker can show a visual preview. Only for rows with a
   // brand_id (smyra-visibility starter packs are admin-seeded and get
@@ -2097,7 +2114,15 @@ async function handleSaveBlueprint(userId, args) {
     );
   }
 
-  return textResult({ blueprint_id: blueprintId });
+  const v = verify[0];
+  return textResult({
+    blueprint_id: blueprintId,
+    name: v.name,
+    visibility: v.visibility,
+    brand_id: v.brand_id,
+    owner_tenant_id: v.owner_tenant_id,
+    saved: true,
+  });
 }
 
 // Renders sample_pages_html[0] once and stores the URL on the blueprint.
@@ -2212,19 +2237,30 @@ function shapeBlueprintFullRow(r) {
 
 async function handleListBlueprints(userId, args) {
   const sql = getSql();
-  const { brand_id, document_type, style } = args || {};
+  const { brand_id, tenant_id, document_type, style } = args || {};
 
   // Alpha-v3 only: filter to rows that have design_system_css populated.
-  // Visibility: show Smyra-wide + tenant + brand-owned when brand_id supplied;
-  // without brand_id, show only Smyra-visibility blueprints.
+  // Visibility: union of three sets, each with its own ownership criterion:
+  //   - smyra (platform-curated):              always visible
+  //   - brand (saved at brand level):          visible to that brand only
+  //   - tenant (saved at tenant level):        visible to all brands within
+  //                                            the saving tenant
+  // Without brand_id and tenant_id, show only smyra-visibility blueprints.
+  // PREVIOUS BUG: query only matched smyra OR brand_id, so tenant-saved
+  // blueprints (brand_id=NULL, owner_tenant_id=X) were never shown — the
+  // "save and share with team" path was effectively a black hole.
   let rows;
-  if (brand_id) {
+  if (brand_id || tenant_id) {
     rows = await sql`
-      SELECT id, brand_id, visibility, name, document_type, style_direction,
+      SELECT id, brand_id, owner_tenant_id, visibility, name, document_type, style_direction,
              module_count, cover_thumbnail_url, created_at
       FROM report_blueprints
       WHERE design_system_css IS NOT NULL
-        AND (visibility = 'smyra' OR brand_id = ${brand_id})
+        AND (
+          visibility = 'smyra'
+          OR (visibility = 'brand'  AND brand_id        = ${brand_id  || null})
+          OR (visibility = 'tenant' AND owner_tenant_id = ${tenant_id || null})
+        )
         AND (${document_type || null}::text IS NULL OR document_type = ${document_type || null})
         AND (${style || null}::text IS NULL OR style_direction = ${style || null})
       ORDER BY
@@ -2234,7 +2270,7 @@ async function handleListBlueprints(userId, args) {
     `;
   } else {
     rows = await sql`
-      SELECT id, brand_id, visibility, name, document_type, style_direction,
+      SELECT id, brand_id, owner_tenant_id, visibility, name, document_type, style_direction,
              module_count, cover_thumbnail_url, created_at
       FROM report_blueprints
       WHERE design_system_css IS NOT NULL
