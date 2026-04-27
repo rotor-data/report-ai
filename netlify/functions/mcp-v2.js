@@ -3531,12 +3531,15 @@ async function handleRasterizeUpload(userId, args, event) {
   //   4 pages × 60 DPI × q60 ≈ 7.9MB on dense brand-book pages → still
   //     blew the cap (rich pages + JPEG fall back to high-bitrate when
   //     the source has lots of fine detail like type + photos).
-  //   3 pages × 50 DPI × q40 ≈ 1-2MB on the same source → safe.
+  //   3 pages × 50 DPI × q40 ≈ 100KB total → way under cap, but too few
+  //     samples to characterise a brand book (covers + 1-2 spreads).
+  //   8 pages × 50 DPI × q40 ≈ 250KB total → still way under cap, much
+  //     better representation of design variety across the doc.
   // 50 DPI on A4 = 413×585 px. Still readable for vision-based design
   // analysis (typography character + colour palette + layout rhythm),
   // just not OCR-quality.
   const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 50;
-  const sampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 3;
+  const sampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 8;
 
   let raster;
   try {
