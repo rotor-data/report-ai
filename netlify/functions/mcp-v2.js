@@ -3552,16 +3552,16 @@ async function handleRasterizeUpload(userId, args, event) {
   }
 
   const rasterPages = Array.isArray(raster?.pages) ? raster.pages : [];
+  console.log("[rasterize_upload] render returned", rasterPages.length, "pages,",
+    "first-page keys:", rasterPages[0] ? Object.keys(rasterPages[0]).join(",") : "(none)");
   if (rasterPages.length === 0) {
     return errorResult("Render service returned no pages. PDF may be malformed.");
   }
 
-  // Cap to max_pages — for long reference PDFs we sample the first N pages
-  // (which usually carry the strongest visual signal: cover, hero spreads,
-  // KPI sections). Beyond ~20 pages the cost/benefit of more vision tokens
-  // drops off quickly.
-  const kept = rasterPages.slice(0, pageCap);
-  const truncated = rasterPages.length > pageCap;
+  // Render service already applied sample_count → returned exactly the
+  // pages it picked via pHash sampling. No further capping needed here.
+  const kept = rasterPages;
+  const truncated = false;
 
   // Cache PNGs in blob store so subsequent revise rounds don't re-rasterize.
   const assetStore = await getBlobStore("report-ai-assets", event);
@@ -3591,6 +3591,8 @@ async function handleRasterizeUpload(userId, args, event) {
     });
   }
 
+  console.log("[rasterize_upload] returning", pages.length, "wrapped pages,",
+    "total payload base64 chars:", pages.reduce((s, p) => s + (p.png_base64?.length || 0), 0));
   return textResult({
     pages,
     page_count: pages.length,
