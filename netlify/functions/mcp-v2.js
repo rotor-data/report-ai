@@ -3527,12 +3527,16 @@ async function handleRasterizeUpload(userId, args, event) {
   // body cap. Each MCP image content block contains the full base64
   // payload, so the response size scales linearly with sample_count ×
   // (DPI/72)² × jpeg-quality. Empirically:
-  //   6 pages × 72 DPI × q75 ≈ 9.4MB raster response → blows the cap.
-  //   4 pages × 60 DPI × q60 ≈ 2.5MB → fits comfortably.
-  // 60 DPI on A4 = 496×701 px, still readable for vision-based design
-  // analysis. Caller can override with explicit dpi / max_pages.
-  const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 60;
-  const sampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 4;
+  //   6 pages × 72 DPI × q75 ≈ 9.4MB → blows the cap.
+  //   4 pages × 60 DPI × q60 ≈ 7.9MB on dense brand-book pages → still
+  //     blew the cap (rich pages + JPEG fall back to high-bitrate when
+  //     the source has lots of fine detail like type + photos).
+  //   3 pages × 50 DPI × q40 ≈ 1-2MB on the same source → safe.
+  // 50 DPI on A4 = 413×585 px. Still readable for vision-based design
+  // analysis (typography character + colour palette + layout rhythm),
+  // just not OCR-quality.
+  const effectiveDpi = typeof dpi === "number" && dpi > 0 ? dpi : 50;
+  const sampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 3;
 
   let raster;
   try {
@@ -3541,7 +3545,7 @@ async function handleRasterizeUpload(userId, args, event) {
       dpi: effectiveDpi,
       sample_count: sampleCount,
       format: "jpeg",
-      quality: 60,
+      quality: 40,
     }, userId || "system");
   } catch (err) {
     return errorResult(`Rasterization failed: ${err instanceof Error ? err.message : String(err)}`);
