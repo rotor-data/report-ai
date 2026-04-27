@@ -3964,13 +3964,18 @@ async function handleCreateSlotVariant(userId, args) {
   });
 }
 
-// Strip a single outer <section class="...page..."> wrapper from freeform
-// HTML if present. Claude's design_language and page_design prompts ask
-// for `<section class="page">…</section>` blocks, but render.py's freeform
-// path adds its own <div class="page page--freeform"> wrapper around the
-// fragment. Without unwrapping, both wrappers receive the design-system
-// CSS's .page page-break + full-height rules → one logical page renders
-// as two physical pages.
+// Normalise a freeform `<section class="page page--dark ...">…</section>`
+// wrapper so render.py's outer `<div class="page page--freeform">` doesn't
+// double-trigger the design-system CSS's .page rules (full-height +
+// page-break-after) and produce two physical pages per sample.
+//
+// Naive strip (just dropping the section) lost modifier classes like
+// `page--dark`, breaking black-background designs etc. We now:
+//   1. KEEP the <section> wrapper (so modifier classes still apply).
+//   2. REMOVE the bare `page` class from its class list (so the inner
+//      element doesn't itself act as a page-break source).
+// Net effect: outer div is the only `.page` instance → one render page
+// per sample, while `.page--dark`, `.cover`, etc. flow through unchanged.
 function unwrapSectionPage(html) {
   if (typeof html !== "string") return html;
   const trimmed = html.trim();
@@ -3978,9 +3983,29 @@ function unwrapSectionPage(html) {
   const m = trimmed.match(/^<section\b([^>]*)>([\s\S]*)<\/section>\s*$/i);
   if (!m) return html;
   const attrs = m[1] || "";
-  const classMatch = attrs.match(/\bclass\s*=\s*["']([^"']*)["']/i);
-  if (!classMatch || !/\bpage\b/.test(classMatch[1])) return html;
-  return m[2];
+  const inner = m[2];
+  const classMatch = attrs.match(/\bclass\s*=\s*(["'])([^"']*)\1/i);
+  if (!classMatch || !/\bpage\b/.test(classMatch[2])) return html;
+
+  // Drop the bare `page` token from the class list, keep the rest.
+  const newClassList = classMatch[2]
+    .split(/\s+/)
+    .filter((c) => c && c !== "page")
+    .join(" ");
+
+  // No modifier classes left → the wrapper served no purpose. Strip it
+  // entirely (matches the original unwrap behaviour for plain
+  // <section class="page">…</section>).
+  if (newClassList.length === 0) return inner;
+
+  // Rewrite class attribute (or remove if empty) and keep all other
+  // attributes. The opening quote char (single or double) is preserved.
+  const quote = classMatch[1];
+  const newAttrs = attrs.replace(
+    /\bclass\s*=\s*(["'])[^"']*\1/i,
+    `class=${quote}${newClassList}${quote}`,
+  );
+  return `<section${newAttrs}>${inner}</section>`;
 }
 
 // ─── Handler: render_freeform_thumbnails ────────────────────────────────────
@@ -4041,7 +4066,11 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   //   v4 = unwrap outer <section class="page"> before render — the old
   //        path double-wrapped the fragment so each sample rendered as
   //        two physical pages instead of one. Bump invalidates v3 blobs.
-  const CACHE_VERSION = "v4";
+  //   v5 = unwrapSectionPage now KEEPS modifier classes (`page--dark`,
+  //        `page--cover`, etc.) instead of stripping the wrapper whole.
+  //        Same HTML now renders with correct backgrounds → cached v4
+  //        blobs would show stale white-where-black designs.
+  const CACHE_VERSION = "v5";
   const dpiSuffix = effectiveDpi ? `-d${effectiveDpi}` : "";
 
   const pagePlans = pages.map((page) => {
