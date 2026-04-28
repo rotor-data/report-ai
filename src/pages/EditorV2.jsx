@@ -1215,6 +1215,7 @@ function ModuleCard({
           assets={assets}
           tenantId={tenantId}
           moduleId={mod.id}
+          moduleType={mod.module_type}
           background={mod.background || null}
           onHtmlChange={onLiveHtmlChange}
           onComponentDragStart={onComponentDragStart}

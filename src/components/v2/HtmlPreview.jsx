@@ -450,6 +450,12 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   showGrid = false,
   showOverflow = true,
   moduleId = null,
+  // Module type — when "freeform" we mirror render.py's page wrapping so
+  // alpha-v3 pages get the `.page page--freeform` element that the
+  // design_system_css rules target. Without this the editor preview
+  // misses every `.page { padding: …; background: …; ... }` rule the
+  // design language defines.
+  moduleType = null,
   // Per-module background layer: photo + gradient overlay + vignette + filter.
   // Shape in migration 022. Rendered as an absolutely-positioned
   // layer under the page content so existing module HTML stays
@@ -974,10 +980,23 @@ const HtmlPreview = forwardRef(function HtmlPreview({
 
     const root = document.createElement("div");
     root.className = "preview-root";
-    root.innerHTML = html || "";
+
+    // Freeform alpha-v3 modules: persistFreeformPages strips the outer
+    // <section class="page"> wrapper before storing html_cache (to avoid
+    // double-wrapping when render.py adds its own `<div class="page
+    // page--freeform">`). Mirror render.py's wrap here so design_system_css's
+    // `.page` rules (padding, background, full-bleed treatments) apply
+    // identically in the editor preview and in the rendered PDF.
+    if (moduleType === "freeform") {
+      const pageCls = "page page--freeform" + (background ? " page--has-bg" : "");
+      root.innerHTML = `<div class="${pageCls}">${html || ""}</div>`;
+    } else {
+      root.innerHTML = html || "";
+    }
 
     // If the module HTML does NOT already wrap itself in a .page element,
     // add outer padding so the content doesn't butt up against the paper.
+    // Freeform modules always have a .page wrapper now → never .needs-padding.
     if (!root.querySelector(":scope > .page")) {
       root.classList.add("needs-padding");
     }
@@ -1440,14 +1459,14 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // shadow (e.g. user just clicked a toolbar button that blurred the
     // contenteditable).
     node.ownerDocument.addEventListener("keydown", onDocKey);
-  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleId, background]);
+  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleId, moduleType, background]);
 
   // Re-run injection when structural props change. Callback props are
   // intentionally NOT in this list (they're read via refs above), so
   // parent-driven rerenders don't nuke the shadow DOM + selection.
   useEffect(() => {
     if (containerRef.current) injectHtml(containerRef.current);
-  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, background, injectHtml]);
+  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleType, background, injectHtml]);
 
   // Make getUpdatedHtml reachable from pushUndoSnapshot's ref callback
   useEffect(() => { getUpdatedHtmlRef.current = getUpdatedHtml; });
