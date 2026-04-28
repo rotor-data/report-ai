@@ -311,8 +311,8 @@ export const handler = async (event) => {
       }
 
       const mods = await sql`
-        SELECT m.id, m.report_id, m.module_type, m.content, m.style, m.html_content, m.order_index,
-               r.brand_id, r.tenant_id
+        SELECT m.id, m.report_id, m.module_type, m.content, m.style, m.html_content, m.html_cache, m.order_index,
+               r.brand_id, r.tenant_id, r.document_css, r.document_css_overrides
         FROM v2_report_modules m
         JOIN v2_reports r ON r.id = m.report_id
         WHERE m.id = ${moduleId} LIMIT 1
@@ -399,51 +399,82 @@ export const handler = async (event) => {
         if (err) return json(event, 400, { error: err });
       }
 
+      // Persist content/style/html_content first; we keep the existing
+      // html_cache + height_mm in place so a render failure below doesn't
+      // wipe the last good design — editor preview + PDF stay readable
+      // until the next successful render lands.
       await sql`
         UPDATE v2_report_modules
         SET content = ${JSON.stringify(newContent)}::jsonb,
             style = ${JSON.stringify(newStyle)}::jsonb,
             html_content = ${newHtmlContent},
-            html_cache = NULL,
-            height_mm = NULL,
             updated_at = NOW()
         WHERE id = ${moduleId}
       `;
 
       let renderOk = false;
+      let renderError = null;
       try {
         const brand = await fetchBrandContext(sql, mod.brand_id);
+        // Freeform alpha-v3 modules must render against the report's full
+        // document_css cascade, otherwise html_cache lands as bare HTML
+        // (no design language applied) and the editor + next PDF render
+        // both lose the design. Legacy v2 component modules (no
+        // html_content) keep the old payload shape — render.py picks the
+        // freeform branch only when document_css + html_content are both
+        // present.
         const renderPayload = newHtmlContent
-          ? { html_content: newHtmlContent, brand_tokens: brand.tokens, brand_fonts: brand.fonts, mode: "draft" }
+          ? {
+              html_content: newHtmlContent,
+              brand_tokens: brand.tokens,
+              brand_fonts: brand.fonts,
+              document_css: mod.document_css ?? "",
+              document_css_overrides: mod.document_css_overrides ?? "",
+              mode: "draft",
+            }
           : { module_id: moduleId, module_type: mod.module_type, content: newContent, style: newStyle, brand_tokens: brand.tokens, brand_fonts: brand.fonts };
         const rr = await callRenderService("/render/module", renderPayload, mod.tenant_id);
         const rendered = rr.html_fragment ?? rr.html ?? null;
-        await sql`
-          UPDATE v2_report_modules SET html_cache = ${rendered}, height_mm = ${rr.height_mm ?? null}
-          WHERE id = ${moduleId}
-        `;
-        renderOk = !!rendered;
+        if (rendered) {
+          await sql`
+            UPDATE v2_report_modules SET html_cache = ${rendered}, height_mm = ${rr.height_mm ?? null}
+            WHERE id = ${moduleId}
+          `;
+          renderOk = true;
+        } else {
+          renderError = "render service returned empty html_fragment";
+        }
       } catch (e) {
-        console.warn("[v2-modules] re-render failed:", e.message);
+        renderError = e.message || String(e);
+        console.warn("[v2-modules] re-render failed:", renderError);
       }
 
-      // Safety net: if re-render failed OR returned empty, fall back to
-      // html_content as the cache so the editor + PDF show the user's
-      // edit rather than a blank card. PDF pipeline will also look at
-      // html_content downstream, but this keeps editor previews intact.
-      if (!renderOk && newHtmlContent) {
+      // True-fresh-edit case: a freeform module with no prior html_cache
+      // and a render failure. Without a fallback the editor would show a
+      // blank card. Use newHtmlContent as a degraded cache; design will
+      // be re-applied on the next successful render.
+      if (!renderOk && newHtmlContent && !mod.html_cache) {
         await sql`
           UPDATE v2_report_modules SET html_cache = ${newHtmlContent}
           WHERE id = ${moduleId} AND html_cache IS NULL
         `;
-        console.warn(`[v2-modules] fallback html_cache := html_content for ${moduleId}`);
+        console.warn(`[v2-modules] fallback html_cache := html_content for ${moduleId} (no prior cache)`);
       }
 
       const rows = await sql`
         SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, background, created_at, updated_at
         FROM v2_report_modules WHERE id = ${moduleId}
       `;
-      return json(event, 200, { item: rows[0] });
+      return json(event, 200, {
+        item: rows[0],
+        // Surface render outcome so the editor can toast on failure
+        // ("Re-render failed — design may not have applied"). Previously
+        // the failure was silent and users only noticed the next time
+        // they opened the PDF.
+        render: renderOk
+          ? { ok: true }
+          : { ok: false, error: renderError, used_fallback: !!(newHtmlContent && !mod.html_cache) },
+      });
     }
 
     if (event.httpMethod === "DELETE" && moduleId) {
