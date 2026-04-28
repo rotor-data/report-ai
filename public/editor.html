@@ -995,8 +995,18 @@ function buildFontList() {
   return fonts;
 }
 
+function isFreeformDocument() {
+  const html = state.doc && state.doc.html_output;
+  return !!html && /<section[^>]*class=["'][^"']*\bpage\b[^"']*["']/i.test(html);
+}
+
 function loadDocumentFonts() {
   if (!state.doc || !state.doc.design_system || !state.doc.design_system.typography) return;
+  // Freeform alpha-v3: document_css already carries @font-face / @import for
+  // the report's actual fonts (extracted, blueprint, or Google). Force-loading
+  // brand-default Google Fonts on top causes the canvas to render with the
+  // wrong family and overrides what document_css declared.
+  if (isFreeformDocument()) return;
   const typo = state.doc.design_system.typography;
   ensureGoogleFontLink(typo.heading_family);
   ensureGoogleFontLink(typo.body_family);
@@ -2227,6 +2237,22 @@ function applyLiveDesign() {
   const c = ds.colors || {};
   const t = ds.typography || {};
   const s = ds.spacing || {};
+
+  // Freeform alpha-v3: document_css owns colors, fonts, spacing and padding via
+  // its own :root tokens and .page rules. Overlaying brand-default CSS vars
+  // and margin-padding here makes the canvas diverge from the rendered PDF
+  // (wrong colors/fonts, extra margin chrome that doesn't exist in print).
+  // Just ensure no stale inline overrides linger from a previous non-freeform doc.
+  const freeform = isFreeformDocument();
+  if (freeform) {
+    document.querySelectorAll('#canvas-area .canvas-page').forEach(page => {
+      page.style.paddingTop = '';
+      page.style.paddingBottom = '';
+      page.style.paddingLeft = '';
+      page.style.paddingRight = '';
+    });
+    return;
+  }
 
   const varMap = {
     '--color-primary':    c.primary,
