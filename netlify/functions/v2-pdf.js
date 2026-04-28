@@ -2,16 +2,19 @@
  * GET /api/v2-pdf?key=<blob_key>
  *
  * Serves a PDF from the "report-ai-pdfs" Netlify Blob store.
- * The blob_key contains tenant + report UUIDs, which act as unguessable
- * capability tokens — good enough for draft preview links. For production
- * finals we can add HMAC-signed short-lived URLs.
+ *
+ * Implementation: Netlify Functions v2 native Web Request handler with
+ * a streamed Response body. The previous v1 base64-body handler was
+ * capped at 6 MB (Lambda response payload cap) — rich freeform reports
+ * with image-led pages routinely exceeded that and crashed with
+ * `Function.ResponseSizeTooLarge`. v2 streaming has no such cap.
  */
-import { noContent, json } from "./cors.js";
-
-async function getBlobStore(storeName, event) {
+async function resolveBlobStore(storeName, req) {
   const { connectLambda, getStore } = await import("@netlify/blobs");
   try {
-    if (event) connectLambda(event);
+    if (typeof connectLambda === "function" && req) {
+      try { connectLambda(req); } catch { /* not a lambda req — fall through */ }
+    }
     return getStore(storeName);
   } catch {
     const siteID = process.env.NETLIFY_SITE_ID;
@@ -21,40 +24,66 @@ async function getBlobStore(storeName, event) {
   }
 }
 
-export const handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") return noContent(event);
-  if (event.httpMethod !== "GET") return json(event, 405, { error: "Method Not Allowed" });
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
-  const key = event.queryStringParameters?.key;
-  if (!key) return json(event, 400, { error: "Missing ?key=" });
+export default async function handler(req) {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+  if (req.method !== "GET") {
+    return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json", ...CORS },
+    });
+  }
 
-  // Basic path hygiene
+  const url = new URL(req.url);
+  const key = url.searchParams.get("key");
+  if (!key) {
+    return new Response(JSON.stringify({ error: "Missing ?key=" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json", ...CORS },
+    });
+  }
   if (key.includes("..") || key.startsWith("/")) {
-    return json(event, 400, { error: "Invalid key" });
+    return new Response(JSON.stringify({ error: "Invalid key" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json", ...CORS },
+    });
   }
 
   try {
-    const store = await getBlobStore("report-ai-pdfs", event);
-    const buf = await store.get(key, { type: "arrayBuffer" });
-    if (!buf) return json(event, 404, { error: "Not found" });
-
-    const bytes = Buffer.from(buf);
+    const store = await resolveBlobStore("report-ai-pdfs", req);
+    // type:"stream" returns a ReadableStream → Response body streams
+    // bytes through without ever materialising the full PDF in memory
+    // or hitting Lambda's 6 MB response cap.
+    const stream = await store.get(key, { type: "stream" });
+    if (!stream) {
+      return new Response(JSON.stringify({ error: "Not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json", ...CORS },
+      });
+    }
     const filename = key.split("/").pop() || "report.pdf";
-
-    return {
-      statusCode: 200,
+    return new Response(stream, {
+      status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Length": String(bytes.length),
         "Content-Disposition": `inline; filename="${filename}"`,
         "Cache-Control": "private, max-age=300",
-        "Access-Control-Allow-Origin": "*",
+        ...CORS,
       },
-      body: bytes.toString("base64"),
-      isBase64Encoded: true,
-    };
+    });
   } catch (err) {
     console.error("[v2-pdf]", err);
-    return json(event, 500, { error: err.message });
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json", ...CORS },
+    });
   }
-};
+}
+
+// Routing handled by netlify.toml's `/api/*` wildcard — no `config.path`
+// here. Adding one would create a second route that'd race the wildcard.
