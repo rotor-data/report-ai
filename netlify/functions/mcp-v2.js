@@ -455,6 +455,19 @@ const TOOLS = [
       required: ["tenant_id"],
     },
   },
+  {
+    name: "create_brand",
+    description: "Create a new brand row for a tenant. Used by the brand_onboard workflow when the user picks 'new' instead of an existing brand. Returns { brand_id, name }. tokens default to {} — the onboarding flow fills them via brand-os later.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: { type: "string", description: "Tenant UUID this brand belongs to." },
+        name: { type: "string", description: "Brand display name (e.g. 'Freebo'). Required, 1-128 chars." },
+        tokens: { type: "object", additionalProperties: true, description: "Optional initial brand tokens (colors, fonts). Defaults to empty object — brand-os onboarding fills them in." },
+      },
+      required: ["tenant_id", "name"],
+    },
+  },
 
   // ── Templates + Blueprints ──
   {
@@ -1927,6 +1940,50 @@ async function handleListBrands(userId, args) {
     ORDER BY created_at ASC
   `;
   return textResult({ brands: rows, count: rows.length });
+}
+
+// ─── Handler: create_brand ───────────────────────────────────────────────────
+// Creates a new brand row for a tenant. Called from smyra-core's
+// brand_create step when the user picks "new" at brand_pick during
+// brand_onboard. Returns { brand_id, name } so the workflow can stash
+// the id in state and continue onboarding scoped to it.
+async function handleCreateBrand(userId, args) {
+  const { tenant_id, name, tokens } = args || {};
+  if (!tenant_id || !/^[0-9a-f-]{36}$/i.test(tenant_id)) {
+    return errorResult("tenant_id must be a UUID.");
+  }
+  if (typeof name !== "string" || name.trim().length === 0 || name.trim().length > 128) {
+    return errorResult("name must be a non-empty string (≤128 chars).");
+  }
+  const cleanName = name.trim();
+  const tokensJson = (tokens && typeof tokens === "object") ? tokens : {};
+  const sql = getSql();
+  // Soft de-dup: if a brand with the same (tenant_id, name) already exists,
+  // return it instead of creating a duplicate. Onboarding can fail and be
+  // retried; we don't want orphan brands piling up.
+  const existing = await sql`
+    SELECT id, name FROM brands
+    WHERE tenant_id = ${tenant_id} AND lower(name) = lower(${cleanName})
+    LIMIT 1
+  `;
+  if (existing.length > 0) {
+    return textResult({
+      brand_id: existing[0].id,
+      name: existing[0].name,
+      created: false,
+      reason: "Brand with this name already exists for tenant — returning existing.",
+    });
+  }
+  const rows = await sql`
+    INSERT INTO brands (tenant_id, name, tokens)
+    VALUES (${tenant_id}, ${cleanName}, ${JSON.stringify(tokensJson)}::jsonb)
+    RETURNING id, name
+  `;
+  return textResult({
+    brand_id: rows[0].id,
+    name: rows[0].name,
+    created: true,
+  });
 }
 
 // ─── Handler: get_module_schema ─────────────────────────────────────────────
@@ -4525,6 +4582,7 @@ const HANDLERS = {
   list_templates:        handleListTemplates,
   get_stub_plan:         handleGetStubPlan,
   list_brands:           handleListBrands,
+  create_brand:          handleCreateBrand,
   get_module_schema:     handleGetModuleSchema,
   save_blueprint:        handleSaveBlueprint,
   list_blueprints:       handleListBlueprints,
