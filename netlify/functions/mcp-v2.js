@@ -4548,7 +4548,29 @@ async function handleRenderFreeformPdf(userId, args, event) {
     }
   }
 
-  // ── 9. Return result ────────────────────────────────────────────────────────
+  // ── 9. Persist composed CSS to v2_reports.document_css ─────────────────────
+  // The editor (getV2EditorContext) reads v2_reports.document_css to drive
+  // its <head> brand-style injection. persist_freeform_pages is the
+  // canonical writer, but it's only called from module_review's approve_all
+  // and skips when designCss is empty mid-flow. Without this UPDATE here,
+  // a render_preview that succeeded would still leave document_css NULL,
+  // and the editor opened the report as plain text. Idempotent — repeat
+  // renders just overwrite with the same composed bundle.
+  try {
+    await sql`
+      UPDATE v2_reports
+      SET document_css = ${fullCss},
+          document_css_overrides = ${payload.augmented_design_css_additions ?? ""},
+          updated_at = NOW()
+      WHERE id = ${report_id}::uuid
+    `;
+  } catch (err) {
+    // Non-fatal — PDF was already rendered + stored, editor degrades to
+    // plain text if this UPDATE fails but the user can still get the PDF.
+    console.warn("[render_freeform_pdf] failed to persist document_css:", err.message);
+  }
+
+  // ── 10. Return result ───────────────────────────────────────────────────────
   return textResult({
     pdf_url: `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(blobKey)}`,
     thumbnails,
