@@ -449,6 +449,194 @@
 .smyra-editor .editor-v2-body--inspector {
   grid-template-columns: 240px 1fr 320px;
 }
+/* Alpha-v3 reports add a fourth column for the content-units panel. */
+.smyra-editor .editor-v2-body--inspector.editor-v2-body--units {
+  grid-template-columns: 240px 1fr 320px 320px;
+}
+
+/* ── Units panel (alpha-v3 content units) ─────────────────────── */
+.smyra-editor .editor-units-panel {
+  background: #fff;
+  color: var(--ink, #2a2a2e);
+  border-left: 1px solid var(--line-strong, #d4d4d8);
+  overflow-y: auto;
+  font-size: 12px;
+}
+.smyra-editor .units-panel-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.smyra-editor .units-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line, #e4e4e7);
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 1;
+}
+.smyra-editor .units-panel-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+.smyra-editor .units-panel-count {
+  background: #f4f4f5;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #71717a;
+}
+.smyra-editor .units-panel-list {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.smyra-editor .unit-card {
+  border: 1px solid var(--line, #e4e4e7);
+  border-radius: 6px;
+  background: #fafafa;
+}
+.smyra-editor .unit-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line, #e4e4e7);
+  gap: 6px;
+}
+.smyra-editor .unit-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 11px;
+}
+.smyra-editor .unit-card-icon {
+  font-size: 13px;
+}
+.smyra-editor .unit-card-id {
+  font-size: 10.5px;
+  color: #71717a;
+  background: #f4f4f5;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smyra-editor .unit-card-body {
+  padding: 8px;
+}
+.smyra-editor .unit-textarea,
+.smyra-editor .unit-input,
+.smyra-editor .unit-select {
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--line, #d4d4d8);
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: #fff;
+  color: inherit;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.smyra-editor .unit-textarea--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.smyra-editor .unit-textarea:focus,
+.smyra-editor .unit-input:focus,
+.smyra-editor .unit-select:focus {
+  outline: 2px solid #b85a73;
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.smyra-editor .unit-field-label {
+  display: block;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #71717a;
+  margin: 4px 0 2px;
+  font-weight: 600;
+}
+.smyra-editor .unit-list-row,
+.smyra-editor .unit-deflist-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+  align-items: stretch;
+}
+.smyra-editor .unit-deflist-row .unit-input {
+  min-width: 0;
+}
+.smyra-editor .unit-icon-btn {
+  border: 1px solid var(--line, #d4d4d8);
+  background: #fff;
+  border-radius: 4px;
+  padding: 0 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #71717a;
+}
+.smyra-editor .unit-icon-btn:hover {
+  background: #fee;
+  color: #b85a73;
+  border-color: #b85a73;
+}
+.smyra-editor .unit-add-btn {
+  border: 1px dashed var(--line, #d4d4d8);
+  background: transparent;
+  border-radius: 4px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: #52525b;
+  width: 100%;
+  margin-top: 2px;
+}
+.smyra-editor .unit-add-btn:hover {
+  border-color: #b85a73;
+  color: #b85a73;
+}
+.smyra-editor .unit-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.smyra-editor .unit-heading-row .unit-field-label {
+  margin: 0;
+}
+.smyra-editor .unit-heading-row .unit-select {
+  width: auto;
+  flex: 0 0 auto;
+}
+.smyra-editor .unit-help {
+  font-size: 10.5px;
+  color: #71717a;
+  margin-bottom: 4px;
+}
+.smyra-editor .unit-decorative-badge {
+  display: inline-block;
+  font-size: 11px;
+  color: #71717a;
+  font-style: italic;
+}
+.smyra-editor .unit-parse-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #b91c1c;
+}
 
 /* ── Inspector (v4 — Smyra light palette) ──────────────────────── */
 .smyra-editor .editor-inspector-v3 {

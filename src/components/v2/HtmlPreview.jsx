@@ -1,5 +1,6 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import ImagePickerDialog from "./ImagePickerDialog";
+import { substituteUnits } from "../../lib/units-substitute.js";
 
 const SELECTABLE = new Set([
   "p","h1","h2","h3","h4","h5","h6","hr","img","div","section",
@@ -442,6 +443,12 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   brandCss = "",
   logos = [],
   assets = [],
+  // Alpha-v3 content units. When non-empty, [data-unit="<id>"] placeholders
+  // in `html` are replaced with the rendered unit body before injection.
+  // Idempotent — running on already-substituted HTML is a no-op. Legacy
+  // reports pass an empty array (or omit the prop) to keep their inline
+  // HTML untouched.
+  units = [],
   onHtmlChange,
   zoom = 0.55,
   interactive = true,
@@ -763,6 +770,25 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     },
   }), [selected, moduleId, logos, assets]);
 
+  // Pre-substitute alpha-v3 [data-unit] placeholders in the source HTML.
+  // We skip the call entirely when there are no units — the selector
+  // matches nothing in legacy HTML anyway, but skipping avoids a needless
+  // DOMParser round-trip per render. substituteUnits is pure + idempotent
+  // so re-running on already-substituted HTML is a no-op.
+  const substitutedHtml = useMemo(() => {
+    if (!html) return html || "";
+    if (!units || units.length === 0) return html;
+    try {
+      return substituteUnits(html, units);
+    } catch (err) {
+      // Never let a bad unit break the preview — log and fall through to
+      // raw HTML so the author still sees something.
+      // eslint-disable-next-line no-console
+      console.warn("[HtmlPreview] substituteUnits failed:", err);
+      return html;
+    }
+  }, [html, units]);
+
   const injectHtml = useCallback((node) => {
     if (!node) return;
     containerRef.current = node;
@@ -770,7 +796,7 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     if (node.shadowRoot) node.shadowRoot.innerHTML = "";
     const shadow = node.shadowRoot || node.attachShadow({ mode: "open" });
 
-    const pageSize = detectPageSize(html);
+    const pageSize = detectPageSize(substitutedHtml);
 
     // 1. Brand CSS bundle (fonts, tokens, design-system classes).
     //
@@ -989,9 +1015,9 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // identically in the editor preview and in the rendered PDF.
     if (moduleType === "freeform") {
       const pageCls = "page page--freeform" + (background ? " page--has-bg" : "");
-      root.innerHTML = `<div class="${pageCls}">${html || ""}</div>`;
+      root.innerHTML = `<div class="${pageCls}">${substitutedHtml || ""}</div>`;
     } else {
-      root.innerHTML = html || "";
+      root.innerHTML = substitutedHtml || "";
     }
 
     // If the module HTML does NOT already wrap itself in a .page element,
@@ -1459,14 +1485,14 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // shadow (e.g. user just clicked a toolbar button that blurred the
     // contenteditable).
     node.ownerDocument.addEventListener("keydown", onDocKey);
-  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleId, moduleType, background]);
+  }, [substitutedHtml, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleId, moduleType, background]);
 
   // Re-run injection when structural props change. Callback props are
   // intentionally NOT in this list (they're read via refs above), so
   // parent-driven rerenders don't nuke the shadow DOM + selection.
   useEffect(() => {
     if (containerRef.current) injectHtml(containerRef.current);
-  }, [html, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleType, background, injectHtml]);
+  }, [substitutedHtml, brandCss, logos, assets, zoom, interactive, showGrid, showOverflow, moduleType, background, injectHtml]);
 
   // Make getUpdatedHtml reachable from pushUndoSnapshot's ref callback
   useEffect(() => { getUpdatedHtmlRef.current = getUpdatedHtml; });

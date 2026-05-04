@@ -351,6 +351,28 @@ svg * { transition: fill .1s, stroke .1s; }
         : null,
     }));
 
+    // Content units (alpha-v3 reports). Editor renders these via
+    // substituteUnits() into [data-unit] placeholders in module HTML and
+    // surfaces them as editable cards in the units side-panel. Legacy
+    // reports (pre-030) have zero rows here and the array stays empty,
+    // so the editor falls back to inline-HTML editing on those.
+    let units = [];
+    try {
+      units = await sql`
+        SELECT id, report_id, unit_id, type, level, text, metadata,
+               order_index, created_at, updated_at
+        FROM v2_content_units
+        WHERE report_id = ${reportId}
+        ORDER BY order_index ASC
+      `;
+    } catch (err) {
+      // The table is created by migration 030 — environments that haven't
+      // applied it yet should keep returning the rest of the bundle so the
+      // editor still loads (degraded into legacy mode).
+      console.warn("[v2-brand-css] v2_content_units query failed:", err.message);
+      units = [];
+    }
+
     // Assets referenced from module HTML via data-asset-ref="<id>".
     // tenant_assets (see migration 008) resolves to a storage URL the
     // editor iframe/shadow DOM can load directly.
@@ -387,6 +409,8 @@ svg * { transition: fill .1s, stroke .1s; }
       tokens: mergedTokens,
       brand_tokens: tokens,
       overrides,
+      // Alpha-v3 content units (empty for legacy reports — see fetch above).
+      units,
     });
   } catch (err) {
     console.error("[v2-brand-css]", err);

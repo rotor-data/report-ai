@@ -4153,6 +4153,32 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
     }
   }
 
+  // ── 1b. Units-only validation (mirrors persist + render_pdf handlers) ──
+  // Catches inline body text at thumbnail time so Claude sees a clear error
+  // instead of a misleading-looking preview rendered against bad signals.
+  // Run when caller passed units OR any page references data-unit; skip the
+  // legacy no-units mode so old flows still preview.
+  const incomingUnits = Array.isArray(units) ? units : [];
+  const pagesReferenceUnits = pages.some(
+    (p) => typeof p?.html === "string" && p.html.includes("data-unit"),
+  );
+  const unitsModeActive = incomingUnits.length > 0 || pagesReferenceUnits;
+  if (unitsModeActive) {
+    for (const p of pages) {
+      const v = validateUnitsOnly(p.html);
+      if (!v.valid) {
+        const summary = v.violations.slice(0, 10).map(
+          (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`
+        ).join("\n");
+        return errorResult(
+          `Inline body text found in page ${p.page_num} — alpha-v3 requires data-unit refs.\n` +
+          `Violations:\n${summary}\n` +
+          `Add data-unit attributes referencing content units, or move the text into a unit and reference it.`
+        );
+      }
+    }
+  }
+
   // ── 2. Resolve tenant_id from brand ────────────────────────────────────────
   const brandRows = await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`;
   const tenantId = brandRows[0]?.tenant_id;

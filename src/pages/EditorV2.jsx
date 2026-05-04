@@ -33,6 +33,10 @@ export default function EditorV2() {
   const [brandCss, setBrandCss] = useState("");
   const [logos, setLogos] = useState([]);
   const [assets, setAssets] = useState([]);
+  // Alpha-v3 content units. Empty array for legacy reports — the units
+  // panel hides itself in that case so the editor degrades to inline
+  // HTML editing.
+  const [units, setUnits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   // Active tokens = brand tokens merged with report-level overrides.
@@ -259,7 +263,7 @@ export default function EditorV2() {
           api.getV2Report(data.report_id),
           api.getV2EditorContext(data.report_id).catch((err) => {
             console.warn("editor context fetch failed:", err);
-            return { css: "", logos: [], assets: [] };
+            return { css: "", logos: [], assets: [], units: [] };
           }),
         ]);
         if (cancelled) return;
@@ -270,6 +274,7 @@ export default function EditorV2() {
         setBrandCss(ctx?.css || "");
         setLogos(ctx?.logos || []);
         setAssets(ctx?.assets || []);
+        setUnits(Array.isArray(ctx?.units) ? ctx.units : []);
         setTokens(ctx?.tokens || {});
         setBrandTokens(ctx?.brand_tokens || {});
         setOverrides(ctx?.overrides || r.item?.style_overrides || {});
@@ -701,6 +706,58 @@ export default function EditorV2() {
     setSaveStatus("saving");
   };
 
+  // ─── Content units save (alpha-v3) ───────────────────────────────
+  // Debounced PATCH per unit. We keep a per-unit timer so two adjacent
+  // units typed back-to-back save independently. Optimistic UI: state
+  // updates immediately, the network call follows; on failure we surface
+  // a toast and revert.
+  const unitSaveTimers = useRef(new Map());
+  const onPatchUnit = useCallback((unitId, patch) => {
+    if (!unitId || !patch || typeof patch !== "object") return;
+    // Optimistic local update — preview re-substitutes immediately.
+    setUnits((prev) => prev.map((u) => (
+      u.id === unitId ? { ...u, ...patch } : u
+    )));
+    setSaveStatus("saving");
+    // Per-unit debounce so independent edits don't stomp each other.
+    const timers = unitSaveTimers.current;
+    if (timers.has(unitId)) clearTimeout(timers.get(unitId));
+    const handle = setTimeout(async () => {
+      timers.delete(unitId);
+      try {
+        const res = await api.patchV2ContentUnit(unitId, patch);
+        if (res?.item) {
+          setUnits((prev) => prev.map((u) => (
+            u.id === unitId ? { ...u, ...res.item } : u
+          )));
+        }
+        setSaveStatus("saved");
+        setTimeout(() => setSaveStatus((s) => (s === "saved" ? "" : s)), 1200);
+      } catch (err) {
+        flashToast(`Kunde inte spara: ${err.message || "okänt fel"}`);
+        setSaveStatus("");
+        // Revert by re-fetching context — cheaper and more correct than
+        // tracking a per-call snapshot, especially with rapid typing.
+        try {
+          const ctx = await api.getV2EditorContext(session.report_id);
+          if (Array.isArray(ctx?.units)) setUnits(ctx.units);
+        } catch {
+          /* swallow — original error already surfaced */
+        }
+      }
+    }, 500);
+    timers.set(unitId, handle);
+  }, [session?.report_id]);
+
+  // Clean up unit-save timers on unmount.
+  useEffect(() => {
+    const timers = unitSaveTimers.current;
+    return () => {
+      for (const handle of timers.values()) clearTimeout(handle);
+      timers.clear();
+    };
+  }, []);
+
   // Element clipboard handlers — act on the currently-selected element
   // in whichever preview owns activeSelection.moduleId.
   const onCopyElement = () => {
@@ -906,7 +963,12 @@ export default function EditorV2() {
       {error ? <div className="error" style={{ margin: "12px 24px" }}>{error}</div> : null}
       {toast ? <div className="ins-toast">{toast}</div> : null}
 
-      <div className="editor-v2-body editor-v2-body--inspector">
+      <div
+        className={
+          "editor-v2-body editor-v2-body--inspector" +
+          (units.length > 0 ? " editor-v2-body--units" : "")
+        }
+      >
         {/* ─── Left: page navigator (thumbnails, click = scroll) ─── */}
         <aside className="editor-sidebar">
           <div className="sidebar-header">
@@ -982,6 +1044,7 @@ export default function EditorV2() {
                 brandCss={brandCss}
                 logos={logos}
                 assets={assets}
+                units={units}
                 tenantId={session?.report?.tenant_id || null}
                 zoom={zoom}
                 showGrid={showGrid}
@@ -1050,6 +1113,13 @@ export default function EditorV2() {
             onClearBackground={(moduleId) => clearModuleBackground(moduleId)}
           />
         </aside>
+
+        {/* ─── Far right: alpha-v3 content units panel (only if any) ─── */}
+        {units.length > 0 ? (
+          <aside className="editor-units-panel">
+            <UnitsPanel units={units} onPatchUnit={onPatchUnit} />
+          </aside>
+        ) : null}
       </div>
     </div>
   );
@@ -1071,6 +1141,7 @@ function ModuleCard({
   brandCss,
   logos,
   assets,
+  units,
   tenantId,
   zoom,
   showGrid,
@@ -1213,6 +1284,7 @@ function ModuleCard({
           brandCss={brandCss}
           logos={logos}
           assets={assets}
+          units={units}
           tenantId={tenantId}
           moduleId={mod.id}
           moduleType={mod.module_type}
@@ -2479,6 +2551,431 @@ function SidebarItem({
           ×
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── Units panel (alpha-v3 content units) ───────────────────────────
+/**
+ * Right-side panel listing every content unit in the report and letting
+ * the author edit text / level / metadata in place. Each edit fires a
+ * debounced PATCH via `onPatchUnit(unitId, patch)` — the parent owns the
+ * timer + optimistic state, this component is purely presentational.
+ *
+ * Unit type catalogue lives in db/migrations/030_v2_content_units.sql.
+ * For complex types we don't yet have rich editors for (kpi_group, table,
+ * etc.) we expose a "raw metadata" JSON textarea — minimal for v1, richer
+ * editors are post-MVP per the resilient-dazzling-koala plan.
+ */
+const UNIT_TYPE_META = {
+  paragraph:        { icon: "📝", label: "Stycke" },
+  lead:             { icon: "🌅", label: "Inledning" },
+  kicker:           { icon: "🎯", label: "Kicker" },
+  attribution:      { icon: "✍️",  label: "Källangivelse" },
+  heading:          { icon: "🔠", label: "Rubrik" },
+  eyebrow:          { icon: "👁",  label: "Förrubrik" },
+  blockquote:       { icon: "❝",  label: "Citatblock" },
+  pull_quote:       { icon: "❞",  label: "Pull quote" },
+  callout:          { icon: "📌", label: "Notis" },
+  info_box:         { icon: "ℹ️",  label: "Info-ruta" },
+  warning_box:      { icon: "⚠️",  label: "Varning" },
+  success_box:      { icon: "✅", label: "Klart-ruta" },
+  highlight:        { icon: "✨", label: "Markerad" },
+  caption:          { icon: "🏷",  label: "Bildtext" },
+  footnote:         { icon: "*",  label: "Fotnot" },
+  sidenote:         { icon: "📑", label: "Sidnot" },
+  citation:         { icon: "📚", label: "Citat-källa" },
+  bullet_list:      { icon: "•",  label: "Punktlista" },
+  numbered_list:    { icon: "1.", label: "Numrerad lista" },
+  check_list:       { icon: "☑",  label: "Checklista" },
+  definition_list:  { icon: "≡",  label: "Definitionslista" },
+  kpi:              { icon: "📊", label: "Nyckeltal" },
+  kpi_group:        { icon: "📊", label: "KPI-grupp" },
+  stat_hero:        { icon: "🏆", label: "Stat-hjälte" },
+  table:            { icon: "⊞",  label: "Tabell" },
+  comparison:       { icon: "⇄",  label: "Jämförelse" },
+  timeline_event:   { icon: "🕒", label: "Tidslinje-händelse" },
+  step:             { icon: "👣", label: "Steg" },
+  testimonial:      { icon: "💬", label: "Omdöme" },
+  glossary_item:    { icon: "📖", label: "Ordbok" },
+  divider:          { icon: "—",  label: "Avskiljare" },
+  spacer:           { icon: "␣",  label: "Mellanrum" },
+  page_break:       { icon: "📄", label: "Sidbrytning" },
+  bibliography_entry: { icon: "📚", label: "Källförteckning" },
+  toc_entry:        { icon: "🔖", label: "Innehåll" },
+};
+
+const TEXT_ONLY_TYPES = new Set([
+  "paragraph", "lead", "kicker", "attribution", "eyebrow",
+  "blockquote", "pull_quote", "callout",
+  "info_box", "warning_box", "success_box", "highlight",
+  "caption", "footnote", "sidenote", "citation", "toc_entry",
+]);
+
+const LIST_TYPES = new Set(["bullet_list", "numbered_list", "check_list"]);
+
+const DECORATIVE_TYPES = new Set(["divider", "spacer", "page_break"]);
+
+function UnitsPanel({ units, onPatchUnit }) {
+  return (
+    <div className="units-panel-root">
+      <div className="units-panel-head">
+        <span className="units-panel-title">Innehåll</span>
+        <span className="units-panel-count">{units.length}</span>
+      </div>
+      <div className="units-panel-list">
+        {units.map((u) => (
+          <UnitCard key={u.id} unit={u} onPatch={(patch) => onPatchUnit(u.id, patch)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UnitCard({ unit, onPatch }) {
+  const meta = UNIT_TYPE_META[unit.type] || { icon: "▫", label: unit.type };
+  return (
+    <div className="unit-card" data-unit-type={unit.type}>
+      <div className="unit-card-head">
+        <span className="unit-card-badge" title={unit.type}>
+          <span className="unit-card-icon" aria-hidden="true">{meta.icon}</span>
+          <span className="unit-card-type">{meta.label}</span>
+        </span>
+        <code className="unit-card-id" title={unit.unit_id}>{unit.unit_id}</code>
+      </div>
+      <div className="unit-card-body">
+        <UnitEditor unit={unit} onPatch={onPatch} />
+      </div>
+    </div>
+  );
+}
+
+function UnitEditor({ unit, onPatch }) {
+  if (DECORATIVE_TYPES.has(unit.type)) {
+    return <span className="unit-decorative-badge">Dekorativ — inget att redigera</span>;
+  }
+  if (unit.type === "heading") {
+    return <HeadingUnitEditor unit={unit} onPatch={onPatch} />;
+  }
+  if (TEXT_ONLY_TYPES.has(unit.type)) {
+    return <TextUnitEditor unit={unit} onPatch={onPatch} />;
+  }
+  if (LIST_TYPES.has(unit.type)) {
+    return <ListUnitEditor unit={unit} onPatch={onPatch} />;
+  }
+  if (unit.type === "definition_list") {
+    return <DefinitionListEditor unit={unit} onPatch={onPatch} />;
+  }
+  if (unit.type === "kpi") {
+    return <KpiUnitEditor unit={unit} onPatch={onPatch} />;
+  }
+  if (unit.type === "table") {
+    return <TableUnitEditor unit={unit} onPatch={onPatch} />;
+  }
+  // Fallback for kpi_group, stat_hero, comparison, timeline_event, step,
+  // testimonial, glossary_item, bibliography_entry — raw metadata JSON.
+  return <RawMetadataEditor unit={unit} onPatch={onPatch} />;
+}
+
+function TextUnitEditor({ unit, onPatch }) {
+  const [value, setValue] = useState(unit.text || "");
+  // Keep local state in sync if upstream resets (e.g. revert after error).
+  useEffect(() => { setValue(unit.text || ""); }, [unit.text]);
+  return (
+    <textarea
+      className="unit-textarea"
+      rows={Math.max(2, Math.min(8, Math.ceil((value.length || 0) / 60) + 1))}
+      value={value}
+      onChange={(e) => {
+        const next = e.target.value;
+        setValue(next);
+        onPatch({ text: next });
+      }}
+    />
+  );
+}
+
+function HeadingUnitEditor({ unit, onPatch }) {
+  const [text, setText] = useState(unit.text || "");
+  const [level, setLevel] = useState(unit.level || 1);
+  useEffect(() => { setText(unit.text || ""); }, [unit.text]);
+  useEffect(() => { setLevel(unit.level || 1); }, [unit.level]);
+  return (
+    <div className="unit-heading-editor">
+      <div className="unit-heading-row">
+        <label className="unit-field-label">Nivå</label>
+        <select
+          className="unit-select"
+          value={level}
+          onChange={(e) => {
+            const next = parseInt(e.target.value, 10) || 1;
+            setLevel(next);
+            onPatch({ level: next });
+          }}
+        >
+          {[1, 2, 3, 4, 5, 6].map((n) => (
+            <option key={n} value={n}>H{n}</option>
+          ))}
+        </select>
+      </div>
+      <textarea
+        className="unit-textarea"
+        rows={2}
+        value={text}
+        onChange={(e) => {
+          const next = e.target.value;
+          setText(next);
+          onPatch({ text: next });
+        }}
+      />
+    </div>
+  );
+}
+
+function ListUnitEditor({ unit, onPatch }) {
+  // metadata.items: string[]. Local state lets us add/remove without
+  // race conditions across debounced saves.
+  const initial = Array.isArray(unit.metadata?.items) ? unit.metadata.items : [];
+  const [items, setItems] = useState(() => initial.map(String));
+  useEffect(() => {
+    setItems(Array.isArray(unit.metadata?.items) ? unit.metadata.items.map(String) : []);
+  }, [unit.metadata]);
+
+  const commit = (next) => {
+    setItems(next);
+    onPatch({ metadata: { ...(unit.metadata || {}), items: next } });
+  };
+
+  return (
+    <div className="unit-list-editor">
+      {items.map((it, idx) => (
+        <div key={idx} className="unit-list-row">
+          <input
+            className="unit-input"
+            type="text"
+            value={it}
+            onChange={(e) => {
+              const next = items.slice();
+              next[idx] = e.target.value;
+              commit(next);
+            }}
+          />
+          <button
+            type="button"
+            className="unit-icon-btn"
+            title="Ta bort"
+            onClick={() => commit(items.filter((_, i) => i !== idx))}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="unit-add-btn"
+        onClick={() => commit([...items, ""])}
+      >
+        + Lägg till
+      </button>
+    </div>
+  );
+}
+
+function DefinitionListEditor({ unit, onPatch }) {
+  const initial = Array.isArray(unit.metadata?.item_definitions)
+    ? unit.metadata.item_definitions
+    : [];
+  const [pairs, setPairs] = useState(() => initial.map((p) => ({
+    term: String(p?.term || ""),
+    definition: String(p?.definition || ""),
+  })));
+  useEffect(() => {
+    const next = Array.isArray(unit.metadata?.item_definitions)
+      ? unit.metadata.item_definitions
+      : [];
+    setPairs(next.map((p) => ({
+      term: String(p?.term || ""),
+      definition: String(p?.definition || ""),
+    })));
+  }, [unit.metadata]);
+
+  const commit = (next) => {
+    setPairs(next);
+    onPatch({ metadata: { ...(unit.metadata || {}), item_definitions: next } });
+  };
+
+  return (
+    <div className="unit-list-editor">
+      {pairs.map((p, idx) => (
+        <div key={idx} className="unit-deflist-row">
+          <input
+            className="unit-input"
+            type="text"
+            placeholder="Term"
+            value={p.term}
+            onChange={(e) => {
+              const next = pairs.slice();
+              next[idx] = { ...next[idx], term: e.target.value };
+              commit(next);
+            }}
+          />
+          <input
+            className="unit-input"
+            type="text"
+            placeholder="Definition"
+            value={p.definition}
+            onChange={(e) => {
+              const next = pairs.slice();
+              next[idx] = { ...next[idx], definition: e.target.value };
+              commit(next);
+            }}
+          />
+          <button
+            type="button"
+            className="unit-icon-btn"
+            title="Ta bort"
+            onClick={() => commit(pairs.filter((_, i) => i !== idx))}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="unit-add-btn"
+        onClick={() => commit([...pairs, { term: "", definition: "" }])}
+      >
+        + Lägg till par
+      </button>
+    </div>
+  );
+}
+
+function KpiUnitEditor({ unit, onPatch }) {
+  const kpi = unit.metadata?.kpi || {};
+  const [value, setValue] = useState(String(kpi.value || ""));
+  const [label, setLabel] = useState(String(kpi.label || ""));
+  const [change, setChange] = useState(String(kpi.change || ""));
+  useEffect(() => {
+    setValue(String(unit.metadata?.kpi?.value || ""));
+    setLabel(String(unit.metadata?.kpi?.label || ""));
+    setChange(String(unit.metadata?.kpi?.change || ""));
+  }, [unit.metadata]);
+
+  const commit = (next) => {
+    onPatch({ metadata: { ...(unit.metadata || {}), kpi: next } });
+  };
+
+  return (
+    <div className="unit-kpi-editor">
+      <label className="unit-field-label">Värde</label>
+      <input
+        className="unit-input"
+        type="text"
+        value={value}
+        onChange={(e) => {
+          setValue(e.target.value);
+          commit({ value: e.target.value, label, change });
+        }}
+      />
+      <label className="unit-field-label">Etikett</label>
+      <input
+        className="unit-input"
+        type="text"
+        value={label}
+        onChange={(e) => {
+          setLabel(e.target.value);
+          commit({ value, label: e.target.value, change });
+        }}
+      />
+      <label className="unit-field-label">Förändring</label>
+      <input
+        className="unit-input"
+        type="text"
+        value={change}
+        onChange={(e) => {
+          setChange(e.target.value);
+          commit({ value, label, change: e.target.value });
+        }}
+      />
+    </div>
+  );
+}
+
+function TableUnitEditor({ unit, onPatch }) {
+  // KISS v1: serialise rows as TSV (tab between cells, newline between rows),
+  // first line = header. The renderer reads metadata.headers and metadata.rows,
+  // so we parse round-trip.
+  const tsvFromMeta = (m) => {
+    const headers = Array.isArray(m?.headers) ? m.headers : [];
+    const rows = Array.isArray(m?.rows) ? m.rows : [];
+    const lines = [];
+    if (headers.length) lines.push(headers.join("\t"));
+    for (const r of rows) {
+      if (Array.isArray(r)) lines.push(r.map((c) => String(c)).join("\t"));
+    }
+    return lines.join("\n");
+  };
+  const [tsv, setTsv] = useState(() => tsvFromMeta(unit.metadata));
+  useEffect(() => { setTsv(tsvFromMeta(unit.metadata)); }, [unit.metadata]);
+
+  const commit = (text) => {
+    const lines = text.split(/\r?\n/);
+    const [headerLine, ...rest] = lines;
+    const headers = headerLine ? headerLine.split("\t") : [];
+    const rows = rest.filter((l) => l.length > 0).map((l) => l.split("\t"));
+    onPatch({ metadata: { ...(unit.metadata || {}), headers, rows } });
+  };
+
+  return (
+    <div className="unit-table-editor">
+      <div className="unit-help">
+        Rad 1 = rubriker. Skilj cellerna med tab.
+      </div>
+      <textarea
+        className="unit-textarea unit-textarea--mono"
+        rows={6}
+        value={tsv}
+        onChange={(e) => {
+          setTsv(e.target.value);
+          commit(e.target.value);
+        }}
+      />
+    </div>
+  );
+}
+
+function RawMetadataEditor({ unit, onPatch }) {
+  const initial = JSON.stringify(unit.metadata || {}, null, 2);
+  const [text, setText] = useState(initial);
+  const [parseError, setParseError] = useState("");
+  useEffect(() => {
+    setText(JSON.stringify(unit.metadata || {}, null, 2));
+    setParseError("");
+  }, [unit.metadata]);
+
+  return (
+    <div className="unit-raw-editor">
+      <div className="unit-help">
+        Rå metadata (JSON). Ändra fritt — sparas när JSON är giltig.
+      </div>
+      <textarea
+        className="unit-textarea unit-textarea--mono"
+        rows={8}
+        value={text}
+        onChange={(e) => {
+          const next = e.target.value;
+          setText(next);
+          try {
+            const parsed = JSON.parse(next);
+            setParseError("");
+            onPatch({ metadata: parsed });
+          } catch (err) {
+            setParseError(err.message);
+          }
+        }}
+      />
+      {parseError ? <div className="unit-parse-error">{parseError}</div> : null}
     </div>
   );
 }

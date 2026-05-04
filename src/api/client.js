@@ -88,9 +88,16 @@ export const api = {
 
   // Editor render context — CSS bundle + brand logos + tenant assets so
   // the editor preview can resolve data-logo / data-asset-ref references.
-  // Returns { css, logos, assets }.
+  // Returns { css, logos, assets, units }.
   getV2EditorContext: (reportId) =>
     request(`/v2-brand-css?report_id=${encodeURIComponent(reportId)}`),
+
+  // Alpha-v3 content units — semantic editing endpoint.
+  patchV2ContentUnit: (id, payload) =>
+    request(`/v2/content_units/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
 
   listV2Blueprints: (brandId) => request(`/v2-blueprints?brand_id=${encodeURIComponent(brandId)}`),
   saveV2Blueprint: (payload) => request("/v2-blueprints", { method: "POST", body: JSON.stringify(payload) }),
