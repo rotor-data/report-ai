@@ -338,6 +338,11 @@ const TOOLS = [
         page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait." },
         return_base64: { type: "boolean", description: "If true, each returned thumbnail also carries png_base64 alongside the URL. Used by workflow pauses that want to attach the image as an MCP image content block for Claude's multimodal view." },
         thumbnail_dpi: { type: "number", description: "When return_base64 is true, rasterize at this DPI instead of the default 150 so the base64 payload stays under MCP response-size limits. Recommended: 72 for design review, 48 for dense multi-page overviews. Ignored when return_base64 is false." },
+        units: {
+          type: "array",
+          description: "Optional content units array. When pages contain `data-unit=\"<id>\"` refs, the renderer's substitute_units pass fills them with the matching unit's text. Without this, refs render as empty boxes. Items: {unit_id, type, level?, text?, metadata?, order_index}.",
+          items: { type: "object" },
+        },
       },
     },
   },
@@ -4124,7 +4129,7 @@ function unwrapSectionPage(html) {
 
 async function handleRenderFreeformThumbnails(userId, args, event) {
   const sql = getSql();
-  const { pages, design_system_css, brand_id, page_format = "a4_portrait", return_base64 = false, thumbnail_dpi } = args || {};
+  const { pages, design_system_css, brand_id, page_format = "a4_portrait", return_base64 = false, thumbnail_dpi, units } = args || {};
   // When base64 is requested, default back to 72 DPI — base64 now ships
   // only as the MCP image content block (vision input to Claude), NOT in
   // the message text as a data URI, so no token inflation concern. 72 DPI
@@ -4159,6 +4164,14 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   // ── 4. Content-address: hash CSS once, hash each page's HTML individually ──
   const { createHash } = await import("node:crypto");
   const cssHash = createHash("sha256").update(design_system_css).digest("hex").slice(0, 8);
+  // Units feed substitute_units which rewrites the HTML before rasterise,
+  // so identical HTML with different units → different output. Fold a
+  // units fingerprint into the cache key so we don't return stale
+  // thumbnails when units change. JSON.stringify is fine — units order
+  // is part of the meaning (order_index) and the result is deterministic.
+  const unitsHash = (Array.isArray(units) && units.length > 0)
+    ? createHash("sha256").update(JSON.stringify(units)).digest("hex").slice(0, 8)
+    : "no-units";
 
   const assetStore = await getBlobStore("report-ai-assets", event);
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
@@ -4180,7 +4193,12 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   //        `page--cover`, etc.) instead of stripping the wrapper whole.
   //        Same HTML now renders with correct backgrounds → cached v4
   //        blobs would show stale white-where-black designs.
-  const CACHE_VERSION = "v5";
+  //   v6 = units pipeline. data-unit refs in HTML are substituted server-
+  //        side via substitute_units before rasterise. v5 cache keys for
+  //        the same HTML would now resolve to the substituted PNG even
+  //        when units changed → stale text. Bump invalidates v5 blobs;
+  //        every cache entry now also folds in unitsHash.
+  const CACHE_VERSION = "v6";
   const dpiSuffix = effectiveDpi ? `-d${effectiveDpi}` : "";
 
   const pagePlans = pages.map((page) => {
@@ -4188,14 +4206,14 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
     return {
       page_num: page.page_num,
       html: page.html,
-      blobKey: `thumbnails/${brand_id}/${cssHash}-${pageHash}-p${page.page_num}${dpiSuffix}-${CACHE_VERSION}.png`,
+      blobKey: `thumbnails/${brand_id}/${cssHash}-${pageHash}-${unitsHash}-p${page.page_num}${dpiSuffix}-${CACHE_VERSION}.png`,
     };
   });
 
   const allPagesHash = createHash("sha256")
     .update(pages.map((p) => `${p.page_num}:${p.html}`).join("\n"))
     .digest("hex").slice(0, 16);
-  const pdfBlobKey = `preview-pdfs/${brand_id}/${cssHash}-${allPagesHash}-${page_format}.pdf`;
+  const pdfBlobKey = `preview-pdfs/${brand_id}/${cssHash}-${allPagesHash}-${unitsHash}-${page_format}.pdf`;
   const pdfStore = await getBlobStore("report-ai-pdfs", event);
 
   // ── 6. Per-page cache probe ────────────────────────────────────────────────
@@ -4273,6 +4291,11 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
         document_css: design_system_css,
         document_css_overrides: "",
         style_overrides: {},
+        // Forward content units so smyra-render's substitute_units pass
+        // fills `data-unit="<id>"` refs with their actual text. Without
+        // this thumbnails render with empty boxes where bodies should be,
+        // and Claude/the user iterates a "broken" preview.
+        ...(Array.isArray(units) && units.length > 0 ? { units } : {}),
       }, tenantId);
       pdfBuffer = pdfResult.pdf_bytes
         ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
