@@ -13,6 +13,7 @@ import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 import { getSql } from "./db.js";
 import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
 import { createEditorToken } from "./editor-token.js";
+import { validateUnitsOnly } from "../../src/lib/validate-units-only.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -256,6 +257,22 @@ const TOOLS = [
         },
         design_system_css: { type: "string", description: "Final design_system_css for the report — stored on v2_reports.document_css so the editor and render_pdf can cascade it." },
         augmented_design_css_additions: { type: "string", description: "Optional CSS appended after design_system_css (module_review patches). Stored on v2_reports.document_css_overrides." },
+        units: {
+          type: "array",
+          description: "Optional alpha-v3 content units. When supplied, replaces all existing v2_content_units rows for this report atomically. Each page's text-bearing elements must reference these via data-unit attributes (validator enforced).",
+          items: {
+            type: "object",
+            required: ["unit_id", "type", "order_index"],
+            properties: {
+              unit_id: { type: "string", description: "Stable per-report identifier (e.g. 'intro-lead')." },
+              type: { type: "string", description: "Unit type from the alpha-v3 catalogue (paragraph, heading, kpi, etc)." },
+              level: { type: "number", description: "Heading level (1-6) for type='heading'." },
+              text: { type: "string", description: "Inline-markdown body for text-bearing units." },
+              metadata: { type: "object", description: "Type-specific extras (list items, KPI value, etc)." },
+              order_index: { type: "number", description: "Document-order position for this unit." },
+            },
+          },
+        },
       },
     },
   },
@@ -4350,7 +4367,7 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
 
 async function handlePersistFreeformPages(userId, args) {
   const sql = getSql();
-  const { report_id, pages, design_system_css, augmented_design_css_additions } = args || {};
+  const { report_id, pages, design_system_css, augmented_design_css_additions, units } = args || {};
 
   if (!report_id || !/^[0-9a-f-]{36}$/i.test(report_id)) {
     return errorResult("report_id is required (UUID).");
@@ -4368,13 +4385,62 @@ async function handlePersistFreeformPages(userId, args) {
   `;
   if (!reportRows.length) return errorResult(`Report ${report_id} not found.`);
 
-  // Validate each page.
+  // Validate each page (shape + minimum size).
   for (const p of pages) {
     if (typeof p?.page_num !== "number" || p.page_num < 1) {
       return errorResult(`Invalid page_num: ${p?.page_num}`);
     }
     if (typeof p?.html !== "string" || p.html.length < 10) {
       return errorResult(`Page ${p.page_num} missing non-empty html.`);
+    }
+  }
+
+  // ── Units validation (Layer A.1 / D.2) ──
+  // If the caller supplied a `units` array OR the report already has
+  // units rows, we are in alpha-v3 units-mode and every text-bearing
+  // element on every page must reference a unit via data-unit. Legacy
+  // (no units anywhere) reports skip this check so old flows still work.
+  const incomingUnits = Array.isArray(units) ? units : [];
+  let unitsModeActive = incomingUnits.length > 0;
+  if (!unitsModeActive) {
+    const existing = await sql`
+      SELECT COUNT(*)::int AS n FROM v2_content_units WHERE report_id = ${report_id}
+    `;
+    unitsModeActive = (existing[0]?.n || 0) > 0;
+  }
+
+  if (unitsModeActive) {
+    for (const p of pages) {
+      const v = validateUnitsOnly(p.html);
+      if (!v.valid) {
+        const summary = v.violations.slice(0, 10).map(
+          (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`
+        ).join("\n");
+        return errorResult(
+          `Inline body text found in page ${p.page_num} — alpha-v3 requires data-unit refs.\n` +
+          `Violations:\n${summary}\n` +
+          `Add data-unit attributes referencing content units, or move the text into a unit and reference it.`
+        );
+      }
+    }
+  }
+
+  // ── Validate units payload shape (if provided) ──
+  if (incomingUnits.length > 0) {
+    for (let i = 0; i < incomingUnits.length; i++) {
+      const u = incomingUnits[i];
+      if (!u || typeof u !== "object") {
+        return errorResult(`units[${i}] is not an object.`);
+      }
+      if (typeof u.unit_id !== "string" || !u.unit_id.trim()) {
+        return errorResult(`units[${i}].unit_id is required (non-empty string).`);
+      }
+      if (typeof u.type !== "string" || !u.type.trim()) {
+        return errorResult(`units[${i}].type is required (non-empty string).`);
+      }
+      if (typeof u.order_index !== "number" || !Number.isFinite(u.order_index)) {
+        return errorResult(`units[${i}].order_index is required (number).`);
+      }
     }
   }
 
@@ -4423,9 +4489,43 @@ async function handlePersistFreeformPages(userId, args) {
     WHERE id = ${report_id}
   `;
 
+  // ── Persist content units atomically (Layer F.1) ──
+  // We do DELETE + bulk INSERT in a single Neon transaction so a partial
+  // failure doesn't leave the report with a mix of old+new units. If
+  // the caller didn't pass units we leave the existing rows alone — a
+  // patch loop that only touched layout shouldn't blow away unit data.
+  let units_written = 0;
+  if (incomingUnits.length > 0) {
+    const stmts = [
+      sql`DELETE FROM v2_content_units WHERE report_id = ${report_id}`,
+    ];
+    for (const u of incomingUnits) {
+      const level = (typeof u.level === "number" && Number.isFinite(u.level)) ? u.level : null;
+      const text = typeof u.text === "string" ? u.text : null;
+      const metadata = (u.metadata && typeof u.metadata === "object") ? u.metadata : {};
+      stmts.push(sql`
+        INSERT INTO v2_content_units
+          (report_id, unit_id, type, level, text, metadata, order_index)
+        VALUES
+          (${report_id}, ${u.unit_id}, ${u.type}, ${level},
+           ${text}, ${JSON.stringify(metadata)}::jsonb, ${u.order_index})
+      `);
+    }
+    try {
+      await sql.transaction(stmts);
+      units_written = incomingUnits.length;
+    } catch (err) {
+      return errorResult(
+        `Failed to persist content units: ${err.message}. ` +
+        `The pages and CSS were saved, but the units write rolled back. Retry with valid units payload.`
+      );
+    }
+  }
+
   return textResult({
     report_id,
     pages_written: inserted,
+    units_written,
     editor_url: `${process.env.URL || process.env.DEPLOY_PRIME_URL || ""}/v2/reports/${report_id}`,
   });
 }
@@ -4468,6 +4568,50 @@ async function handleRenderFreeformPdf(userId, args, event) {
 
   // ── 3. Fetch brand context (tokens, fonts, logos) ──────────────────────────
   const brand = await fetchBrandContext(sql, payload.brand_id);
+
+  // ── 3b. Fetch content units (alpha-v3 / Layer F.2) ────────────────────────
+  // smyra-render substitutes data-unit refs against this array. If the
+  // report has no units rows, this stays empty and the renderer handles
+  // legacy inline-HTML pages exactly as before.
+  const unitRows = await sql`
+    SELECT unit_id, type, level, text, metadata, order_index
+    FROM v2_content_units
+    WHERE report_id = ${report_id}::uuid
+    ORDER BY order_index ASC
+  `;
+  const units = unitRows || [];
+
+  // ── 3c. Server-side units-only validation (Layer D.2) ─────────────────────
+  // If we're in units-mode (units exist OR pages reference data-unit), every
+  // text-bearing element on every page must reference a unit. This stops a
+  // regressed Claude session from silently rendering inline copy.
+  const pagesReferenceUnits = payload.pages.some(
+    (p) => typeof p.html === "string" && p.html.includes("data-unit"),
+  );
+  const unitsModeActive = units.length > 0 || pagesReferenceUnits;
+  if (unitsModeActive) {
+    for (const p of payload.pages) {
+      const v = validateUnitsOnly(p.html);
+      if (!v.valid) {
+        const summary = v.violations.slice(0, 10).map(
+          (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`
+        ).join("\n");
+        return errorResult(
+          `Inline body text found in page ${p.page_num} — alpha-v3 requires data-unit refs.\n` +
+          `Violations:\n${summary}\n` +
+          `Add data-unit attributes referencing content units, or move the text into a unit and reference it.`
+        );
+      }
+    }
+    // Sanity warn: page references a unit but DB has none. Render will
+    // succeed but text will be missing — surface this in logs so we can
+    // chase down the lost-units case.
+    if (pagesReferenceUnits && units.length === 0) {
+      console.warn(
+        `[render_freeform_pdf] report ${report_id} pages reference data-unit but v2_content_units is empty — text will render blank.`
+      );
+    }
+  }
 
   // ── 4. Synthesise smyra-render pages ──────────────────────────────────────
   // module_type="freeform" routes through render.py's freeform path
@@ -4513,6 +4657,10 @@ async function handleRenderFreeformPdf(userId, args, event) {
     document_css: fullCss,
     document_css_overrides: "",
     style_overrides: {},
+    // alpha-v3 / Layer F.2: smyra-render substitutes data-unit refs from
+    // this array. Empty for legacy reports — the renderer's substitute
+    // pass is a no-op when units is empty / missing.
+    units,
   }, tenantId);
 
   // ── 7. Store PDF in Netlify Blobs ───────────────────────────────────────────
