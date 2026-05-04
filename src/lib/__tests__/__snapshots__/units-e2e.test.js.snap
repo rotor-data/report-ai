@@ -1,0 +1,24 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`units e2e — full-page render snapshot > produces a stable rendered HTML snapshot 1`] = `
+"
+  <section class="page">
+    <header>
+      <h1>VD har ordet</h1>
+    </header>
+    <div class="body">
+      <p>Året 2026 har varit ett av de mest formativa i bolagets historia.</p>
+      <h2>Marknaden och vår position</h2>
+      <p>Vi har valt att stå fast vid vår <strong>nischade strategi</strong> — fokuserade verktyg, tätare kundrelationer.</p>
+      <blockquote>Vi vinner inte på bredd. Vi vinner på precision.</blockquote>
+      <aside class="pull-quote">
+        <blockquote>Vi vinner på precision.</blockquote>
+      </aside>
+      <h2>Tre prioriteringar</h2>
+      <ul><li>Fördjupa närvaron hos befintliga kunder.</li><li>Investera i talangbasen.</li><li>Bygga AI-stödda arbetsflöden.</li></ul>
+      <h2>Avslutningsvis</h2>
+      <p>Tack till våra kunder, partners och medarbetare.</p>
+    </div>
+  </section>
+"
+`;
