@@ -153,57 +153,6 @@ const TOOLS = [
     },
   },
   {
-    name: "add_module",
-    description: "Add a module to a report. Two modes: (1) html_content — provide Claude-authored HTML using the design system CSS classes. Use module_type='freeform'. (2) Legacy — provide module_type + content JSON for Jinja2 template rendering.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        report_id: { type: "string" },
-        module_type: { type: "string", enum: VALID_MODULE_TYPES },
-        html_content: { type: "string", description: "Claude-authored HTML using design system classes. When provided, content/style are ignored." },
-        content: { type: "object", description: "Legacy: module content payload for Jinja2 templates" },
-        style: { type: "object", description: "Optional style overrides (legacy path)" },
-        after_module_id: { type: "string", description: "Insert after this module (null = first)" },
-      },
-      required: ["report_id", "module_type"],
-    },
-  },
-  {
-    name: "update_module",
-    description: "Update a module. Provide html_content for freeform modules, or content/style for legacy modules. Re-renders HTML cache.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        module_id: { type: "string" },
-        html_content: { type: "string", description: "Claude-authored HTML (replaces existing html_content)" },
-        content: { type: "object" },
-        style: { type: "object" },
-      },
-      required: ["module_id"],
-    },
-  },
-  {
-    name: "move_module",
-    description: "Reorder a module within the report.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        module_id: { type: "string" },
-        after_module_id: { type: "string", description: "Place after this module. Omit or null for first position." },
-      },
-      required: ["module_id"],
-    },
-  },
-  {
-    name: "delete_module",
-    description: "Delete a module from the report.",
-    inputSchema: {
-      type: "object",
-      properties: { module_id: { type: "string" } },
-      required: ["module_id"],
-    },
-  },
-  {
     name: "get_structure",
     description: "Get full report structure: report metadata, pages, and modules as a JSON tree.",
     inputSchema: {
@@ -344,17 +293,6 @@ const TOOLS = [
           items: { type: "object" },
         },
       },
-    },
-  },
-  {
-    name: "render_module_thumbnails",
-    description: "Render each built module in a report as an individual PNG thumbnail. Returns per-module thumbnail URLs so the workflow can show per-module design previews for user approval before final PDF assembly.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        report_id: { type: "string", description: "Report UUID" },
-      },
-      required: ["report_id"],
     },
   },
   {
@@ -943,6 +881,11 @@ async function handleCreate(userId, args) {
   }
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'a4_portrait';
 
+  const brandCheck = await sql`SELECT id FROM brands WHERE id = ${brand_id}::uuid AND tenant_id = ${tenant_id}::uuid LIMIT 1`;
+  if (brandCheck.length === 0) {
+    return errorResult(`Brand ${brand_id} not found for tenant ${tenant_id}. Run workflow__brand_onboard first or call list_brands to see available brands.`);
+  }
+
   const rows = await sql`
     INSERT INTO v2_reports (tenant_id, brand_id, template_id, title, document_type, status, page_format)
     VALUES (${tenant_id}, ${brand_id}, ${template_id || null}, ${title}, ${document_type}, 'draft', ${pageFormatValue})
@@ -951,326 +894,6 @@ async function handleCreate(userId, args) {
   return textResult({ report_id: rows[0].id, ...rows[0], next_step: "Add modules with report2__add_module." });
 }
 
-// ─── Handler: add_module ────────────────────────────────────────────────────
-
-async function handleAddModule(userId, args) {
-  const sql = getSql();
-  const { report_id, module_type, content, style, after_module_id, html_content, order_index: explicitOrderIndex } = args;
-
-  if (!report_id || !module_type) {
-    return errorResult("report_id and module_type are required.");
-  }
-  if (!html_content && !content) {
-    return errorResult("Either html_content or content is required.");
-  }
-  if (!VALID_MODULE_TYPES.includes(module_type)) {
-    return errorResult(`Invalid module_type. Must be one of: ${VALID_MODULE_TYPES.join(", ")}`);
-  }
-
-  // Validate layout columns (only for legacy path, skip for freeform/html_content)
-  if (module_type === "layout" && !html_content) {
-    const columns = content.columns;
-    if (!columns || !VALID_COLUMNS.includes(columns)) {
-      return errorResult(`Layout modules require content.columns to be one of: ${VALID_COLUMNS.join(", ")}`);
-    }
-    const slots = content.slots;
-    if (slots && Array.isArray(slots)) {
-      if (slots.length > MAX_SLOTS[columns]) {
-        return errorResult(`Column preset "${columns}" supports max ${MAX_SLOTS[columns]} slots, got ${slots.length}.`);
-      }
-      for (const slot of slots) {
-        if (slot.category && !VALID_CATEGORIES.includes(slot.category)) {
-          return errorResult(`Invalid slot category "${slot.category}". Must be one of: ${VALID_CATEGORIES.join(", ")}`);
-        }
-      }
-    }
-  }
-
-  // Verify report exists and get brand_id + tenant_id
-  const reports = await sql`SELECT id, brand_id, tenant_id FROM v2_reports WHERE id = ${report_id} LIMIT 1`;
-  if (!reports.length) return errorResult(`Report ${report_id} not found.`);
-  const brandId = reports[0].brand_id;
-  const tenantId = reports[0].tenant_id;
-
-  // Determine order_index. Three resolution modes:
-  //   1. explicit order_index argument — caller knows exactly where the
-  //      module goes. Essential for compose-pages, which parallelises
-  //      addModule for 7+ pages; without explicit ordering the concurrent
-  //      MAX(order_index) queries race and produce scrambled page order
-  //      (cover ends up on page 3, back_cover on page 5 — the bug that
-  //      forced compose-pages to run serially and eat Netlify's 26s limit).
-  //   2. after_module_id — insert relative to an existing module, shift
-  //      subsequent rows. Used by the editor's "insert module" action.
-  //   3. fallback — next available order_index via MAX+1. Used by
-  //      single-shot additions like the legacy append path.
-  let orderIndex;
-  if (typeof explicitOrderIndex === 'number' && Number.isFinite(explicitOrderIndex) && explicitOrderIndex >= 0) {
-    orderIndex = Math.floor(explicitOrderIndex);
-  } else if (after_module_id) {
-    const afterMods = await sql`
-      SELECT order_index FROM v2_report_modules WHERE id = ${after_module_id} AND report_id = ${report_id} LIMIT 1
-    `;
-    if (!afterMods.length) return errorResult(`Module ${after_module_id} not found in report.`);
-    const afterIdx = afterMods[0].order_index;
-    // Shift subsequent modules
-    await sql`
-      UPDATE v2_report_modules SET order_index = order_index + 1
-      WHERE report_id = ${report_id} AND order_index > ${afterIdx}
-    `;
-    orderIndex = afterIdx + 1;
-  } else {
-    const maxRows = await sql`
-      SELECT COALESCE(MAX(order_index), -1) AS max_idx FROM v2_report_modules WHERE report_id = ${report_id}
-    `;
-    orderIndex = maxRows[0].max_idx + 1;
-  }
-
-  // Insert module
-  const moduleId = randomUUID();
-  await sql`
-    INSERT INTO v2_report_modules (id, report_id, module_type, order_index, content, style, html_content)
-    VALUES (${moduleId}, ${report_id}, ${module_type}, ${orderIndex},
-            ${JSON.stringify(content || {})}::jsonb, ${JSON.stringify(style || {})}::jsonb,
-            ${html_content || null})
-  `;
-
-  // Fast path: when html_content is provided it IS the final rendered HTML
-  // (compose-pages builds it client-side from the designed components).
-  // Write html_cache := html_content immediately so the editor/PDF have
-  // content. Then call /render/measure SYNCHRONOUSLY to populate height_mm
-  // — measure is much faster than /render/module (no re-wrapping the DOM,
-  // just chrome-height probe) and is critical for handleBuildPages's
-  // packing algorithm, which otherwise defaults to 60mm per module and
-  // stuffs unrelated content onto one page.
-  let heightMm = null;
-  if (html_content) {
-    try {
-      await sql`
-        UPDATE v2_report_modules SET html_cache = ${html_content}
-        WHERE id = ${moduleId}
-      `;
-    } catch (e) {
-      console.warn(`[mcp-v2] html_cache seed for ${moduleId} failed:`, e.message);
-    }
-    // Synchronous measure — /render/measure now honors document_css +
-    // brand_tokens + brand_fonts (smyra-render commit 0b7644d), so the
-    // height reflects the real rendered height, not a fragment probed
-    // with browser-default fonts.
-    try {
-      const brand = await fetchBrandContext(sql, brandId);
-      // Measure on page_width - 2*margin; default 170mm matches A4 portrait
-      // minus 20mm margins.
-      const measureResult = await callRenderService(
-        "/render/measure",
-        {
-          html_fragment: html_content,
-          page_width_mm: 170,
-          brand_tokens: brand.tokens,
-          brand_fonts: brand.fonts,
-        },
-        tenantId,
-      );
-      heightMm = measureResult.height_mm ?? null;
-      if (heightMm != null) {
-        await sql`UPDATE v2_report_modules SET height_mm = ${heightMm} WHERE id = ${moduleId}`;
-      }
-    } catch (e) {
-      console.warn(`[mcp-v2] Measure failed for module ${moduleId}:`, e.message);
-      // Height stays null. handleBuildPages falls back to 60mm default —
-      // not ideal but content is still present.
-    }
-  } else {
-    // Legacy path: no html_content, we must render from content+module_type.
-    // Kept synchronous — legacy callers need html_cache for the response.
-    try {
-      const brand = await fetchBrandContext(sql, brandId);
-      const renderResult = await callRenderService(
-        "/render/module",
-        { module_type, content, style: style || {}, brand_tokens: brand.tokens, brand_fonts: brand.fonts },
-        tenantId,
-      );
-      heightMm = renderResult.height_mm ?? null;
-      const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
-      await sql`
-        UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
-        WHERE id = ${moduleId}
-      `;
-    } catch (e) {
-      console.warn(`[mcp-v2] Render failed for module ${moduleId}:`, e.message);
-    }
-  }
-
-  return textResult({ module_id: moduleId, order_index: orderIndex, height_mm: heightMm });
-}
-
-// ─── Handler: update_module ─────────────────────────────────────────────────
-
-async function handleUpdateModule(userId, args) {
-  const sql = getSql();
-  const { module_id, content, style, html_content } = args;
-  if (!module_id) return errorResult("module_id is required.");
-  if (!content && !style && !html_content) return errorResult("At least one of html_content, content, or style is required.");
-
-  // Get existing module + report brand + tenant
-  const mods = await sql`
-    SELECT m.id, m.report_id, m.module_type, m.content, m.style, m.html_content, r.brand_id, r.tenant_id
-    FROM v2_report_modules m
-    JOIN v2_reports r ON r.id = m.report_id
-    WHERE m.id = ${module_id}
-    LIMIT 1
-  `;
-  if (!mods.length) return errorResult(`Module ${module_id} not found.`);
-  const mod = mods[0];
-
-  const newContent = content || mod.content;
-  const newStyle = style || mod.style;
-  const newHtmlContent = html_content !== undefined ? html_content : mod.html_content;
-
-  // Update module, invalidate cache
-  await sql`
-    UPDATE v2_report_modules
-    SET content = ${JSON.stringify(newContent)}::jsonb,
-        style = ${JSON.stringify(newStyle)}::jsonb,
-        html_content = ${newHtmlContent || null},
-        html_cache = NULL,
-        height_mm = NULL
-    WHERE id = ${module_id}
-  `;
-
-  // Re-render
-  let heightMm = null;
-  if (newHtmlContent) {
-    // Fast path: freeform module — html_content IS the final rendered HTML.
-    // Wrap it with any CSS-var style overrides on a :root-style shim and use
-    // /render/measure to get an accurate height without a full re-render.
-    // Mirrors handleAddModule's fast path so tweak:mN:--var:value updates are
-    // cheap and re-rendered htmls stay WYSIWYG.
-    let htmlCacheForEditor = newHtmlContent;
-    try {
-      const styleEntries = Object.entries(newStyle || {})
-        .filter(([k, v]) => typeof k === 'string' && k.startsWith('--') && (typeof v === 'string' || typeof v === 'number'))
-        .map(([k, v]) => `${k}: ${v};`)
-        .join(' ');
-      if (styleEntries) {
-        // Wrap html_content in a div that carries the CSS-var overrides.
-        // The vars cascade down to all components inside the module. We keep
-        // the wrapper HTML in html_cache so editor + PDF both see it.
-        htmlCacheForEditor = `<div class="v2-module-style-scope" style="${styleEntries}">${newHtmlContent}</div>`;
-      }
-      await sql`
-        UPDATE v2_report_modules SET html_cache = ${htmlCacheForEditor}
-        WHERE id = ${module_id}
-      `;
-    } catch (e) {
-      console.warn(`[mcp-v2] html_cache seed for ${module_id} failed:`, e.message);
-    }
-    try {
-      const brand = await fetchBrandContext(sql, mod.brand_id);
-      const measureResult = await callRenderService(
-        "/render/measure",
-        {
-          html_fragment: htmlCacheForEditor,
-          page_width_mm: 170,
-          brand_tokens: brand.tokens,
-          brand_fonts: brand.fonts,
-        },
-        mod.tenant_id,
-      );
-      heightMm = measureResult.height_mm ?? null;
-      if (heightMm != null) {
-        await sql`UPDATE v2_report_modules SET height_mm = ${heightMm} WHERE id = ${module_id}`;
-      }
-    } catch (e) {
-      console.warn(`[mcp-v2] Measure failed for module ${module_id}:`, e.message);
-    }
-  } else {
-    // Legacy path: content+module_type → render from template
-    try {
-      const brand = await fetchBrandContext(sql, mod.brand_id);
-      const renderResult = await callRenderService(
-        "/render/module",
-        { module_type: mod.module_type, content: newContent, style: newStyle, brand_tokens: brand.tokens, brand_fonts: brand.fonts },
-        mod.tenant_id,
-      );
-      heightMm = renderResult.height_mm ?? null;
-      const htmlCache = renderResult.html_fragment ?? renderResult.html ?? null;
-      await sql`
-        UPDATE v2_report_modules SET html_cache = ${htmlCache}, height_mm = ${heightMm}
-        WHERE id = ${module_id}
-      `;
-    } catch (e) {
-      console.warn(`[mcp-v2] Re-render failed for module ${module_id}:`, e.message);
-    }
-  }
-
-  return textResult({ module_id, height_mm: heightMm });
-}
-
-// ─── Handler: move_module ───────────────────────────────────────────────────
-
-async function handleMoveModule(userId, args) {
-  const sql = getSql();
-  const { module_id, after_module_id } = args;
-  if (!module_id) return errorResult("module_id is required.");
-
-  const mods = await sql`
-    SELECT id, report_id, order_index FROM v2_report_modules WHERE id = ${module_id} LIMIT 1
-  `;
-  if (!mods.length) return errorResult(`Module ${module_id} not found.`);
-  const { report_id, order_index: oldIdx } = mods[0];
-
-  // Remove from current position
-  await sql`
-    UPDATE v2_report_modules SET order_index = order_index - 1
-    WHERE report_id = ${report_id} AND order_index > ${oldIdx}
-  `;
-
-  // Determine new position
-  let newIdx;
-  if (after_module_id) {
-    const afterMods = await sql`
-      SELECT order_index FROM v2_report_modules WHERE id = ${after_module_id} AND report_id = ${report_id} LIMIT 1
-    `;
-    if (!afterMods.length) return errorResult(`Module ${after_module_id} not found in report.`);
-    newIdx = afterMods[0].order_index + 1;
-  } else {
-    newIdx = 0;
-  }
-
-  // Shift to make room
-  await sql`
-    UPDATE v2_report_modules SET order_index = order_index + 1
-    WHERE report_id = ${report_id} AND order_index >= ${newIdx} AND id != ${module_id}
-  `;
-
-  await sql`UPDATE v2_report_modules SET order_index = ${newIdx} WHERE id = ${module_id}`;
-
-  return textResult({ module_id, new_order_index: newIdx });
-}
-
-// ─── Handler: delete_module ─────────────────────────────────────────────────
-
-async function handleDeleteModule(userId, args) {
-  const sql = getSql();
-  const { module_id } = args;
-  if (!module_id) return errorResult("module_id is required.");
-
-  const mods = await sql`
-    SELECT report_id, order_index FROM v2_report_modules WHERE id = ${module_id} LIMIT 1
-  `;
-  if (!mods.length) return errorResult(`Module ${module_id} not found.`);
-  const { report_id, order_index } = mods[0];
-
-  await sql`DELETE FROM v2_report_modules WHERE id = ${module_id}`;
-
-  // Re-index remaining modules
-  await sql`
-    UPDATE v2_report_modules SET order_index = order_index - 1
-    WHERE report_id = ${report_id} AND order_index > ${order_index}
-  `;
-
-  return textResult({ deleted: module_id });
-}
 
 // ─── Handler: get_structure ─────────────────────────────────────────────────
 
@@ -1674,87 +1297,6 @@ async function handlePreviewPlan(userId, args, event) {
   });
 }
 
-// ─── Handler: render_module_thumbnails ──────────────────────────────────────
-
-async function handleRenderModuleThumbnails(userId, args, event) {
-  const sql = getSql();
-  const { report_id } = args;
-  if (!report_id) return errorResult("report_id is required.");
-
-  const reports = await sql`
-    SELECT r.id, r.tenant_id, r.brand_id, r.template_id
-    FROM v2_reports r WHERE r.id = ${report_id} LIMIT 1
-  `;
-  if (!reports.length) return errorResult(`Report ${report_id} not found.`);
-  const report = reports[0];
-
-  const modules = await sql`
-    SELECT id, module_type, order_index, content, style
-    FROM v2_report_modules
-    WHERE report_id = ${report_id}
-    ORDER BY order_index
-  `;
-  if (!modules.length) return errorResult("No modules found.");
-
-  const brand = await fetchBrandContext(sql, report.brand_id);
-
-  // Build a single PDF with one module per page, then rasterize.
-  const pages = modules.map((mod, idx) => ({
-    page_number: idx + 1,
-    page_type: FULL_BLEED_TYPES.has(mod.module_type) ? mod.module_type : "content",
-    modules: [{
-      id: mod.id,
-      module_type: mod.module_type,
-      order_index: mod.order_index,
-      content: mod.content || {},
-      style: mod.style || {},
-    }],
-  }));
-
-  const pdfResult = await callRenderService("/render/pdf", {
-    title: "Module thumbnails",
-    mode: "draft",
-    pages,
-    brand_tokens: brand.tokens,
-    brand_fonts: brand.fonts,
-    brand_logos: brand.logos,
-  }, report.tenant_id);
-
-  const pdfBuffer = pdfResult.pdf_bytes
-    ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
-  if (!pdfBuffer) throw new Error("Render returned no PDF");
-
-  const raster = await callRenderService("/render/rasterize", {
-    pdf_base64: pdfBuffer.toString("base64"),
-  }, report.tenant_id);
-
-  const assetStore = await getBlobStore("report-ai-assets", event);
-  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const thumbnails = [];
-
-  for (const page of raster.pages || []) {
-    const mod = modules[page.page - 1];
-    if (!mod) continue;
-    const thumbKey = `tenants/${report.tenant_id}/reports/${report_id}/module-thumbs/${timestamp}-${mod.id}.png`;
-    const pngBuffer = Buffer.from(page.png_base64, "base64");
-    await assetStore.set(thumbKey, pngBuffer, { contentType: "image/png" });
-    thumbnails.push({
-      module_id: mod.id,
-      module_type: mod.module_type,
-      order_index: mod.order_index,
-      title: mod.content?.title || mod.content?.chapter_title || mod.content?.company_name || `Modul ${page.page}`,
-      thumbnail_url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(thumbKey)}`,
-    });
-  }
-
-  return textResult({
-    thumbnails,
-    module_count: modules.length,
-    rendered: thumbnails.length,
-  });
-}
-
 // ─── Handler: get_editor_url ────────────────────────────────────────────────
 
 async function handleGetEditorUrl(userId, args) {
@@ -1954,6 +1496,7 @@ async function handleGetStubPlan(userId, args) {
 async function handleListBrands(userId, args) {
   const { tenant_id } = args || {};
   if (!tenant_id) throw new Error("tenant_id required");
+  console.log(`[handleListBrands] tenant=${tenant_id} requested by user=${userId}`);
   const sql = getSql();
   const rows = await sql`
     SELECT id, tenant_id, name, tokens, created_at
@@ -1961,6 +1504,7 @@ async function handleListBrands(userId, args) {
     WHERE tenant_id = ${tenant_id}
     ORDER BY created_at ASC
   `;
+  console.log(`[handleListBrands] tenant=${tenant_id} returned ${rows.length} brands`);
   return textResult({ brands: rows, count: rows.length });
 }
 
@@ -4779,10 +4323,6 @@ async function handleRenderFreeformPdf(userId, args, event) {
 
 const HANDLERS = {
   create:                handleCreate,
-  add_module:            handleAddModule,
-  update_module:         handleUpdateModule,
-  move_module:           handleMoveModule,
-  delete_module:         handleDeleteModule,
   get_structure:         handleGetStructure,
   build_pages:           handleBuildPages,
   render_pdf:            handleRenderPdf,
@@ -4790,7 +4330,6 @@ const HANDLERS = {
   render_freeform_thumbnails:  handleRenderFreeformThumbnails,
   persist_freeform_pages:      handlePersistFreeformPages,
   preview_plan:          handlePreviewPlan,
-  render_module_thumbnails: handleRenderModuleThumbnails,
   get_editor_url:        handleGetEditorUrl,
   save_brand_tokens:     handleSaveBrandTokens,
   get_brand_tokens:      handleGetBrandTokens,
