@@ -1488,6 +1488,13 @@ async function handleGetStubPlan(userId, args) {
     required_sections: template.required_sections,
     stub_plan: template.default_stub_plan,
     module_count: template.default_stub_plan?.length ?? 0,
+    // Refined-template fields (haiku-pass 2026-05-05). plan-structure +
+    // design-language consume these for Claude's prompts so reports get
+    // doctype-specific shapes (page count, tone, formal disclosures)
+    // instead of every doctype rendering as cover + body + back_cover.
+    recommended_pages: template.recommended_pages,
+    tone_hints: template.tone_hints,
+    disclosures: template.disclosures || [],
   });
 }
 
