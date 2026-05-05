@@ -66,8 +66,13 @@ function jsonResponse(statusCode, payload) {
 function rpcResult(id, result) {
   return jsonResponse(200, { jsonrpc: "2.0", result, id });
 }
-function rpcError(id, code, message) {
-  return jsonResponse(200, { jsonrpc: "2.0", error: { code, message }, id });
+function rpcError(id, code, message, data) {
+  // JSON-RPC 2.0 supports an optional `data` field for additional info
+  // about the error. Use it to pass underlying stack/cause through to
+  // callers — the hub's adapter surfaces it so the user sees the real
+  // failure instead of a generic wrapper.
+  const err = data !== undefined ? { code, message, data } : { code, message };
+  return jsonResponse(200, { jsonrpc: "2.0", error: err, id });
 }
 
 function textResult(data) {
@@ -4431,7 +4436,19 @@ export const handler = async (event) => {
       return rpcResult(id, await fn(hubUserId, args, event));
     } catch (e) {
       console.error(`[mcp-v2] ${toolName} failed:`, e);
-      return rpcError(id, -32000, e.message ?? "Internal error");
+      // Surface the underlying detail so the user sees something actionable
+      // instead of the bland "Error occurred during tool execution" wrapper
+      // Claude.ai shows when message is empty or generic. Stack helps Hub
+      // logs; PG-error fields (code, detail) help DB-failure cases.
+      const message = (typeof e?.message === "string" && e.message.trim()) ? e.message : "Internal error";
+      const data = {
+        tool: toolName,
+        ...(e?.code ? { db_code: e.code } : {}),
+        ...(e?.detail ? { db_detail: e.detail } : {}),
+        ...(e?.constraint ? { db_constraint: e.constraint } : {}),
+        ...(typeof e?.stack === "string" ? { stack: e.stack.split("\n").slice(0, 5).join("\n") } : {}),
+      };
+      return rpcError(id, -32000, message, data);
     }
   }
 
