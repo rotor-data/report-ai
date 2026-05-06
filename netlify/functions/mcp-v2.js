@@ -3658,15 +3658,29 @@ function unwrapSectionPage(html) {
   const classMatch = attrs.match(/\bclass\s*=\s*(["'])([^"']*)\1/i);
   if (!classMatch || !/\bpage\b/.test(classMatch[2])) return html;
 
-  // Drop the bare `page` token from the class list, keep the rest.
+  // KEEP the `page` token on the class list. Earlier this function
+  // stripped it (and the entire <section> wrapper if no modifier
+  // classes were left) on the theory that the renderer's synthetic
+  // <div class="page page--freeform"> would be the only `.page`
+  // element. That theory cost us Claude's full layout — `.page`
+  // styles she designed (border-left, padding, height, modifier
+  // classes) were defined against her own `<section>` and started
+  // applying to a div she didn't author, fighting `.page--freeform`
+  // rules from base.jinja2 at equal specificity. First production
+  // hit 2026-05-06 (Daniel's run 11af291b): page rendered without
+  // border, padding, or grid layout — symptoms triangulated to this.
+  //
+  // Instead: keep `<section class="page modifier1 modifier2">…
+  // </section>` intact and let smyra-render's new
+  // `_fragment_has_page_root` detection skip the synthetic wrap when
+  // the fragment is already `.page`-rooted. Result: Claude's
+  // section IS the page element, her CSS targets it directly.
   const newClassList = classMatch[2]
     .split(/\s+/)
-    .filter((c) => c && c !== "page")
+    .filter((c) => c)
     .join(" ");
 
-  // No modifier classes left → the wrapper served no purpose. Strip it
-  // entirely (matches the original unwrap behaviour for plain
-  // <section class="page">…</section>).
+  // Empty class list shouldn't happen given the regex but guard anyway.
   if (newClassList.length === 0) return inner;
 
   // Rewrite class attribute (or remove if empty) and keep all other
