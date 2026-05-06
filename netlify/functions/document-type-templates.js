@@ -3737,8 +3737,17 @@ const FALLBACK_TEMPLATES = {
 export async function getTemplate(documentType) {
   try {
     const sql = getSql();
+    // Include refined-template fields (recommended_pages, tone_hints,
+    // disclosures) added by migration 032. Earlier this SELECT only
+    // pulled the original three columns and handleGetStubPlan tried to
+    // surface `template.recommended_pages` etc — undefined every time.
+    // Smyra-core's plan-structure then fell back to hard-coded ranges
+    // that don't know about ceo_letter / vd-brev → Claude planned 5-8
+    // modules with cover + back_cover instead of the 1-2 page text-only
+    // shape the DB template specifies.
     const rows = await sql`
-      SELECT document_type, required_sections, default_stub_plan
+      SELECT document_type, required_sections, default_stub_plan,
+             recommended_pages, tone_hints, disclosures
       FROM document_type_templates
       WHERE document_type = ${documentType}
       LIMIT 1
