@@ -3685,7 +3685,15 @@ function unwrapSectionPage(html) {
 
 async function handleRenderFreeformThumbnails(userId, args, event) {
   const sql = getSql();
-  const { pages, design_system_css, brand_id, page_format = "a4_portrait", return_base64 = false, thumbnail_dpi, units } = args || {};
+  const { pages, design_system_css, brand_id, page_format = "a4_portrait", return_base64 = false, thumbnail_dpi, units, samples_only } = args || {};
+  // samples_only=true is set by the design_language self-check path. The
+  // sample HTML there references synthesised unit IDs (cover_title, m2_h1,
+  // etc) that aren't yet in v2_content_units — Claude wrote sensible
+  // placeholder text inline. Forward to the renderer as keep_placeholders
+  // so unresolved data-unit elements keep their inline copy instead of
+  // being blanked. Production pdf renders never set this flag; missing
+  // units there genuinely render as empty.
+  const keepPlaceholders = samples_only === true;
   // When base64 is requested, default back to 72 DPI — base64 now ships
   // only as the MCP image content block (vision input to Claude), NOT in
   // the message text as a data URI, so no token inflation concern. 72 DPI
@@ -3878,6 +3886,13 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
         // this thumbnails render with empty boxes where bodies should be,
         // and Claude/the user iterates a "broken" preview.
         ...(Array.isArray(units) && units.length > 0 ? { units } : {}),
+        // samples_only=true (set by design_language self-check): tells
+        // the renderer to keep inline placeholder text on data-unit
+        // elements that don't resolve in the supplied units array.
+        // Sample HTML there has synthesised IDs (cover_title, m2_h1)
+        // with sensible placeholder copy Claude wrote — keep it
+        // visible instead of blanking the cover.
+        ...(keepPlaceholders ? { keep_placeholders: true } : {}),
       }, tenantId);
       pdfBuffer = pdfResult.pdf_bytes
         ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
