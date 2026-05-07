@@ -3745,6 +3745,11 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   // instead of a misleading-looking preview rendered against bad signals.
   // Run when caller passed units OR any page references data-unit; skip the
   // legacy no-units mode so old flows still preview.
+  // Validation mode mirrors the render mode: samples_only=true means
+  // design-language preview where inline placeholder text inside data-unit
+  // is allowed (renderer's keep_placeholders fallback). samples_only=false
+  // is production.
+  const validationMode = samples_only === true ? "sample" : "production";
   const incomingUnits = Array.isArray(units) ? units : [];
   const pagesReferenceUnits = pages.some(
     (p) => typeof p?.html === "string" && p.html.includes("data-unit"),
@@ -3752,7 +3757,7 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   const unitsModeActive = incomingUnits.length > 0 || pagesReferenceUnits;
   if (unitsModeActive) {
     for (const p of pages) {
-      const v = validateUnitsOnly(p.html);
+      const v = validateUnitsOnly(p.html, validationMode);
       if (!v.valid) {
         const summary = v.violations.slice(0, 10).map(
           (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`
@@ -4054,7 +4059,7 @@ async function handlePersistFreeformPages(userId, args) {
 
   if (unitsModeActive) {
     for (const p of pages) {
-      const v = validateUnitsOnly(p.html);
+      const v = validateUnitsOnly(p.html, "production");
       if (!v.valid) {
         const summary = v.violations.slice(0, 10).map(
           (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`
@@ -4250,7 +4255,7 @@ async function handleRenderFreeformPdf(userId, args, event) {
   const unitsModeActive = units.length > 0 || pagesReferenceUnits;
   if (unitsModeActive) {
     for (const p of payload.pages) {
-      const v = validateUnitsOnly(p.html);
+      const v = validateUnitsOnly(p.html, "production");
       if (!v.valid) {
         const summary = v.violations.slice(0, 10).map(
           (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`

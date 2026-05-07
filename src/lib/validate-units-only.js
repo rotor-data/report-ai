@@ -65,9 +65,15 @@ function elementText(el) {
  * data-unit attribute or is empty (decorative).
  *
  * @param {string} html - Freeform HTML for a single page.
- * @returns {{ valid: boolean, violations: Array<{tag: string, sample: string}> }}
+ * @param {'production' | 'sample'} [mode='production'] - Strictness:
+ *   - 'production': data-unit elements MUST be empty (renderer fills).
+ *     Inline text inside data-unit is REJECTED.
+ *   - 'sample': inline text inside data-unit is allowed (placeholder
+ *     fallback for keep_placeholders rendering).
+ *   Both modes reject "text without data-unit" and duplicate unit IDs.
+ * @returns {{ valid: boolean, violations: Array<{tag: string, sample: string, reason?: string}> }}
  */
-export function validateUnitsOnly(html) {
+export function validateUnitsOnly(html, mode = 'production') {
   if (typeof html !== 'string' || html.length === 0) {
     return { valid: true, violations: [] };
   }
@@ -82,6 +88,7 @@ export function validateUnitsOnly(html) {
   });
 
   const violations = [];
+  const seenUnitIds = new Map();
 
   // Walk every element. node-html-parser exposes a node tree; querySelectorAll
   // with a wildcard returns every descendant element.
@@ -90,17 +97,42 @@ export function validateUnitsOnly(html) {
     const tag = (el.rawTagName || el.tagName || '').toLowerCase();
     if (!TEXT_TAGS.has(tag)) continue;
 
-    // OK if the element references a unit. node-html-parser exposes
-    // attributes via `el.attributes` (lowercased keys).
-    if (el.getAttribute && el.getAttribute('data-unit')) continue;
-
+    const unitId = el.getAttribute && el.getAttribute('data-unit');
+    const hasUnit = !!unitId;
     const text = elementText(el);
-    if (!text) continue; // empty / whitespace-only / decorative
 
-    violations.push({
-      tag,
-      sample: text.slice(0, 60),
-    });
+    // Duplicate-ref detection — fires regardless of mode.
+    if (hasUnit) {
+      if (seenUnitIds.has(unitId)) {
+        violations.push({
+          tag,
+          sample: (text || seenUnitIds.get(unitId).sample || '').slice(0, 60),
+          reason: 'duplicate_unit_id',
+        });
+      } else {
+        seenUnitIds.set(unitId, { tag, sample: text.slice(0, 60) });
+      }
+    }
+
+    if (!text) continue; // empty / decorative
+
+    if (hasUnit) {
+      if (mode === 'production') {
+        violations.push({
+          tag,
+          sample: text.slice(0, 60),
+          reason: 'inline_text_in_unit',
+        });
+      }
+      // mode === 'sample': inline text inside data-unit is OK.
+    } else {
+      // No data-unit + text — always wrong.
+      violations.push({
+        tag,
+        sample: text.slice(0, 60),
+        reason: 'inline_text_no_unit',
+      });
+    }
   }
 
   return { valid: violations.length === 0, violations };
