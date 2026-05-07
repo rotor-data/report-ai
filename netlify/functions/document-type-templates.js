@@ -2235,7 +2235,8 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "1-2",
     "tone_hints": "Personlig och auktoritet — VD:s egen röst med tankeledande perspektiv, optimism och hänsyn till mottagarnas intressen",
-    "disclosures": []
+    "disclosures": [],
+    "flow_mode_default": true
   },
   "newsletter": {
     "document_type": "newsletter",
@@ -2338,7 +2339,8 @@ const FALLBACK_TEMPLATES = {
     "disclosures": [
       "Avprenumeration / unsubscribe-länk",
       "GDPR/dataskyddsinfo — hur vi använder e-postadressen"
-    ]
+    ],
+    "flow_mode_default": true
   },
   "press_release": {
     "document_type": "press_release",
@@ -2426,7 +2428,8 @@ const FALLBACK_TEMPLATES = {
       "Pressmeddelande-rubrik (formell etikett)",
       "Dateline (plats och datum)",
       "Mediakontaktuppgifter (namn, tel, e-post)"
-    ]
+    ],
+    "flow_mode_default": true
   },
   "sustainability_report": {
     "document_type": "sustainability_report",
@@ -3747,7 +3750,8 @@ export async function getTemplate(documentType) {
     // shape the DB template specifies.
     const rows = await sql`
       SELECT document_type, required_sections, default_stub_plan,
-             recommended_pages, tone_hints, disclosures
+             recommended_pages, tone_hints, disclosures,
+             flow_mode_default
       FROM document_type_templates
       WHERE document_type = ${documentType}
       LIMIT 1

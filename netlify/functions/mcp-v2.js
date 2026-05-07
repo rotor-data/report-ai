@@ -1509,6 +1509,10 @@ async function handleGetStubPlan(userId, args) {
     recommended_pages: template.recommended_pages,
     tone_hints: template.tone_hints,
     disclosures: template.disclosures || [],
+    // Reflow plan 2026-05-08, Job 5: opt-in flag for prose-flowing
+    // pagination. Setup may downgrade to false when page_format isn't
+    // flow-eligible (only A4 portrait + US letter v1).
+    flow_mode_default: template.flow_mode_default === true,
   });
 }
 
@@ -3659,13 +3663,15 @@ async function handleCreateSlotVariant(userId, args) {
 function unwrapSectionPage(html) {
   if (typeof html !== "string") return html;
   const trimmed = html.trim();
-  // Allow attributes in any order; require class to contain "page".
+  // Allow attributes in any order; require class to contain "page" or
+  // "chapter" (reflow plan 2026-05-08, Job 4 — chapters are flowing
+  // siblings of pages and need the same root-preserving treatment).
   const m = trimmed.match(/^<section\b([^>]*)>([\s\S]*)<\/section>\s*$/i);
   if (!m) return html;
   const attrs = m[1] || "";
   const inner = m[2];
   const classMatch = attrs.match(/\bclass\s*=\s*(["'])([^"']*)\1/i);
-  if (!classMatch || !/\bpage\b/.test(classMatch[2])) return html;
+  if (!classMatch || !/\b(page|chapter)\b/.test(classMatch[2])) return html;
 
   // KEEP the `page` token on the class list. Earlier this function
   // stripped it (and the entire <section> wrapper if no modifier
@@ -3745,11 +3751,16 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   // instead of a misleading-looking preview rendered against bad signals.
   // Run when caller passed units OR any page references data-unit; skip the
   // legacy no-units mode so old flows still preview.
-  // Validation mode mirrors the render mode: samples_only=true means
-  // design-language preview where inline placeholder text inside data-unit
-  // is allowed (renderer's keep_placeholders fallback). samples_only=false
-  // is production.
-  const validationMode = samples_only === true ? "sample" : "production";
+  // Validation mode = ALWAYS 'sample' for thumbnails. Thumbnails are
+  // always design-review surfaces — even when real-content mapping
+  // (samples_only=false + units provided) renders the design with the
+  // user's actual prose, the SOURCE HTML is still a sample. Sample mode
+  // permits inline placeholder text inside data-unit (the very fallback
+  // pattern the design-language prompt mandates). Daniel 2026-05-08
+  // production: the user-review pause failed with "Inline body text
+  // found in page 1" because the validator ran in production mode on
+  // sample HTML.
+  const validationMode = "sample";
   const incomingUnits = Array.isArray(units) ? units : [];
   const pagesReferenceUnits = pages.some(
     (p) => typeof p?.html === "string" && p.html.includes("data-unit"),
@@ -4105,9 +4116,17 @@ async function handlePersistFreeformPages(userId, args) {
     const pageType = typeof p.page_type === "string" && p.page_type.length > 0
       ? p.page_type
       : (p.page_num === 1 ? "cover" : "content");
+    // Reflow plan 2026-05-08, Job 4: per-block metadata. block_type
+    // distinguishes fixed `.page` canvases from flowing `.chapter`
+    // containers; block_index is the canonical author-order position.
+    // Both default to safe values for callers that don't supply them.
+    const blockType = (p.block_type === "chapter" || p.block_type === "page")
+      ? p.block_type
+      : "page";
+    const blockIndex = typeof p.block_index === "number" ? p.block_index : p.page_num;
     const pageRows = await sql`
-      INSERT INTO v2_report_pages (report_id, page_number, page_type)
-      VALUES (${report_id}, ${p.page_num}, ${pageType})
+      INSERT INTO v2_report_pages (report_id, page_number, page_type, block_type, block_index)
+      VALUES (${report_id}, ${p.page_num}, ${pageType}, ${blockType}, ${blockIndex})
       RETURNING id
     `;
     const pageId = pageRows[0].id;
