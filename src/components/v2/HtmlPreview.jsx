@@ -1096,8 +1096,24 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // <section class="chapter"> wrappers (see mcp-v2 unwrapSectionPage),
     // so html_cache here is already the chapter's inner HTML.
     if (isChapter) {
-      const chapterCls = "chapter";
-      root.innerHTML = `<div class="${chapterCls}">${substitutedHtml || ""}</div>`;
+      // Reflow plan 2026-05-08, Job 4 + Daniel 2026-05-07 fix: only
+      // synth-wrap when the inner HTML doesn't already have a chapter
+      // root. Claude's submitted HTML is `<section class="chapter">…
+      // </section>` and persistFreeformPages' unwrapSectionPage KEEPS
+      // that wrapper. Adding another `.chapter` div on top doubled
+      // padding + border + page-break rules — and worse, every
+      // editor-save wrote the doubled HTML back to html_cache, so
+      // chapters accumulated nested `.chapter` divs over re-edits.
+      // Detection: trim leading whitespace + comments and check the
+      // first tag's class.
+      const trimmed = (substitutedHtml || "").trimStart();
+      const m = trimmed.match(/^<(section|div)\b[^>]*\bclass\s*=\s*["']([^"']*)["']/i);
+      const alreadyChapterRooted = m && /\bchapter\b/.test(m[2] || "");
+      if (alreadyChapterRooted) {
+        root.innerHTML = substitutedHtml || "";
+      } else {
+        root.innerHTML = `<div class="chapter">${substitutedHtml || ""}</div>`;
+      }
     } else if (moduleType === "freeform") {
       const pageCls = "page page--freeform" + (background ? " page--has-bg" : "");
       root.innerHTML = `<div class="${pageCls}">${substitutedHtml || ""}</div>`;

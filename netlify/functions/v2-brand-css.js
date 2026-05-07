@@ -39,7 +39,16 @@ function buildFontFaceCss(brandFonts) {
     const family = font.family || "sans-serif";
     const weight = font.weight || "400";
     const style = font.style || "normal";
-    const dataB64 = font.data_base64 || "";
+    // Strip whitespace from base64 — Brand-OS stores fonts with PEM-style
+    // 76-char line wrapping; embedding raw newlines into url('data:font/...
+    // ;base64,<b64>') makes Chromium treat the unescaped \n as an
+    // unterminated-string error. The src: declaration is dropped AND the
+    // surrounding <style> block enters error-recovery — the entire
+    // ~700-rule sheet collapses to 1 rule (first @font-face header). Same
+    // fix as render.py 2026-05-07; same fix applies in the editor's CSS
+    // endpoint. base64 alphabet [A-Za-z0-9+/=] has no meaningful
+    // whitespace so stripping is lossless.
+    const dataB64 = (font.data_base64 || "").replace(/\s+/g, "");
     if (!dataB64) continue;
 
     const fmt = (font.format || "woff2").toLowerCase();
