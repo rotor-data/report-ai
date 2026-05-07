@@ -4081,6 +4081,20 @@ async function handlePersistFreeformPages(userId, args) {
     unitsModeActive = (existing[0]?.n || 0) > 0;
   }
 
+  // Cross-page duplicate-ref detection. The per-page validateUnitsOnly only
+  // sees one page at a time, so it can't catch the case where the same
+  // unit_id appears on, say, page 1 AND page 3. That is almost always a
+  // bug — Claude has forgotten that unit_ids are report-globally unique
+  // and silently aliased two pages onto the same content row. There ARE
+  // legitimate cases (a footer attribution that repeats verbatim, etc.)
+  // so we DO NOT block — we surface as a warning the workflow can echo
+  // back into Claude's pause prompt.
+  //
+  // Same regex shape as validateUnitsOnly's element-walk: any opening
+  // tag that carries a data-unit="X" attribute.
+  const DATA_UNIT_RE = /<[a-z][a-z0-9]*\b[^>]*\bdata-unit\s*=\s*(["'])([^"']+)\1[^>]*>/gi;
+  const cross_page_warnings = [];
+
   if (unitsModeActive) {
     for (const p of pages) {
       const v = validateUnitsOnly(p.html, "production");
@@ -4093,6 +4107,38 @@ async function handlePersistFreeformPages(userId, args) {
           `Violations:\n${summary}\n` +
           `Add data-unit attributes referencing content units, or move the text into a unit and reference it.`
         );
+      }
+    }
+
+    // Cross-page pass: build unit_id → [page_num] map, flag any id that
+    // appears on more than one page. We accept all refs (including those
+    // inside <blockquote> or <aside class="callout"> where multi-page
+    // reuse can be intentional) and just warn.
+    const unitToPages = new Map();
+    for (const p of pages) {
+      DATA_UNIT_RE.lastIndex = 0;
+      const seenOnPage = new Set();
+      let m;
+      while ((m = DATA_UNIT_RE.exec(p.html)) !== null) {
+        const unitId = m[2];
+        if (!unitId || seenOnPage.has(unitId)) continue;
+        seenOnPage.add(unitId);
+        const list = unitToPages.get(unitId) || [];
+        list.push(p.page_num);
+        unitToPages.set(unitId, list);
+      }
+    }
+    for (const [unit_id, pageNums] of unitToPages.entries()) {
+      if (pageNums.length > 1) {
+        cross_page_warnings.push({
+          unit_id,
+          pages: pageNums.slice().sort((a, b) => a - b),
+          note:
+            `Unit "${unit_id}" is referenced on pages ${pageNums.join(", ")}. ` +
+            `unit_ids are report-globally unique — re-using one across pages aliases the same content row in multiple places. ` +
+            `If this is intentional (shared footer attribution, repeated callout, etc.) you can ignore this warning; ` +
+            `otherwise split into separate units or remove the duplicate ref.`,
+        });
       }
     }
   }
@@ -4207,6 +4253,7 @@ async function handlePersistFreeformPages(userId, args) {
     pages_written: inserted,
     units_written,
     editor_url: `${process.env.URL || process.env.DEPLOY_PRIME_URL || ""}/v2/reports/${report_id}`,
+    cross_page_warnings,
   });
 }
 
