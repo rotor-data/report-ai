@@ -96,8 +96,13 @@ export const handler = async (event) => {
       `;
       if (!reports[0]) return json(event, 404, { error: "Report not found" });
 
+      // Reflow plan 2026-05-08, Job 4: also surface block_type / block_index /
+      // flow_pdf_pages so the editor can render flow-mode chapter blocks as
+      // tall scrollable canvases (vs the default fixed-height `.page` clip)
+      // and label them in the sidebar with their PDF-page span.
       const pages = await sql`
-        SELECT id, page_number, page_type, created_at
+        SELECT id, page_number, page_type, block_type, block_index,
+               flow_pdf_pages, created_at
         FROM v2_report_pages WHERE report_id = ${reportId}
         ORDER BY page_number
       `;

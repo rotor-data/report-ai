@@ -3932,6 +3932,11 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
         // with sensible placeholder copy Claude wrote — keep it
         // visible instead of blanking the cover.
         ...(keepPlaceholders ? { keep_placeholders: true } : {}),
+        // Job 3c (reflow plan 2026-05-08): request the post-render
+        // pagination map so module-review can show "PDF page 4 came
+        // from block 2 (chapter)". Forwarded back via the JSON
+        // envelope (Cloud Run wraps PDF + map when this flag is set).
+        pagination_map: true,
       }, tenantId);
       pdfBuffer = pdfResult.pdf_bytes
         ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
@@ -4007,6 +4012,14 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   if (errors.length > 0) {
     summary.errors = errors;
     summary.partial = true;
+  }
+  // Job 3c (reflow plan 2026-05-08): surface the pagination map so
+  // module-review can render the PDF-page → block index table and
+  // route patches to the right block. Cached renders won't have one
+  // (we don't re-run pagination on cache hits) — module-review
+  // gracefully degrades to author-time block indices when absent.
+  if (typeof pdfResult !== "undefined" && Array.isArray(pdfResult?.pagination_map)) {
+    summary.pagination_map = pdfResult.pagination_map;
   }
   return textResult(summary);
 }
@@ -4350,6 +4363,11 @@ async function handleRenderFreeformPdf(userId, args, event) {
     // wrote sensible placeholder text inline). Default false: production
     // renders strip unresolved refs.
     keep_placeholders: keepPlaceholders,
+    // Job 3c (reflow plan 2026-05-08): request the post-render
+    // pagination map. Cloud Run returns {pdf_base64, pagination_map}
+    // when this is true. Module-review reads the map to translate
+    // PDF page numbers back to author-time block indices.
+    pagination_map: true,
   }, tenantId);
 
   // ── 7. Store PDF in Netlify Blobs ───────────────────────────────────────────
@@ -4360,6 +4378,27 @@ async function handleRenderFreeformPdf(userId, args, event) {
     ?? (pdfResult.pdf_base64 ? Buffer.from(pdfResult.pdf_base64, "base64") : null);
   if (!pdfBuffer) throw new Error("Render service returned no PDF bytes");
   await store.set(blobKey, pdfBuffer, { contentType: "application/pdf" });
+
+  // ── 7b. Write back flow_pdf_pages ───────────────────────────────────────────
+  // Job 3c: when Cloud Run returned a pagination map, persist
+  // PDF-page spans per block so the editor's sidebar shows accurate
+  // "Letter from VD (chapter, ~3 pages)" hints. Non-fatal if the
+  // UPDATE fails (PDF already written; map is informational).
+  const paginationMap = Array.isArray(pdfResult.pagination_map) ? pdfResult.pagination_map : [];
+  if (paginationMap.length > 0) {
+    try {
+      for (const m of paginationMap) {
+        if (typeof m?.block_index !== "number" || !Array.isArray(m.pdf_pages)) continue;
+        await sql`
+          UPDATE v2_report_pages
+             SET flow_pdf_pages = ${m.pdf_pages}::int[]
+           WHERE report_id = ${report_id}::uuid AND block_index = ${m.block_index}
+        `;
+      }
+    } catch (mapErr) {
+      console.warn("[render_freeform_pdf] flow_pdf_pages UPDATE failed (non-fatal):", mapErr.message);
+    }
+  }
 
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
 

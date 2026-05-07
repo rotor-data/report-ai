@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useUiStore } from "../stores/uiStore";
@@ -30,6 +30,11 @@ export default function EditorV2() {
   const [session, setSession] = useState(null);
   const [report, setReport] = useState(null);
   const [modules, setModules] = useState([]);
+  // Reflow plan 2026-05-08, Job 4: keep page metadata (block_type,
+  // block_index, flow_pdf_pages) keyed by id so each module's host page
+  // can be looked up when forwarding props to HtmlPreview / SidebarItem.
+  // Empty for legacy reports — modules then default to block_type='page'.
+  const [pages, setPages] = useState([]);
   const [brandCss, setBrandCss] = useState("");
   const [logos, setLogos] = useState([]);
   const [assets, setAssets] = useState([]);
@@ -145,6 +150,18 @@ export default function EditorV2() {
       return prev;
     });
   };
+
+  // Reflow plan 2026-05-08, Job 4: lookup table from page id → page row so
+  // each module can resolve its host page's block_type / flow_pdf_pages
+  // when forwarding props to HtmlPreview + SidebarItem. Memoised so
+  // unrelated state changes don't churn the per-module render.
+  const pageById = useMemo(() => {
+    const m = new Map();
+    for (const p of pages || []) {
+      if (p?.id) m.set(p.id, p);
+    }
+    return m;
+  }, [pages]);
 
   // Move a component subtree between modules. Source and target are
   // PATCHed in parallel. Uses html_cache as the source of truth (the
@@ -269,6 +286,7 @@ export default function EditorV2() {
         if (cancelled) return;
 
         setReport(r.item);
+        setPages(Array.isArray(r.pages) ? r.pages : []);
         const sorted = [...(r.modules || [])].sort((a, b) => a.order_index - b.order_index);
         setModules(sorted);
         setBrandCss(ctx?.css || "");
@@ -436,6 +454,7 @@ export default function EditorV2() {
         // Re-fetch the full module list so order_index stays in sync
         // with the server (restore shifts other modules).
         const r = await api.getV2Report(session.report_id);
+        setPages(Array.isArray(r.pages) ? r.pages : []);
         const sorted = [...(r.modules || [])].sort((a, b) => a.order_index - b.order_index);
         setModules(sorted);
         setSelectedId(res.item.id);
@@ -451,6 +470,7 @@ export default function EditorV2() {
         const { id, originalIdx } = entry.payload;
         await api.reorderV2Module(id, originalIdx);
         const r = await api.getV2Report(session.report_id);
+        setPages(Array.isArray(r.pages) ? r.pages : []);
         const sorted = [...(r.modules || [])].sort((a, b) => a.order_index - b.order_index);
         setModules(sorted);
       } else if (entry.kind === "move-component") {
@@ -980,6 +1000,7 @@ export default function EditorV2() {
               <SidebarItem
                 key={mod.id}
                 module={mod}
+                page={pageById.get(mod.page_id) || null}
                 index={idx}
                 selected={selectedId === mod.id}
                 isDropTarget={dropBeforeId === mod.id}
@@ -1040,6 +1061,7 @@ export default function EditorV2() {
               <ModuleCard
                 key={mod.id}
                 module={mod}
+                page={pageById.get(mod.page_id) || null}
                 active={selectedId === mod.id}
                 brandCss={brandCss}
                 logos={logos}
@@ -1137,6 +1159,10 @@ export default function EditorV2() {
  */
 function ModuleCard({
   module: mod,
+  // Reflow plan 2026-05-08, Job 4: host page row (block_type / block_index /
+  // flow_pdf_pages). Null for legacy reports — preview falls back to
+  // block_type='page' (existing fixed-canvas behaviour).
+  page,
   active,
   brandCss,
   logos,
@@ -1289,6 +1315,10 @@ function ModuleCard({
           moduleId={mod.id}
           moduleType={mod.module_type}
           background={mod.background || null}
+          // Reflow plan 2026-05-08, Job 4: chapters render as tall scrollable
+          // canvases instead of being clipped to 297mm. Default 'page' keeps
+          // legacy reports byte-identical.
+          blockType={page?.block_type === "chapter" ? "chapter" : "page"}
           onHtmlChange={onLiveHtmlChange}
           onComponentDragStart={onComponentDragStart}
           onComponentDragEnd={onComponentDragEnd}
@@ -2464,6 +2494,10 @@ function moduleThumbColor(type) {
 // ─── SidebarItem ───────────────────────────────────────────────────────
 function SidebarItem({
   module: mod,
+  // Reflow plan 2026-05-08, Job 4: host page row. When block_type='chapter'
+  // we annotate the sidebar entry with "(kapitel, ~N sidor)" so authors
+  // can see at a glance that this block flows across multiple PDF pages.
+  page,
   index,
   selected,
   isDropTarget,
@@ -2479,6 +2513,19 @@ function SidebarItem({
   onSwapVariant,
 }) {
   const hasVariants = Array.isArray(variants) && variants.length > 1;
+  // Block-type annotation. flow_pdf_pages is INT[] populated by the
+  // pagination-map worker (Job 3, separate task). When absent we just
+  // say "kapitel" without a page count rather than printing "~null sidor".
+  const blockType = page?.block_type === "chapter" ? "chapter" : "page";
+  const flowPageCount = Array.isArray(page?.flow_pdf_pages)
+    ? page.flow_pdf_pages.length
+    : 0;
+  const blockLabel =
+    blockType === "chapter"
+      ? flowPageCount > 0
+        ? `kapitel, ~${flowPageCount} sidor`
+        : "kapitel"
+      : "sida";
   return (
     <div
       className={[
@@ -2501,7 +2548,12 @@ function SidebarItem({
         <span className="sidebar-thumb-index">{index + 1}</span>
       </div>
       <div className="sidebar-meta">
-        <div className="sidebar-name">{moduleDisplayName(mod)}</div>
+        <div className="sidebar-name">
+          {moduleDisplayName(mod)}
+          {blockType === "chapter" ? (
+            <span className="sidebar-block-tag"> ({blockLabel})</span>
+          ) : null}
+        </div>
         <div className="sidebar-type">{mod.module_type}</div>
         {hasVariants && selected ? (
           <select

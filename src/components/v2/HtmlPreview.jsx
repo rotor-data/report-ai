@@ -468,6 +468,15 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   // layer under the page content so existing module HTML stays
   // untouched. null / {} = no background.
   background = null,
+  // Reflow plan 2026-05-08, Job 4. 'page' (default) keeps the historic
+  // behaviour: shadow-DOM canvas clipped to one paper-size sheet.
+  // 'chapter' switches to flow mode: the inner canvas grows with content
+  // (min-height = paper-size, no max-height clip) and the chrome CSS
+  // overlays a dashed page-break indicator at every paper-size boundary
+  // so authors can preview where Chromium will paginate at PDF time.
+  // Substitution pipeline (units, asset refs, recolor) is identical for
+  // both modes — only the size constraint differs.
+  blockType = "page",
   // Fired on dragstart of a selected component. The parent listens so
   // it can react on sidebar drop (cross-module move). Signature:
   //   ({ sourceModuleId, tempId, outerHTML })
@@ -834,6 +843,69 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         position: relative;
         overflow: hidden; /* clip bg image to page bounds */
       }
+      /* Reflow plan 2026-05-08, Job 4: chapter blocks paginate naturally
+         at PDF time, so the editor canvas must grow with content rather
+         than clip to one sheet. The dashed line is a tiled background on
+         a non-interactive overlay at every paper-size boundary, mirroring
+         where Chromium's print engine WILL break the page. The 296.7mm
+         band lets the line itself sit on the boundary without rounding
+         it off-screen at high zooms. */
+      .page-frame.is-chapter {
+        height: auto;
+        overflow: visible;
+      }
+      .page-frame.is-chapter > .preview-root {
+        min-height: ${pageSize.h}mm;
+        height: auto;
+      }
+      .page-frame.is-chapter > .page-break-rule {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 4;
+        /* Solid translucent rule at every 297mm boundary. */
+        background-image: repeating-linear-gradient(
+          to bottom,
+          transparent 0,
+          transparent 296.7mm,
+          rgba(120, 120, 120, 0.55) 296.7mm,
+          rgba(120, 120, 120, 0.55) 297mm
+        );
+      }
+      /* Dashed effect: a horizontally tiled pseudo overlay masked to the
+         same boundary band so the line reads as dashes rather than a
+         continuous 210mm stroke. Mask support is universal in editor's
+         supported browsers (Chromium/Safari/Firefox 2024+). */
+      .page-frame.is-chapter > .page-break-rule::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background-image: repeating-linear-gradient(
+          to right,
+          #fff 0, #fff 3mm, transparent 3mm, transparent 7mm
+        );
+        -webkit-mask-image: repeating-linear-gradient(
+          to bottom,
+          transparent 0, transparent 296.7mm,
+          #000 296.7mm, #000 297mm
+        );
+        mask-image: repeating-linear-gradient(
+          to bottom,
+          transparent 0, transparent 296.7mm,
+          #000 296.7mm, #000 297mm
+        );
+      }
+      .page-frame.is-chapter > .page-break-rule > .pb-label {
+        position: absolute;
+        right: 4mm;
+        font: 600 9px/1 ui-sans-serif, system-ui, sans-serif;
+        color: rgba(80, 80, 80, 0.7);
+        background: rgba(255, 255, 255, 0.9);
+        padding: 2px 5px;
+        border-radius: 3px;
+        transform: translateY(-50%);
+      }
       /* When a background layer is present, lift content layers above
          and make the module's internal .page wrapper transparent so
          the image can show through. */
@@ -998,7 +1070,11 @@ const HtmlPreview = forwardRef(function HtmlPreview({
 
     // 3. Page frame sized to detected paper size
     const frame = document.createElement("div");
-    frame.className = "page-frame" + (showGrid ? " show-grid" : "");
+    const isChapter = blockType === "chapter";
+    frame.className =
+      "page-frame" +
+      (showGrid ? " show-grid" : "") +
+      (isChapter ? " is-chapter" : "");
     frame.style.transform = `scale(${zoom})`;
     // Language hint — helps spell-check + hyphenation pick the right
     // dictionary. Default "sv" for Rotor; override via prop.
@@ -1013,7 +1089,16 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // page--freeform">`). Mirror render.py's wrap here so design_system_css's
     // `.page` rules (padding, background, full-bleed treatments) apply
     // identically in the editor preview and in the rendered PDF.
-    if (moduleType === "freeform") {
+    //
+    // Chapter blocks (reflow plan Job 4) use the `.chapter` class instead
+    // of `.page` — design-system.css ships sibling rules so the editor
+    // canvas grows with content. The render path already unwraps
+    // <section class="chapter"> wrappers (see mcp-v2 unwrapSectionPage),
+    // so html_cache here is already the chapter's inner HTML.
+    if (isChapter) {
+      const chapterCls = "chapter";
+      root.innerHTML = `<div class="${chapterCls}">${substitutedHtml || ""}</div>`;
+    } else if (moduleType === "freeform") {
       const pageCls = "page page--freeform" + (background ? " page--has-bg" : "");
       root.innerHTML = `<div class="${pageCls}">${substitutedHtml || ""}</div>`;
     } else {
@@ -1143,6 +1228,22 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     }
 
     frame.appendChild(root);
+
+    // Chapter mode: overlay an absolute-positioned page-break-rule
+    // sibling that draws dashed lines at every 297mm boundary inside
+    // the chapter canvas. CSS in the inline style block above handles
+    // the visual; this just inserts the element to anchor those rules.
+    // The element pulses to the canvas's full height via top/bottom:0.
+    if (isChapter) {
+      const breakRule = document.createElement("div");
+      breakRule.className = "page-break-rule";
+      breakRule.setAttribute("aria-hidden", "true");
+      // Note: we don't know how many breaks there are at insert time —
+      // the CSS uses a repeating-linear-gradient + mask so it draws
+      // automatically at every 297mm interval over the canvas height.
+      frame.appendChild(breakRule);
+    }
+
     shadow.appendChild(frame);
 
     // Tag every selectable element once so hover styles and click handler
