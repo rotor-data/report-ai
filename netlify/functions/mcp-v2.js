@@ -258,6 +258,15 @@ const TOOLS = [
             brand_id: { type: "string" },
             page_format: { type: "string" },
             title: { type: "string" },
+            units: {
+              type: "array",
+              description: "Optional content units array. When supplied, takes precedence over the v2_content_units DB lookup. Used by in-flight sample renders (design_language, render_preview) where units haven't been persisted yet. Items: {unit_id, type, level?, text?, metadata?, order_index}.",
+              items: { type: "object" },
+            },
+            keep_placeholders: {
+              type: "boolean",
+              description: "When true, unresolved data-unit refs keep their inline placeholder copy instead of being cleared. Use for in-flight sample renders where Claude's HTML references unit IDs that don't yet exist in the units array. Default false (production behaviour: missing units render as empty, the correct signal for genuine missing content).",
+            },
           },
         },
         report_id: { type: "string" },
@@ -4203,17 +4212,33 @@ async function handleRenderFreeformPdf(userId, args, event) {
   // ── 3. Fetch brand context (tokens, fonts, logos) ──────────────────────────
   const brand = await fetchBrandContext(sql, payload.brand_id);
 
-  // ── 3b. Fetch content units (alpha-v3 / Layer F.2) ────────────────────────
-  // smyra-render substitutes data-unit refs against this array. If the
-  // report has no units rows, this stays empty and the renderer handles
-  // legacy inline-HTML pages exactly as before.
-  const unitRows = await sql`
-    SELECT unit_id, type, level, text, metadata, order_index
-    FROM v2_content_units
-    WHERE report_id = ${report_id}::uuid
-    ORDER BY order_index ASC
-  `;
-  const units = unitRows || [];
+  // ── 3b. Resolve content units (alpha-v3 / Layer F.2) ──────────────────────
+  // smyra-render substitutes data-unit refs against this array. Resolution
+  // priority: payload.units (caller supplies — used when render is triggered
+  // mid-flow before module_review/persist has written to v2_content_units,
+  // e.g. design_language sample-render or render_preview before approve_all)
+  // → DB lookup (production: real reports with persisted units) → empty
+  // (legacy reports with inline-HTML pages, no data-unit refs).
+  let units;
+  if (Array.isArray(payload.units) && payload.units.length > 0) {
+    units = payload.units;
+  } else {
+    const unitRows = await sql`
+      SELECT unit_id, type, level, text, metadata, order_index
+      FROM v2_content_units
+      WHERE report_id = ${report_id}::uuid
+      ORDER BY order_index ASC
+    `;
+    units = unitRows || [];
+  }
+  // keep_placeholders=true tells substitute_units to leave the element's
+  // existing inner content intact when a data-unit ref doesn't resolve —
+  // critical for in-flight sample renders (design_language) where Claude
+  // composed sensible placeholder copy inline but the real units don't
+  // exist yet. Production renders against persisted reports always omit
+  // this so unresolved refs render as empty (the correct signal for
+  // genuine missing content).
+  const keepPlaceholders = payload.keep_placeholders === true;
 
   // ── 3c. Server-side units-only validation (Layer D.2) ─────────────────────
   // If we're in units-mode (units exist OR pages reference data-unit), every
@@ -4295,6 +4320,12 @@ async function handleRenderFreeformPdf(userId, args, event) {
     // this array. Empty for legacy reports — the renderer's substitute
     // pass is a no-op when units is empty / missing.
     units,
+    // keep_placeholders forwards to render.py → units_substitute. Set
+    // to true by callers that render in-flight samples (where unit IDs
+    // referenced in HTML don't yet exist in the units array — Claude
+    // wrote sensible placeholder text inline). Default false: production
+    // renders strip unresolved refs.
+    keep_placeholders: keepPlaceholders,
   }, tenantId);
 
   // ── 7. Store PDF in Netlify Blobs ───────────────────────────────────────────
