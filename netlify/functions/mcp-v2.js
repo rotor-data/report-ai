@@ -1791,6 +1791,27 @@ async function handleSaveBlueprint(userId, args) {
     );
   }
 
+  // Fire-and-forget: render a 2x2 gallery image of the first up-to-4 sample
+  // pages and store its URL on the blueprint row. The setup.blueprint_preview
+  // pause reads this URL instead of re-rendering every sample on every visit
+  // (10-sample blueprints used to time out Netlify's 26s Lambda budget).
+  // Works for any blueprint with sample pages — tenant-shared blueprints
+  // included (no brand_id required, the gallery uses the blueprint's own
+  // CSS without per-brand fonts so the grid still renders cleanly).
+  if (sample_pages_html.length > 0) {
+    Promise.resolve().then(() =>
+      renderBlueprintGallery(sql, {
+        blueprintId,
+        samples: sample_pages_html,
+        designSystemCss: design_system_css,
+        brandId: brand_id || null,
+        tenantId: tenant_id || null,
+      })
+    ).catch((err) =>
+      console.error(`[blueprint_gallery] ${blueprintId} background render failed:`, err?.message || err)
+    );
+  }
+
   const v = verify[0];
   return textResult({
     blueprint_id: blueprintId,
@@ -1874,6 +1895,78 @@ async function renderBlueprintCover(sql, { blueprintId, sampleHtml, designSystem
   }
 }
 
+// Renders a 2x2 grid PNG of the first up-to-4 sample pages and stores its URL
+// on the blueprint row. Called as fire-and-forget background work from
+// handleSaveBlueprint so the save returns immediately. The grid is the
+// authoritative preview surface for setup.blueprint_preview — that pause
+// used to call render_freeform_thumbnails on every visit, which on cold
+// starts (10 samples × ~3s rasterise each) blew Lambda's 26s budget.
+//
+// Resilient on tenant-shared blueprints (no brand_id) — grid uses the
+// blueprint's own design_system_css. Without brand fonts the grid falls
+// back to system-ui, which is acceptable for a thumbnail.
+async function renderBlueprintGallery(sql, { blueprintId, samples, designSystemCss, brandId, tenantId, pageFormat = "a4_portrait" }) {
+  try {
+    // Resolve a tenant_id for the smyra-render JWT.
+    let resolvedTenantId = tenantId || null;
+    if (!resolvedTenantId && brandId) {
+      const brandRows = await sql`SELECT tenant_id FROM brands WHERE id = ${brandId} LIMIT 1`;
+      resolvedTenantId = brandRows[0]?.tenant_id || null;
+    }
+    if (!resolvedTenantId) {
+      // Smyra-visibility blueprints have neither — use a synthetic tenant
+      // claim. The renderer doesn't enforce tenant ownership for stateless
+      // calls; the JWT just needs a non-empty `sub`.
+      resolvedTenantId = "smyra-platform";
+    }
+
+    // Normalise sample entries (string or {html, ...}).
+    const normalised = samples.slice(0, 4).map((s, i) => {
+      const html = typeof s === "string" ? s : (s && typeof s === "object" && typeof s.html === "string" ? s.html : "");
+      return { page_num: i + 1, html };
+    }).filter((s) => s.html.length > 0);
+
+    if (normalised.length === 0) {
+      console.warn(`[blueprint_gallery] ${blueprintId} no usable samples`);
+      return;
+    }
+
+    let brand = { tokens: {}, fonts: [], logos: [] };
+    if (brandId) {
+      try { brand = await fetchBrandContext(sql, brandId); } catch { /* fall back to empty */ }
+    }
+
+    const result = await callRenderService("/render/sample-grid", {
+      pages: normalised,
+      design_system_css: designSystemCss,
+      brand_tokens: brand.tokens ?? {},
+      brand_fonts: brand.fonts ?? [],
+      brand_logos: brand.logos ?? [],
+      page_format: pageFormat,
+      keep_placeholders: true,
+    }, resolvedTenantId);
+
+    const pngBase64 = result?.png_base64;
+    if (!pngBase64) throw new Error("sample-grid returned no PNG");
+
+    const blobKey = `blueprint-galleries/${blueprintId}.png`;
+    const assetStore = await getBlobStore("report-ai-assets");
+    await assetStore.set(blobKey, Buffer.from(pngBase64, "base64"), { contentType: "image/png" });
+
+    const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+    const url = `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`;
+
+    await sql`
+      UPDATE report_blueprints
+      SET gallery_url = ${url}, gallery_generated_at = NOW()
+      WHERE id = ${blueprintId}
+    `;
+    console.log(`[blueprint_gallery] ${blueprintId} rendered ${result.page_count}-page grid`);
+  } catch (err) {
+    console.error(`[blueprint_gallery] ${blueprintId} failed:`, err?.message || err);
+  }
+}
+
 // ─── Blueprint helpers ──────────────────────────────────────────────────────
 
 // Alpha-v3 list shape. Keeps responses lean — full CSS/HTML payload is only
@@ -1888,6 +1981,7 @@ function shapeBlueprintListRow(r) {
     // Rename document_type → doctype_hint in output to match alpha-v3 contract
     doctype_hint: r.document_type || null,
     cover_thumbnail_url: r.cover_thumbnail_url || null,
+    gallery_url: r.gallery_url || null,
     created_at: r.created_at,
   };
 }
@@ -1907,6 +2001,8 @@ function shapeBlueprintFullRow(r) {
     doctype_hint: r.document_type || null,
     reference_source: r.reference_source || null,
     module_count: r.module_count != null ? r.module_count : null,
+    gallery_url: r.gallery_url || null,
+    cover_thumbnail_url: r.cover_thumbnail_url || null,
   };
 }
 
@@ -1930,7 +2026,7 @@ async function handleListBlueprints(userId, args) {
   if (brand_id || tenant_id) {
     rows = await sql`
       SELECT id, brand_id, owner_tenant_id, visibility, name, document_type, style_direction,
-             module_count, cover_thumbnail_url, created_at
+             module_count, cover_thumbnail_url, gallery_url, created_at
       FROM report_blueprints
       WHERE design_system_css IS NOT NULL
         AND (
@@ -1948,7 +2044,7 @@ async function handleListBlueprints(userId, args) {
   } else {
     rows = await sql`
       SELECT id, brand_id, owner_tenant_id, visibility, name, document_type, style_direction,
-             module_count, cover_thumbnail_url, created_at
+             module_count, cover_thumbnail_url, gallery_url, created_at
       FROM report_blueprints
       WHERE design_system_css IS NOT NULL
         AND visibility = 'smyra'
@@ -1985,7 +2081,7 @@ async function handleGetBlueprint(userId, args) {
   const rows = await sql`
     SELECT id, brand_id, owner_tenant_id, visibility, name, document_type,
            style_direction, design_system_css, sample_pages_html, design_rules,
-           reference_source, module_count
+           reference_source, module_count, gallery_url, cover_thumbnail_url
     FROM report_blueprints
     WHERE id = ${blueprint_id}
     LIMIT 1
