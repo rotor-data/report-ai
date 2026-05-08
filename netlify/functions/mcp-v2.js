@@ -484,7 +484,7 @@ const TOOLS = [
         visibility: { type: "string", enum: ["smyra", "tenant", "brand"], description: "Access scope. Default 'brand'. 'smyra' requires ALLOW_SMYRA_WRITE=true on server." },
         style_direction: { type: "string", description: "e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate'" },
         design_system_css: { type: "string", description: "Full CSS design system — custom properties, base resets, component classes." },
-        sample_pages_html: { type: "array", items: { type: "string" }, description: "Array of HTML strings, one per sample page. Stored as JSONB." },
+        sample_pages_html: { type: "array", items: {}, description: "Array of sample pages. Each entry is either a plain HTML string (legacy) or a {html, block_type} object where block_type is 'page' (fixed canvas) or 'chapter' (Chromium paginates body prose naturally). Stored as JSONB; readers must accept both shapes." },
         design_rules: { type: "string", description: "Plain-text art-direction rules describing when and how to use this design system." },
         doctype_hint: { type: "string", description: "Document type hint, e.g. 'quarterly', 'annual'. Stored in document_type column." },
         reference_source: { type: "string", enum: ["extracted_from_pdf", "user_created", "starter_pack"], description: "How the blueprint was produced." },
@@ -1667,7 +1667,31 @@ async function handleSaveBlueprint(userId, args) {
   if (!name) return errorResult("name is required.");
   if (!design_system_css) return errorResult("design_system_css is required.");
   if (!Array.isArray(sample_pages_html) || sample_pages_html.length === 0) {
-    return errorResult("sample_pages_html is required and must be a non-empty array of HTML strings.");
+    return errorResult("sample_pages_html is required and must be a non-empty array.");
+  }
+  // Phase 2 — units/chapter alignment. Accept either plain HTML strings
+  // (legacy / single-call payload) OR rich `{html, block_type}` entries.
+  // Both shapes survive a JSON.stringify pass into the JSONB column; the
+  // shape check here just ensures every entry has retrievable HTML. If
+  // any rich entry has block_type set, validate it's a known value.
+  for (let i = 0; i < sample_pages_html.length; i++) {
+    const entry = sample_pages_html[i];
+    if (typeof entry === "string") {
+      if (entry.length === 0) {
+        return errorResult(`sample_pages_html[${i}] is an empty string.`);
+      }
+      continue;
+    }
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      if (typeof entry.html !== "string" || entry.html.length === 0) {
+        return errorResult(`sample_pages_html[${i}] is an object but has no non-empty 'html' field.`);
+      }
+      if (entry.block_type !== undefined && entry.block_type !== "page" && entry.block_type !== "chapter") {
+        return errorResult(`sample_pages_html[${i}].block_type must be 'page' or 'chapter' (got ${JSON.stringify(entry.block_type)}).`);
+      }
+      continue;
+    }
+    return errorResult(`sample_pages_html[${i}] must be an HTML string or {html, block_type} object.`);
   }
   if (!design_rules) return errorResult("design_rules is required.");
 
@@ -1749,11 +1773,16 @@ async function handleSaveBlueprint(userId, args) {
   // brand_id (smyra-visibility starter packs are admin-seeded and get
   // covers via tooling). Errors are logged and swallowed — a missing
   // cover just means the picker falls back to a text-only choice.
-  if (brand_id && typeof sample_pages_html[0] === "string") {
+  // Phase 2 — accept either plain HTML string or {html, block_type}.
+  const firstEntry = sample_pages_html[0];
+  const firstHtml = typeof firstEntry === "string"
+    ? firstEntry
+    : (firstEntry && typeof firstEntry === "object" && typeof firstEntry.html === "string" ? firstEntry.html : "");
+  if (brand_id && firstHtml.length > 0) {
     Promise.resolve().then(() =>
       renderBlueprintCover(sql, {
         blueprintId,
-        sampleHtml: sample_pages_html[0],
+        sampleHtml: firstHtml,
         designSystemCss: design_system_css,
         brandId: brand_id,
       })
