@@ -47,6 +47,35 @@ const TEXT_TAGS = new Set([
 ]);
 
 /**
+ * Decorative-class allowlist (mirror of smyra-core's set). Text-bearing
+ * elements with one of these classes are exempt from the data-unit
+ * requirement — they're recognised as visual scaffolding.
+ *
+ * Daniel 2026-05-08: forcing every photo-caption / footnote / disclaimer
+ * through plan_structure → unit_ops:add → patch was a UX dead-end. The
+ * units pipeline is for content the user might EDIT later; ad-hoc
+ * captions, sidenotes, and small print are visual scaffolding that
+ * Claude can compose freely.
+ */
+const DECORATIVE_CLASSES = new Set([
+  'caption', 'photo-caption', 'figure-caption', 'figcaption',
+  'footnote', 'sidenote', 'annotation',
+  'disclaimer', 'small-print', 'fine-print', 'legal',
+  'attribution', 'eyebrow', 'kicker', 'overline',
+  'meta', 'byline', 'page-number', 'pagenum',
+  'breadcrumb', 'badge', 'label',
+]);
+
+function hasDecorativeClass(el) {
+  const cls = (el.getAttribute && el.getAttribute('class')) || '';
+  if (!cls) return false;
+  for (const c of cls.toLowerCase().split(/\s+/)) {
+    if (DECORATIVE_CLASSES.has(c)) return true;
+  }
+  return false;
+}
+
+/**
  * Returns the *direct* text content of an element with HTML entities
  * already decoded by node-html-parser, then trimmed.
  *
@@ -126,7 +155,10 @@ export function validateUnitsOnly(html, mode = 'production') {
       }
       // mode === 'sample': inline text inside data-unit is OK.
     } else {
-      // No data-unit + text — always wrong.
+      // No data-unit + text. Exempt: decorative-class allowlist
+      // (caption, photo-caption, footnote, sidenote, disclaimer, etc.)
+      // — visual scaffolding that doesn't belong in the units store.
+      if (hasDecorativeClass(el)) continue;
       violations.push({
         tag,
         sample: text.slice(0, 60),
