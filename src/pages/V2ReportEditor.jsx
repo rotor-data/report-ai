@@ -19,6 +19,8 @@ export default function V2ReportEditor() {
   const [adding, setAdding] = useState(false);
   const [renderBusy, setRenderBusy] = useState(false);
   const [pdfUrl, setPdfUrl] = useState("");
+  const [pptxBusy, setPptxBusy] = useState(false);
+  const [pptxUrl, setPptxUrl] = useState("");
 
   const load = async () => {
     setError("");
@@ -157,6 +159,26 @@ export default function V2ReportEditor() {
     }
   };
 
+  // 2026-05-13: editor-side .pptx export (mirrors EditorV2). Sync —
+  // bounded by Netlify's 26s function cap. For 20+ page decks use the
+  // workflow's export_pptx choice (BG-function, 15 min cap).
+  const onExportPptx = async () => {
+    setPptxBusy(true);
+    setError("");
+    setPptxUrl("");
+    try {
+      const res = await api.renderV2Pptx({ report_id: id });
+      setPptxUrl(res.pptx_url);
+      if (res.pptx_url) {
+        window.open(res.pptx_url, "_blank", "noopener,noreferrer");
+      }
+    } catch (err) {
+      setError(`PowerPoint-export misslyckades: ${err.message}`);
+    } finally {
+      setPptxBusy(false);
+    }
+  };
+
   if (!report) return <p>Laddar…</p>;
 
   return (
@@ -172,6 +194,20 @@ export default function V2ReportEditor() {
           <Link className="btn-ghost" to={`/v2/assets?report_id=${id}`}>
             Assets
           </Link>
+          {pptxUrl ? (
+            <a className="btn-ghost" href={pptxUrl} target="_blank" rel="noopener noreferrer">
+              Öppna .pptx ↗
+            </a>
+          ) : null}
+          <button
+            className="btn-ghost"
+            type="button"
+            disabled={pptxBusy}
+            onClick={onExportPptx}
+            title="Exportera som editerbar PowerPoint (.pptx). Bakgrunder bevaras som bild, text och bilder är native-editerbara."
+          >
+            {pptxBusy ? "Exporterar…" : "Exportera .pptx"}
+          </button>
           <button className="btn" type="button" disabled={renderBusy} onClick={onRenderDraft}>
             {renderBusy ? "Renderar…" : "Förhandsgranska PDF"}
           </button>
