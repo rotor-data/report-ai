@@ -2431,6 +2431,47 @@ const FALLBACK_TEMPLATES = {
     ],
     "flow_mode_default": true
   },
+  "flyer": {
+    "document_type": "flyer",
+    "required_sections": [
+      {
+        "module_type": "layout",
+        "label": "Framsida",
+        "required": true,
+        "description": "Hero med huvudbudskap, bild/grafik, CTA. Layout är fri — kan vara fotodominerat, typografi-dominerat, eller produktcentrerat. Logo placeras flexibelt."
+      },
+      {
+        "module_type": "layout",
+        "label": "Baksida",
+        "required": false,
+        "description": "Kompletterande info: detaljer, erbjudande-villkor, kontaktuppgifter (om relevant), karta, QR-kod, eller fortsättning av framsidans tema. Helt valfri — flyer kan vara enkelsidig."
+      }
+    ],
+    "default_stub_plan": [
+      {
+        "order": 1,
+        "module_type": "layout",
+        "title": "Framsida",
+        "semantic_role": "flyer_front",
+        "content": "",
+        "data": {},
+        "stub": true
+      },
+      {
+        "order": 2,
+        "module_type": "layout",
+        "title": "Baksida",
+        "semantic_role": "flyer_back",
+        "content": "",
+        "data": {},
+        "stub": true
+      }
+    ],
+    "recommended_pages": "1-2",
+    "tone_hints": "Marknadsförande och visuell — kort kärnfullt budskap, tydlig CTA, högt visuellt fokus (foto/illustration/bakgrundsgrafik). Skanbart, inte läs-genom. Hierarki driver ögat: hero → erbjudande → handling. A4 eller A5 — bestäms per fall. Bäst skapad genom att extracta design från en befintlig flyer-PDF med workflow__design_extract.",
+    "disclosures": [],
+    "flow_mode_default": false
+  },
   "sustainability_report": {
     "document_type": "sustainability_report",
     "required_sections": [
