@@ -66,12 +66,23 @@ export default async function handler(req) {
         headers: { "Content-Type": "application/json", ...CORS },
       });
     }
-    const filename = key.split("/").pop() || "report.pdf";
+    // Detect content-type + disposition from the file extension. Default
+    // to inline-PDF preview, but force attachment-download for .pptx so
+    // browsers don't try to preview it via their PDF reader (which would
+    // show binary garbage). Same proxy serves both PDF and pptx blobs.
+    const filenameRaw = key.split("/").pop() || "report.pdf";
+    const isPptx = /\.pptx$/i.test(filenameRaw);
+    const contentType = isPptx
+      ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      : "application/pdf";
+    const disposition = isPptx
+      ? `attachment; filename="${filenameRaw}"`
+      : `inline; filename="${filenameRaw}"`;
     return new Response(stream, {
       status: 200,
       headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${filename}"`,
+        "Content-Type": contentType,
+        "Content-Disposition": disposition,
         "Cache-Control": "private, max-age=300",
         ...CORS,
       },

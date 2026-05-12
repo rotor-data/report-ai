@@ -543,9 +543,19 @@ export default function EditorV2() {
     try {
       const res = await api.renderV2Pptx({ report_id: session.report_id });
       setPptxUrl(res.pptx_url);
-      // Auto-open the download — user picked an explicit export action.
+      // Trigger explicit download — `<a download>` tells the browser to
+      // save the file instead of opening it in a PDF reader (which would
+      // try to preview the .pptx as PDF and show binary garbage). The
+      // server also sets Content-Disposition: attachment for .pptx, but
+      // the download attribute is a defensive belt-and-braces.
       if (res.pptx_url) {
-        window.open(res.pptx_url, "_blank", "noopener,noreferrer");
+        const a = document.createElement("a");
+        a.href = res.pptx_url;
+        a.download = res.pptx_url.split("/").pop()?.split("?")[0] || "report.pptx";
+        a.rel = "noopener noreferrer";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
       }
     } catch (err) {
       setError(`PowerPoint-export misslyckades: ${err.message}`);

@@ -170,7 +170,13 @@ export default function V2ReportEditor() {
       const res = await api.renderV2Pptx({ report_id: id });
       setPptxUrl(res.pptx_url);
       if (res.pptx_url) {
-        window.open(res.pptx_url, "_blank", "noopener,noreferrer");
+        const a = document.createElement("a");
+        a.href = res.pptx_url;
+        a.download = res.pptx_url.split("/").pop()?.split("?")[0] || "report.pptx";
+        a.rel = "noopener noreferrer";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
       }
     } catch (err) {
       setError(`PowerPoint-export misslyckades: ${err.message}`);
