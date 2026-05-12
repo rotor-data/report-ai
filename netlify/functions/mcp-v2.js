@@ -1552,6 +1552,11 @@ async function handleGetStubPlan(userId, args) {
     // instead of every doctype rendering as cover + body + back_cover.
     recommended_pages: template.recommended_pages,
     tone_hints: template.tone_hints,
+    // design_direction: bold aesthetic-direction language consumed by
+    // design-language.ts (2026-05-13). Separate field from tone_hints so
+    // plan-structure can keep voice/content guidance without leaking
+    // visual-aesthetic vocabulary that would confuse module planning.
+    design_direction: template.design_direction,
     disclosures: template.disclosures || [],
     // Reflow plan 2026-05-08, Job 5: opt-in flag for prose-flowing
     // pagination. Setup may downgrade to false when page_format isn't

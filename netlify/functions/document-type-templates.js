@@ -185,6 +185,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "20-40",
     "tone_hints": "Formell och omfattande: årlig redovisning för alla intressenter (investerare, revisorer, personal, leverantörer). Balans mellan tydlig datafokus och narrativ genomgång. Inte marknadsföring.",
+    "design_direction": "**Editorial multiplicity.** Magazine-rhythm — alternate between chapters of deep prose, full-bleed photo spreads, tabular data sections, and pull-quote moments. Each section gets its own visual language within a unified typographic system. Refuses single-template uniformity across the whole document.",
     "disclosures": [
       "Styrelsens organisering och löner",
       "Viktiga händelser efter årsbokslutsdatum",
@@ -328,6 +329,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "8-12",
     "tone_hints": "Investerarrapport med redaktionell tydlighet. Data-driven utan marknadsföring. Formell men tillgänglig för institutionella och privata placerare.",
+    "design_direction": "**Industrial-editorial.** Tabular discipline as the main vehicle. Restrained colour (one strong brand accent). Generous negative space around dense data. Refuses photo decoration unless a specific section demands it.",
     "disclosures": [
       "MAR-disclosure (Market Abuse Regulation)",
       "Revisorsgranskning eller attestering",
@@ -454,6 +456,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Formell beslutsunderlag. Fokus på väsentliga risker, rekommendationer och säkerhet. Kort och saklig utan omväxling.",
+    "design_direction": "**Operational stringency.** Maximal information density per page. Tabular + KPI strip. One categorical colour-code. Refuses photo decoration — text and data carry the page.",
     "disclosures": [
       "Sekretesspolicy för styrelsehandlingar",
       "Väsentliga risker och hot",
@@ -596,6 +599,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "8-12",
     "tone_hints": "Investerar-fokuserad finansiell rapport. Kredibel och transparent utan mjuk säljpitch. Data överskuggar bilder.",
+    "design_direction": "**Quarterly editorial.** Between report and brief. KPI strip + three narrative paragraphs + one outlook section. A reusable layout pattern across issues. Refuses one-off bespoke layouts — pattern recognition is the point.",
     "disclosures": [
       "Forward-looking statements disclaimer",
       "Definition av icke-IFRS mått (t.ex. EBITDA-justerad)",
@@ -706,6 +710,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Koncis och handlingsorienterad. Internt kommunikationsmedel för snabb statusöversikt. Fokus på åtgärder nästa period.",
+    "design_direction": "**Snabb digest.** Bullets over prose. Three priority highlights with visual weighting. No photos. Numeric hierarchy as the main vehicle. Refuses any decorative move that slows the scan.",
     "disclosures": []
   },
   "pitch": {
@@ -847,6 +852,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "8-12",
     "tone_hints": "Självsäker, ambitionerad, fakta-drivet — no fluff. Investerare vill se klara tal och exit-vägar.",
+    "design_direction": "**Maximalist conviction.** Hero photograph dominates each opener. Oversized typography. Aggressive scale contrast (8pt label → 80pt display in the same grid). Bold colour blocks. Geometric overlays. Refuses safe centred-hero defaults.",
     "disclosures": []
   },
   "case_study": {
@@ -948,6 +954,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Berättande och konkret. Fokus på mätbar påverkan och kundöversättande, inte försäljar-prat.",
+    "design_direction": "**Documentary editorial.** Photo-driven but not glossy. Customer quote as load-bearing element. Before/after structure as typographic pacing. Refuses sales-collateral aesthetics.",
     "disclosures": []
   },
   "proposal": {
@@ -1047,6 +1054,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Professionell, tydlig, juridisk — varje punkt måste kunna försvaras. Fokus på claritet och transparans.",
+    "design_direction": "**Restrained confidence.** Tabular structure for deliverables. Generous margins. A signature page with deliberate signature element. Refuses sales-trick decoration.",
     "disclosures": [
       "Giltighetsperiod för erbjudandet (typiskt 30 dagar)",
       "Acceptansvillkor och signerings-krav",
@@ -1150,6 +1158,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Försäljnings-orienterad, invitande, resultat-fokuserad. Tydliga call-to-actions, minimal juridisk text.",
+    "design_direction": "**Commercial editorial.** Hero proposition + pricing table as twin centres of gravity. One strong accent colour for CTAs. Customer logos or proof-imagery as scaffolding. Refuses dry legal-document treatments.",
     "disclosures": [
       "Giltighetsperiod (denna erbjudandet är giltigt fram till...)",
       "Betalningsvillkor (på faktura, förskott etc)",
@@ -1226,6 +1235,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "1-2",
     "tone_hints": "Snabb, punchy, visuell. Designad för utskrift eller delning — en sida = ett intryck.",
+    "design_direction": "**Spec-sheet commercial.** Product photo at hero scale, spec table as the central artefact, one accent for highlighted features. Refuses prose-heavy narrative — every claim earns its row.",
     "disclosures": []
   },
   "white_paper": {
@@ -1341,6 +1351,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "12-20",
     "tone_hints": "Auktoritativ, evidensbaserad, genomtänkt — balanserar akademisk rigor med läsbar narrativ.",
+    "design_direction": "**Academic-editorial.** Classic grid discipline. One section per spread. Sparklines + footnotes + citations as decoration elements. One dominant photo-spread per chapter at most. Refuses promotional treatments.",
     "disclosures": [
       "Metodologiska begränsningar och antaganden",
       "Definitioner av nyckelbegrepp",
@@ -1467,6 +1478,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "12-20",
     "tone_hints": "Analytisk, datadrivet, handlingsbar — fokusererar på marknadsmöjligheter och strategiska implikationer.",
+    "design_direction": "**Analytical editorial.** Charts and segmentation tables carry the page. Restrained two-colour data palette. Section openers with a single decisive headline statistic. Refuses photo decoration unrelated to the data story.",
     "disclosures": [
       "Datakällor och undersökningsmetod",
       "Tidsperiod för data (historik, prognos)",
@@ -1627,6 +1639,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "8-12",
     "tone_hints": "Övertygande, handlingsorienterad, fokuserad — Internt dokument för alignment, ej för extern publicering.",
+    "design_direction": "**Decisive minimalism.** One core argument per page, large headline + tight body + a single supporting visual. Refuses comprehensive 'all-the-things' layouts — pick what matters.",
     "disclosures": [
       "Antaganden om marknad, resurser och externa faktorer",
       "Beroenden på andra funktioner eller externa partners",
@@ -1812,6 +1825,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "12-20",
     "tone_hints": "Strikt vetenskaplig, transparens om metod, återhållen slutsatsdragning — följer forskningsetik och rigor.",
+    "design_direction": "**Strict academic.** Two-column body, fig+caption discipline, footnote architecture. Charts get equal weight to prose. Refuses any 'designer' moves — the science is the design.",
     "disclosures": [
       "Etiska godkännanden och samtycke (om tillämpligt)",
       "Intressekonflikter och finansiering av forskningen",
@@ -1957,6 +1971,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "8-12",
     "tone_hints": "Objektiv, strukturerad, insiktsfull — fokuserar på relative fördelar och marknadspositioning.",
+    "design_direction": "**Diagnostic clarity.** Side-by-side comparison as the dominant pattern. Restrained palette per side. Tabular discipline at the spine. Refuses persuasive treatments — let the comparison speak.",
     "disclosures": [
       "Informationskällor och datainsamlingsperiod",
       "Marknadsdefiniering och konkurrenturval",
@@ -2061,6 +2076,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Professionell men välkomnande — etablerad kredibilitet blandad med mänsklig värme och tillgänglighet för kunder och partners",
+    "design_direction": "**Confident corporate editorial.** Hero photo of people or place, narrative chapters on history/mission/values, one signature accent throughout. A leadership portrait spread as a deliberate moment. Refuses sterile capabilities-deck aesthetics.",
     "disclosures": []
   },
   "brand_guide": {
@@ -2209,6 +2225,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "12-20",
     "tone_hints": "Auktoritativ men tillgänglig — tydlig, strukturerad vägledning för konsekvent tillämpning med fokus på visuella exemplar och praktiska regler",
+    "design_direction": "**Specimen-book discipline.** Logo lock-ups, colour swatches, type specimens and grid diagrams as the load-bearing visuals. Generous white space around each rule. Do/don't comparison pairs. Refuses decorative treatments — the brand is the decoration.",
     "disclosures": []
   },
   "ceo_letter": {
@@ -2235,6 +2252,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "1-2",
     "tone_hints": "Personlig och auktoritet — VD:s egen röst med tankeledande perspektiv, optimism och hänsyn till mottagarnas intressen",
+    "design_direction": "**Refined editorial.** A single typographic gesture per page, generous one-column rhythm, one carefully-placed pull-quote, restrained palette, one deliberate accent. Refuses decoration that competes with the prose.",
     "disclosures": [],
     "flow_mode_default": true
   },
@@ -2336,6 +2354,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "1-2",
     "tone_hints": "Vänlig och engagerande — uppdaterad information paketerad för snabb läsning med fokus på läsarnas intresse och framtida möjligheter",
+    "design_direction": "**Casual editorial.** Friendly, slightly less disciplined grid. Mixed imagery, shorter blocks, a stronger 'human voice' in the typography. Refuses corporate-template stiffness.",
     "disclosures": [
       "Avprenumeration / unsubscribe-länk",
       "GDPR/dataskyddsinfo — hur vi använder e-postadressen"
@@ -2424,6 +2443,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "1-2",
     "tone_hints": "Professionell och nyhetsvärd — objektiv rapportering av fakta, balanserad mellan företagets perspektiv och mediasäkerhet, välformulerad lede som säger nyheterna först",
+    "design_direction": "**Formal minimalism.** Typography-driven. One accent. Date + place + headline as clean typographic hierarchy. Signet/vignette ok. Refuses photo decoration.",
     "disclosures": [
       "Pressmeddelande-rubrik (formell etikett)",
       "Dateline (plats och datum)",
@@ -2469,6 +2489,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "1-2",
     "tone_hints": "Marknadsförande och visuell — kort kärnfullt budskap, tydlig CTA, högt visuellt fokus (foto/illustration/bakgrundsgrafik). Skanbart, inte läs-genom. Hierarki driver ögat: hero → erbjudande → handling. A4 eller A5 — bestäms per fall. Bäst skapad genom att extracta design från en befintlig flyer-PDF med workflow__design_extract.",
+    "design_direction": "**Punchy commercial.** One visual centre (USP / offer / price) dominating. Three short proof-points + a CTA frame it. Colour blocks as scaffolding, not decoration. Refuses dense-paragraph layouts.",
     "disclosures": [],
     "flow_mode_default": false
   },
@@ -2611,6 +2632,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "20-40",
     "tone_hints": "Ansvarig, faktabaserad transparens med visioner om positiv påverkan och systemisk förändring",
+    "design_direction": "**Naturalistic editorial.** Photography from operations (not stock). Data visualisations with rounded forms. Chapter structure. Refuses green-overdose defaulting.",
     "disclosures": [
       "GRI & CSRD-referens — vilka standarder följs",
       "Scope-definition för växthusgaser (Scope 1/2/3)",
@@ -2763,6 +2785,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "12-20",
     "tone_hints": "Autentisk, mål-fokuserad narrativ som visar konkret människor förändring genom rigorös mätning",
+    "design_direction": "**Narrative documentary.** Human portraits and on-the-ground photography as the spine. Story-driven chapter pacing with hard numbers as punctuation. One warm signature colour. Refuses the cold infographic look — every metric is tied to a person.",
     "disclosures": [
       "Definition av outcome vs impact",
       "Datasource & granskningsmässighet för måluppfyllelse",
@@ -2927,6 +2950,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "12-20",
     "tone_hints": "Formell, saklig, auditerad transparens med fokus på riskkontroll och regelefterlevnad",
+    "design_direction": "**Audit-grade formalism.** Numbered sections, structured tables, footnoted citations, monochrome with one categorical accent for findings. Refuses any decorative move — credibility is the aesthetic.",
     "disclosures": [
       "Tidsperiod för granskning & rapportering",
       "Revisor/granskande organs namn och oberoendeerklärelse",
@@ -3071,6 +3095,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "8-12",
     "tone_hints": "Analytisk, objektiv, fokuserad på faktabakgrundat beslutsfattande med transparent logik",
+    "design_direction": "**Operational stringency.** Maximum information density, tabular KPI grids, sectioned summary boxes, one accent for variance flags. Refuses photo decoration — text and data are the page.",
     "disclosures": [
       "Tidspunkt för rapportens framtagning",
       "Relevanta antaganden & datakällor",
@@ -3220,6 +3245,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Konkret, handlingsriktat lägesrapport som balanserar transparans om problem med fokus på framåtgång",
+    "design_direction": "**Status-dashboard editorial.** Timeline + RAG status indicators + milestone tables as the load-bearing visuals. Restrained palette with a strict traffic-light accent set. Refuses celebratory imagery — the data is the story.",
     "disclosures": [
       "Projektperiod & rapportdatum",
       "Definition av status-färg (grön = inom plan, gul = avvikelse < 10%, röd = avvikelse > 10%)",
@@ -3345,6 +3371,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "8-12",
     "tone_hints": "Varmhöll och uppmuntrande — välkomnande atmosfär med praktisk vägledning.",
+    "design_direction": "**Warm onboarding.** Approachable typography, one warm signature colour, occasional photography of people/place. Refuses corporate-form-letter rigidity.",
     "disclosures": []
   },
   "process_doc": {
@@ -3471,6 +3498,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Faktisk och instruktiv — precision och tydlighet före all annan ambition.",
+    "design_direction": "**Diagrammatic precision.** Numbered steps, clear visual cues for each action. One accent for warnings/notes. Refuses prose-heavy explanation.",
     "disclosures": [
       "Version och uppdateringsdatum",
       "Processägare / ansvarig för underhåll"
@@ -3609,6 +3637,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "12-20",
     "tone_hints": "Engagerande och lätt att följa — progressiva exempel från enkelt till komplext.",
+    "design_direction": "**Pedagogic clarity.** Step-by-step structure with strong numbering, generous space for examples, deliberate use of colour as wayfinding. Refuses dense info-dump layouts.",
     "disclosures": [
       "Lärandemål",
       "Förväntad tidsåtgång",
@@ -3731,6 +3760,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Inspirerad och välorganiserad — praktisk men engagerande presentation av agenda och kontakt.",
+    "design_direction": "**Schedule-driven.** Time hierarchy dominates. Photography of speakers/venue. Strong day/session typography. Refuses generic conference-template look.",
     "disclosures": [
       "Datum, tid och väderlek varning (om relevant)",
       "Aksessibilitet och covid-anpassningar (om relevant)"
@@ -3774,6 +3804,7 @@ const FALLBACK_TEMPLATES = {
     ],
     "recommended_pages": "4-6",
     "tone_hints": "Neutral och flexibel — anpassningsbar till användarens eget syfte utan tvingande struktur.",
+    "design_direction": "**Open editorial.** A flexible typographic scaffold ready to receive any direction. One neutral accent, generous defaults, no committed aesthetic until the brief specifies one. Refuses pre-baked stylistic choices that would constrain reuse.",
     "disclosures": []
   }
 };
