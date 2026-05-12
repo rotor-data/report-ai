@@ -275,6 +275,49 @@ const TOOLS = [
     },
   },
   {
+    name: "render_freeform_pptx",
+    description: "alpha-v3 render path: renders an editable PowerPoint (.pptx) from the same freeform HTML pages + design_system_css used by render_freeform_pdf. Uses hybrid bbox-overlay: each slide gets a pixel-perfect PNG background (gradients, illustrations, decoration preserved) with native PowerPoint text boxes + replaceable images on top, so the user can open in PowerPoint / Keynote / Google Slides and edit text natively. Decoration in the PNG layer is NOT editable. Returns a download URL.",
+    inputSchema: {
+      type: "object",
+      required: ["payload", "report_id"],
+      properties: {
+        payload: {
+          type: "object",
+          required: ["pages", "design_system_css", "brand_id"],
+          properties: {
+            pages: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["page_num", "html"],
+                properties: {
+                  page_num: { type: "number" },
+                  module_ids: { type: "array", items: { type: "string" } },
+                  html: { type: "string" },
+                },
+              },
+            },
+            design_system_css: { type: "string" },
+            augmented_design_css_additions: { type: "string" },
+            brand_id: { type: "string" },
+            page_format: { type: "string" },
+            title: { type: "string" },
+            units: {
+              type: "array",
+              description: "Optional content units array (same as render_freeform_pdf).",
+              items: { type: "object" },
+            },
+            keep_placeholders: {
+              type: "boolean",
+              description: "When true, unresolved data-unit refs keep their inline placeholder copy. Default false.",
+            },
+          },
+        },
+        report_id: { type: "string" },
+      },
+    },
+  },
+  {
     name: "render_freeform_thumbnails",
     description: "Render a list of freeform HTML pages as PNG thumbnails. Used by smyra-core workflow steps (design_language, page_design, module_review) to show the user visual previews of what Claude is about to approve, so they don't sign off blindly. Stores PNGs in the report-ai-assets blob store and returns hash-stable URLs.",
     inputSchema: {
@@ -807,6 +850,7 @@ const TOOLS = [
         pdf_base64: { type: "string", description: "Alternative: raw PDF bytes as base64. Use upload_token for anything > ~1 MB." },
         dpi: { type: "integer", description: "Rasterization DPI (default 50, max 72). Lower DPI = smaller payload, sufficient for vision-based design analysis (50 DPI A4 = 413×585 px)." },
         max_pages: { type: "integer", description: "Number of pages to sample (default 8, max 12). Server picks visually-distinct pages spread across the document via perceptual-hash sampling." },
+        include_pre_analysis: { type: "boolean", description: "When true, each page response carries an extra pre_analysis block with detected page format, top dominant colours (hex + coverage% + position) and a base64 PNG with a 3×3 grid + cell labels (TL..BR) overlaid for stable element-position references in downstream vision prompts." },
       },
     },
   },
@@ -3305,7 +3349,7 @@ async function handleRasterizePdf(userId, args, event) {
 // page images that get fed back to Claude as MCP image content blocks.
 
 async function handleRasterizeUpload(userId, args, event) {
-  const { upload_token, pdf_base64, dpi, max_pages } = args || {};
+  const { upload_token, pdf_base64, dpi, max_pages, include_pre_analysis } = args || {};
   if (!upload_token && !pdf_base64) {
     return errorResult("Provide upload_token (from request_upload) or pdf_base64.");
   }
@@ -3366,6 +3410,7 @@ async function handleRasterizeUpload(userId, args, event) {
       sample_count: sampleCount,
       format: "jpeg",
       quality: 40,
+      include_pre_analysis: !!include_pre_analysis,
     }, userId || "system");
   } catch (err) {
     return errorResult(`Rasterization failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -3408,6 +3453,7 @@ async function handleRasterizeUpload(userId, args, event) {
       width: rp.width,
       height: rp.height,
       height_mm: rp.height_mm,
+      ...(rp.pre_analysis ? { pre_analysis: rp.pre_analysis } : {}),
     });
   }
 
@@ -4512,11 +4558,31 @@ async function handleRenderFreeformPdf(userId, args, event) {
   const fullCss = payload.design_system_css + (payload.augmented_design_css_additions ?? "");
 
   // ── 6. Call render service ──────────────────────────────────────────────────
+  // page_format resolution priority: explicit payload → v2_reports row →
+  // a4_portrait fallback. The smyra-core workflow seeds payload.page_format
+  // from the report state, but render_freeform_pdf is also reachable via
+  // legacy report2__render_pdf paths and via Claude calling the tool
+  // directly, where payload may carry just pages + css. Read the column
+  // so the renderer always sees the right paper size + design-system
+  // class modifier picks up.
+  let resolvedPageFormat = (typeof payload.page_format === 'string' && payload.page_format.trim())
+    ? payload.page_format.trim()
+    : null;
+  if (!resolvedPageFormat) {
+    try {
+      const fmtRows = await sql`SELECT page_format FROM v2_reports WHERE id = ${report_id} LIMIT 1`;
+      resolvedPageFormat = fmtRows[0]?.page_format || null;
+    } catch (err) {
+      console.warn("[render_freeform_pdf] page_format lookup failed:", err.message);
+    }
+  }
+  if (!resolvedPageFormat) resolvedPageFormat = "a4_portrait";
+
   const pdfResult = await callRenderService("/render/pdf", {
     report_id,
     title: payload.title ?? "Untitled report",
     mode,
-    page_format: payload.page_format ?? "a4_portrait",
+    page_format: resolvedPageFormat,
     pages: syntheticPages,
     brand_tokens: brand.tokens ?? {},
     brand_fonts: brand.fonts ?? [],
@@ -4628,12 +4694,116 @@ async function handleRenderFreeformPdf(userId, args, event) {
   });
 }
 
+// ─── Handler: render_freeform_pptx ──────────────────────────────────────────
+// Hybrid bbox-overlay PowerPoint export. Same input shape as
+// render_freeform_pdf, returns a download URL to the generated .pptx.
+// Each slide = PNG background (full design fidelity) + native editable
+// text + replaceable images on top.
+
+async function handleRenderFreeformPptx(userId, args, event) {
+  const { payload, report_id } = args;
+
+  // ── 1. Validate input ──────────────────────────────────────────────────────
+  if (!payload || !report_id) {
+    return errorResult("payload and report_id are required.");
+  }
+  if (!Array.isArray(payload.pages) || payload.pages.length === 0) {
+    return errorResult("payload.pages must be a non-empty array.");
+  }
+  for (const p of payload.pages) {
+    if (typeof p.page_num !== "number") {
+      return errorResult("Each page must have a numeric page_num.");
+    }
+    if (typeof p.html !== "string" || !p.html.trim()) {
+      return errorResult(`Page ${p.page_num} is missing a non-empty html string.`);
+    }
+  }
+  if (typeof payload.design_system_css !== "string" || !payload.design_system_css.trim()) {
+    return errorResult("payload.design_system_css must be a non-empty string.");
+  }
+  if (typeof payload.brand_id !== "string" || !/^[0-9a-f-]{36}$/i.test(payload.brand_id)) {
+    return errorResult("payload.brand_id must be a UUID string.");
+  }
+
+  const sql = getSql();
+
+  // ── 2. Resolve tenant_id from brand ────────────────────────────────────────
+  const brandRow = await sql`SELECT tenant_id FROM brands WHERE id = ${payload.brand_id} LIMIT 1`;
+  const tenantId = brandRow[0]?.tenant_id;
+  if (!tenantId) return errorResult(`Brand ${payload.brand_id} not found or has no tenant_id.`);
+
+  // ── 3. Fetch brand context (tokens, fonts, logos) ──────────────────────────
+  const brand = await fetchBrandContext(sql, payload.brand_id);
+
+  // ── 3b. Resolve content units (same priority as render_freeform_pdf) ──────
+  let units;
+  if (Array.isArray(payload.units) && payload.units.length > 0) {
+    units = payload.units;
+  } else {
+    const unitRows = await sql`
+      SELECT unit_id, type, level, text, metadata, order_index
+      FROM v2_content_units
+      WHERE report_id = ${report_id}::uuid
+      ORDER BY order_index ASC
+    `;
+    units = unitRows || [];
+  }
+  const keepPlaceholders = payload.keep_placeholders === true;
+
+  // ── 4. Pre-unwrap each page so the renderer sees the canonical
+  //      <section class="page"> / <div class="page"> body. render_pptx
+  //      runs the same _strip_editor_artifacts + _fragment_has_page_root
+  //      wrap-or-keep logic as render_pdf, so passing raw html is fine.
+  const pages = payload.pages.map((p) => ({
+    page_num: p.page_num,
+    html: unwrapSectionPage(p.html),
+  }));
+
+  const fullCss = payload.design_system_css + (payload.augmented_design_css_additions ?? "");
+
+  // ── 5. Call render service /render/pptx ────────────────────────────────────
+  const pptxResult = await callRenderService("/render/pptx", {
+    pages,
+    design_system_css: fullCss,
+    page_format: payload.page_format ?? "a4_portrait",
+    brand_tokens: brand.tokens ?? {},
+    brand_fonts: brand.fonts ?? [],
+    brand_logos: brand.logos ?? [],
+    augmented_design_css_additions: payload.augmented_design_css_additions ?? "",
+    units,
+    keep_placeholders: keepPlaceholders,
+  }, tenantId);
+
+  if (!pptxResult || typeof pptxResult.pptx_base64 !== "string" || !pptxResult.pptx_base64) {
+    throw new Error("Render service returned no .pptx bytes");
+  }
+
+  // ── 6. Store .pptx in Netlify Blobs ────────────────────────────────────────
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const blobKey = `tenants/${tenantId}/reports/${report_id}/pptx-${timestamp}.pptx`;
+  const store = await getBlobStore("report-ai-pdfs", event);
+  const pptxBuffer = Buffer.from(pptxResult.pptx_base64, "base64");
+  await store.set(blobKey, pptxBuffer, {
+    contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  });
+
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+
+  return textResult({
+    pptx_url: `${siteUrl}/api/v2-pdf?key=${encodeURIComponent(blobKey)}`,
+    pages_count: payload.pages.length,
+    size_bytes: pptxBuffer.length,
+    freeform: true,
+  });
+}
+
 const HANDLERS = {
   create:                handleCreate,
   get_structure:         handleGetStructure,
   build_pages:           handleBuildPages,
   render_pdf:            handleRenderPdf,
   render_freeform_pdf:         handleRenderFreeformPdf,
+  render_freeform_pptx:        handleRenderFreeformPptx,
   render_freeform_thumbnails:  handleRenderFreeformThumbnails,
   persist_freeform_pages:      handlePersistFreeformPages,
   preview_plan:          handlePreviewPlan,

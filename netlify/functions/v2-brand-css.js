@@ -213,7 +213,7 @@ export const handler = async (event) => {
 
   try {
     const [report] = await sql`
-      SELECT id, brand_id, template_id, tenant_id, document_css, style_overrides
+      SELECT id, brand_id, template_id, tenant_id, document_css, style_overrides, page_format
       FROM v2_reports WHERE id = ${reportId} LIMIT 1
     `;
     if (!report) return json(event, 404, { error: "Report not found" });
@@ -418,6 +418,10 @@ svg * { transition: fill .1s, stroke .1s; }
       tokens: mergedTokens,
       brand_tokens: tokens,
       overrides,
+      // Paper-size identifier from v2_reports.page_format. Drives the
+      // editor preview's frame dimensions so non-A4 reports
+      // (presentation, square, etc) don't display in a 210×297mm box.
+      page_format: report.page_format || "a4_portrait",
       // Alpha-v3 content units (empty for legacy reports — see fetch above).
       units,
     });

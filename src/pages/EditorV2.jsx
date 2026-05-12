@@ -1067,6 +1067,9 @@ export default function EditorV2() {
                 logos={logos}
                 assets={assets}
                 units={units}
+                // Report paper size — drives HtmlPreview's frame dimensions
+                // so non-A4 reports preview at the right size.
+                pageFormat={report?.page_format || "a4_portrait"}
                 tenantId={session?.report?.tenant_id || null}
                 zoom={zoom}
                 showGrid={showGrid}
@@ -1168,6 +1171,7 @@ function ModuleCard({
   logos,
   assets,
   units,
+  pageFormat,
   tenantId,
   zoom,
   showGrid,
@@ -1315,6 +1319,11 @@ function ModuleCard({
           moduleId={mod.id}
           moduleType={mod.module_type}
           background={mod.background || null}
+          // Report's paper size — drives the editor frame so non-A4 reports
+          // (presentation 16:9, square, digital, US letter, …) preview at
+          // the right dimensions. HtmlPreview prefers this prop over the
+          // HTML-class detection it fell back to historically.
+          pageFormat={pageFormat}
           // Reflow plan 2026-05-08, Job 4: chapters render as tall scrollable
           // canvases instead of being clipped to 297mm. Default 'page' keeps
           // legacy reports byte-identical.

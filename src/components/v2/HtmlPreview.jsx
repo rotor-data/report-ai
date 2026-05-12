@@ -155,16 +155,56 @@ const PAPER_SIZES = {
   letter_landscape: { w: 279, h: 216 },
   a3_portrait:  { w: 297, h: 420 },
   a3_landscape: { w: 420, h: 297 },
+  presentation:     { w: 338, h: 190 },
+  presentation_16_9:{ w: 338, h: 190 },
+  square:           { w: 210, h: 210 },
+  digital:          { w: 381, h: 238 },
+};
+
+// Map v2_reports.page_format → PAPER_SIZES entry. Drives the editor frame
+// when EditorV2 has the canonical format id; preferred over HTML-class
+// detection because non-A4 reports often DON'T carry the format modifier
+// on every <section class="page"> (Claude composes against semantic
+// page--cover / page--dark modifiers, render.py injects the size class
+// at PDF time). Without an explicit prop the editor was stuck on A4 even
+// when the PDF rendered correctly at 338×190mm.
+const PAGE_FORMAT_TO_SIZE = {
+  a4_portrait:        PAPER_SIZES.a4_portrait,
+  a4_landscape:       PAPER_SIZES.a4_landscape,
+  a5:                 PAPER_SIZES.a5_portrait,
+  a5_landscape:       PAPER_SIZES.a5_landscape,
+  a3:                 PAPER_SIZES.a3_portrait,
+  a3_landscape:       PAPER_SIZES.a3_landscape,
+  us_letter:          PAPER_SIZES.letter_portrait,
+  us_letter_landscape:PAPER_SIZES.letter_landscape,
+  letter:             PAPER_SIZES.letter_portrait,
+  letter_landscape:   PAPER_SIZES.letter_landscape,
+  presentation:       PAPER_SIZES.presentation,
+  presentation_16_9:  PAPER_SIZES.presentation_16_9,
+  square:             PAPER_SIZES.square,
+  digital:            PAPER_SIZES.digital,
 };
 
 /**
- * Detect the page format of a module by inspecting its HTML.
+ * Detect the page format of a module.
  * Precedence:
- *   1. Explicit class hints on a .page element (.page--landscape, .page--a5, .page--letter, ...)
- *   2. Inline width/height style on a .page element
- *   3. Default to A4 portrait
+ *   1. Caller-supplied `pageFormat` prop (the report's canonical
+ *      page_format id from v2_reports.page_format) — always wins when
+ *      it matches a known PAGE_FORMAT_TO_SIZE entry. This is the path
+ *      that makes the editor follow the report's actual paper size
+ *      regardless of whether Claude's HTML carries a modifier class.
+ *   2. Explicit class hints on a .page element (.page--landscape,
+ *      .page--a5, .page--letter, .page--presentation, ...) — used
+ *      for legacy reports that pre-date pageFormat plumbing.
+ *   3. Inline width/height style on a .page element.
+ *   4. Default to A4 portrait.
  */
-function detectPageSize(html) {
+function detectPageSize(html, pageFormat) {
+  // 1. Explicit prop wins.
+  if (pageFormat && PAGE_FORMAT_TO_SIZE[pageFormat]) {
+    return PAGE_FORMAT_TO_SIZE[pageFormat];
+  }
+
   if (!html) return PAPER_SIZES.a4_portrait;
   const probe = document.createElement("div");
   probe.innerHTML = html;
@@ -175,10 +215,13 @@ function detectPageSize(html) {
   const has = (t) => cls.includes(t);
   if (has("page--a3-landscape")) return PAPER_SIZES.a3_landscape;
   if (has("page--a3")) return PAPER_SIZES.a3_portrait;
-  if (has("page--letter-landscape")) return PAPER_SIZES.letter_landscape;
-  if (has("page--letter")) return PAPER_SIZES.letter_portrait;
+  if (has("page--letter-landscape") || has("page--us-letter-landscape")) return PAPER_SIZES.letter_landscape;
+  if (has("page--letter") || has("page--us-letter")) return PAPER_SIZES.letter_portrait;
   if (has("page--a5-landscape")) return PAPER_SIZES.a5_landscape;
   if (has("page--a5")) return PAPER_SIZES.a5_portrait;
+  if (has("page--presentation-16-9") || has("page--presentation")) return PAPER_SIZES.presentation;
+  if (has("page--square")) return PAPER_SIZES.square;
+  if (has("page--digital")) return PAPER_SIZES.digital;
   if (has("page--landscape")) return PAPER_SIZES.a4_landscape;
 
   // Inline style: width:297mm;height:210mm etc.
@@ -477,6 +520,13 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   // Substitution pipeline (units, asset refs, recolor) is identical for
   // both modes — only the size constraint differs.
   blockType = "page",
+  // Report's canonical page_format id (from v2_reports.page_format).
+  // When set, takes precedence over HTML-class-based page-size detection
+  // so the editor frame matches the report's actual paper size even when
+  // Claude's <section class="page"> doesn't carry the format modifier
+  // (server-side render.py injects it at PDF time, but the raw HTML
+  // stored in v2_report_modules.html_cache often lacks it).
+  pageFormat = null,
   // Fired on dragstart of a selected component. The parent listens so
   // it can react on sidebar drop (cross-module move). Signature:
   //   ({ sourceModuleId, tempId, outerHTML })
@@ -805,7 +855,7 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     if (node.shadowRoot) node.shadowRoot.innerHTML = "";
     const shadow = node.shadowRoot || node.attachShadow({ mode: "open" });
 
-    const pageSize = detectPageSize(substitutedHtml);
+    const pageSize = detectPageSize(substitutedHtml, pageFormat);
 
     // 1. Brand CSS bundle (fonts, tokens, design-system classes).
     //
