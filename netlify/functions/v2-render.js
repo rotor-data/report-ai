@@ -290,6 +290,20 @@ export const handler = async (event) => {
 
     const brand = await fetchBrandContext(sql, report.brand_id);
 
+    // 2026-05-13: fetch alpha-v3 content units. Without this every
+    // `<p data-unit="X"></p>` element in the page HTML rendered as empty
+    // (handleRenderFreeformPdf in mcp-v2.js already fetches them; this
+    // editor-side path was the missing twin — produced text-less PDFs
+    // from the editor's "Render Draft" button). Legacy reports with no
+    // units simply return an empty array, so substitute_units is a
+    // no-op and HTML renders as today.
+    const units = await sql`
+      SELECT unit_id, type, level, text, metadata, order_index
+      FROM v2_content_units
+      WHERE report_id = ${report_id}
+      ORDER BY order_index ASC
+    `;
+
     let cssBase = "";
     if (report.template_id) {
       const templates = await sql`SELECT css_base FROM report_templates WHERE id = ${report.template_id} LIMIT 1`;
@@ -347,6 +361,10 @@ export const handler = async (event) => {
       document_css_overrides: overrideCss,
       // Also include raw overrides so smyra-render can log / debug.
       style_overrides: overrides,
+      // alpha-v3 content units. Empty array for legacy reports — render
+      // skips substitute_units entirely when units AND keep_placeholders
+      // are both falsy, so legacy behaviour is preserved.
+      units,
     }, report.tenant_id);
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

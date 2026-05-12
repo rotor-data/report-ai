@@ -58,6 +58,8 @@ export default function EditorV2() {
   const [adding, setAdding] = useState(false);
   const [renderBusy, setRenderBusy] = useState(false);
   const [pdfUrl, setPdfUrl] = useState("");
+  const [pptxBusy, setPptxBusy] = useState(false);
+  const [pptxUrl, setPptxUrl] = useState("");
 
   // Debounced save timer for contentEditable live edits
   const saveTimerRef = useRef(null);
@@ -530,6 +532,28 @@ export default function EditorV2() {
     }
   };
 
+  // 2026-05-13: editor-side .pptx export. Sync — bounded by Netlify
+  // 26s function cap, so suitable for typical reports up to ~15 pages.
+  // For larger decks the workflow's export_pptx choice queues through
+  // the 15-min BG-function path.
+  const onExportPptx = async () => {
+    setPptxBusy(true);
+    setError("");
+    setPptxUrl("");
+    try {
+      const res = await api.renderV2Pptx({ report_id: session.report_id });
+      setPptxUrl(res.pptx_url);
+      // Auto-open the download — user picked an explicit export action.
+      if (res.pptx_url) {
+        window.open(res.pptx_url, "_blank", "noopener,noreferrer");
+      }
+    } catch (err) {
+      setError(`PowerPoint-export misslyckades: ${err.message}`);
+    } finally {
+      setPptxBusy(false);
+    }
+  };
+
   // ──────────────── drag to reorder ────────────────
   const [dragId, setDragId] = useState(null);
   const [dropBeforeId, setDropBeforeId] = useState(null);
@@ -969,6 +993,20 @@ export default function EditorV2() {
               Öppna PDF ↗
             </a>
           )}
+          {pptxUrl && (
+            <a className="btn-ghost" href={pptxUrl} target="_blank" rel="noopener noreferrer" title="Senaste exporterade .pptx">
+              Öppna .pptx ↗
+            </a>
+          )}
+          <button
+            className="btn-ghost"
+            type="button"
+            disabled={pptxBusy}
+            onClick={onExportPptx}
+            title="Exportera som editerbar PowerPoint (.pptx). Bakgrunder bevaras som bild, text och bilder är native-editerbara."
+          >
+            {pptxBusy ? "Exporterar…" : "Exportera .pptx"}
+          </button>
           <button
             className="btn"
             type="button"

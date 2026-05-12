@@ -80,6 +80,14 @@ export const api = {
 
   renderV2Pdf: (payload) => request("/v2-render", { method: "POST", body: JSON.stringify(payload) }),
 
+  /**
+   * Editor-side .pptx export. POST /v2-render-pptx { report_id } →
+   * { pptx_url, pages_count, size_bytes }. Sync — bounded by Netlify's
+   * 26s function cap. For longer reports (20+ pages) the workflow's
+   * export_pptx choice queues through the 15-min BG-function path.
+   */
+  renderV2Pptx: (payload) => request("/v2-render-pptx", { method: "POST", body: JSON.stringify(payload) }),
+
   // Unsplash photo search — requires UNSPLASH_ACCESS_KEY on the server.
   // Uses the same auth wrapper as other v2 endpoints so editor tokens
   // reach the function (raw fetch was returning 401 because it never
