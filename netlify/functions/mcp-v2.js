@@ -191,7 +191,7 @@ const TOOLS = [
   },
   {
     name: "persist_freeform_pages",
-    description: "alpha-v3: writes the final set of freeform HTML pages into v2_report_pages + v2_report_modules so the editor (/v2/reports/<id>) and the legacy render_pdf tool can find them. Called by smyra-core at module_review approve_all, BEFORE enqueueRender. The report must already exist (created_at row in v2_reports). Existing rows for the same (report_id, page_number) are replaced so retries and patches converge. Also writes the final document_css onto v2_reports.document_css.",
+    description: "alpha-v3: writes the final set of freeform HTML pages into v2_report_pages + v2_report_modules so the editor (/editor/v2?token=…) and the legacy render_pdf tool can find them. Called by smyra-core at module_review approve_all, BEFORE enqueueRender. The report must already exist (created_at row in v2_reports). Existing rows for the same (report_id, page_number) are replaced so retries and patches converge. Also writes the final document_css onto v2_reports.document_css.",
     inputSchema: {
       type: "object",
       required: ["report_id", "pages", "design_system_css"],
@@ -2862,7 +2862,7 @@ async function handleTestRunReport(userId, args) {
   }
 
   lines.push('## 🔍 How to inspect');
-  lines.push(`- **Editor preview:** open the SPA at \`/v2/reports/${reportId}\` and verify each page renders with brand fonts + component styles.`);
+  lines.push(`- **Editor preview:** call \`report2__get_editor_url\` with \`{ report_id: "${reportId}" }\` and open the returned \`/editor/v2?token=…\` URL to verify each page renders with brand fonts + component styles.`);
   lines.push(`- **Render PDF:** \`POST /api/v2-render\` with \`{ "report_id": "${reportId}", "mode": "draft" }\` — compare against editor preview (they MUST match).`);
   lines.push(`- **Component library:** \`/v2/components\` (filter by this brand) to inspect saved components and their css_template.`);
   lines.push(`- **Delete test report when done:** \`DELETE /api/v2-reports/${reportId}\`.`);
@@ -4205,7 +4205,7 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
 // ─── Handler: persist_freeform_pages ───────────────────────────────────────
 // Called by smyra-core at module_review approve_all (before enqueueRender)
 // to materialise the final freeform pages into v2_report_pages +
-// v2_report_modules. Without this step the editor at /v2/reports/<id>
+// v2_report_modules. Without this step the editor at /editor/v2?token=…
 // opens to an empty report and the legacy render_pdf tool fails with
 // "pages is required" because its query returns no rows. Also stores
 // the final CSS onto v2_reports so the editor cascades correctly.
@@ -4424,11 +4424,17 @@ async function handlePersistFreeformPages(userId, args) {
     }
   }
 
+  // Mint a fresh editor capability token so the URL we hand back here
+  // lands directly in the modern `/editor/v2?token=…` surface — the
+  // legacy `/v2/reports/<id>` SPA page was removed in the 2026-05 cleanup.
+  const editorToken = createEditorToken(userId, report_id);
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
+
   return textResult({
     report_id,
     pages_written: inserted,
     units_written,
-    editor_url: `${process.env.URL || process.env.DEPLOY_PRIME_URL || ""}/v2/reports/${report_id}`,
+    editor_url: `${siteUrl}/editor/v2?token=${editorToken}`,
     cross_page_warnings,
   });
 }

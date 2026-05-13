@@ -10,7 +10,8 @@
  * to keep working unchanged.
  *
  * Manual end-to-end test sequence (run by hand):
- *   1. Open /v2/reports/<id> for an alpha-v3 report.
+ *   1. Open the modern editor for an alpha-v3 report
+ *      (call `report2__get_editor_url` → `/editor/v2?token=…`).
  *   2. Confirm the right-most "Innehåll" panel lists every content unit.
  *   3. Type into a paragraph unit's textarea — the page preview updates
  *      in place within ~500ms.

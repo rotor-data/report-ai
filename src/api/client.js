@@ -80,6 +80,12 @@ export const api = {
 
   renderV2Pdf: (payload) => request("/v2-render", { method: "POST", body: JSON.stringify(payload) }),
 
+  // Mint a fresh editor capability token + return the standalone
+  // `/editor/v2?token=…` URL. Used by V2Dashboard to launch the
+  // modern editor without going through MCP. Hub-auth only.
+  getEditorUrl: (reportId) =>
+    request(`/v2-editor-url?report_id=${encodeURIComponent(reportId)}`),
+
   /**
    * Editor-side .pptx export. POST /v2-render-pptx { report_id } →
    * { pptx_url, pages_count, size_bytes }. Sync — bounded by Netlify's

@@ -3,6 +3,24 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client";
 
 /**
+ * Mint an editor token for `reportId` and open `/editor/v2?token=…`.
+ * Replaces the old direct `<Link to="/v2/reports/:id">` which pointed
+ * at the deprecated V2ReportEditor SPA page.
+ */
+async function openEditor(reportId, setError) {
+  try {
+    const res = await api.getEditorUrl(reportId);
+    if (res?.editor_url) {
+      window.location.assign(res.editor_url);
+    } else {
+      setError("Kunde inte öppna editor: ingen editor_url i svar.");
+    }
+  } catch (err) {
+    setError(`Kunde inte öppna editor: ${err.message}`);
+  }
+}
+
+/**
  * V2 dashboard — lists tenant reports and lets user create a new one.
  * Tenant ID is currently entered manually (chat-first flow normally creates
  * reports via MCP). Persisted in localStorage for convenience.
@@ -117,12 +135,17 @@ export default function V2Dashboard() {
 
       <div className="card-list">
         {items.map((doc) => (
-          <Link key={doc.id} className="card" to={`/v2/reports/${doc.id}`}>
+          <button
+            key={doc.id}
+            type="button"
+            className="card"
+            onClick={() => openEditor(doc.id, setError)}
+          >
             <strong>{doc.title}</strong>
             <span>{doc.document_type}</span>
             <span>{doc.status}</span>
             <span className="hint">{new Date(doc.updated_at).toLocaleDateString("sv-SE")}</span>
-          </Link>
+          </button>
         ))}
         {!loading && tenantId && items.length === 0 ? (
           <p className="hint">Inga rapporter än.</p>
