@@ -25,9 +25,12 @@ describe('parseInlineMarkdown — bold', () => {
       'a <strong>bold</strong> word',
     );
   });
-  it('bold greedy keeps inner italic literal', () => {
+  it('bold recurses into inner italic (Python parity)', () => {
+    // 2026-05-14: inline-md was extended; bold/italic/link/attr-span
+    // handlers now recurse into their captured group so nested markers
+    // render as nested tags. Matches smyra-render/inline_md.py exactly.
     expect(parseInlineMarkdown('**foo *bar* baz**')).toBe(
-      '<strong>foo *bar* baz</strong>',
+      '<strong>foo <em>bar</em> baz</strong>',
     );
   });
   it('unclosed bold marker escapes', () => {
@@ -47,9 +50,12 @@ describe('parseInlineMarkdown — italic', () => {
       'an <em>italic</em> word',
     );
   });
-  it('italic does not consume double star', () => {
+  it('italic-inside-bold renders as nested <em> after recursion', () => {
+    // See note above: 2026-05-14 Python-parity extension changed nesting
+    // behaviour. Bold no longer "eats" inner italic markers — they
+    // render as nested <em>.
     const out = parseInlineMarkdown('**foo *bar* baz**');
-    expect(out).not.toContain('<em>');
+    expect(out).toContain('<em>bar</em>');
   });
 });
 
@@ -133,14 +139,15 @@ describe('parseInlineMarkdown — html escape', () => {
 });
 
 describe('parseInlineMarkdown — mixed', () => {
-  it('bold and link (link inside bold is literal)', () => {
+  it('bold containing link recurses (2026-05-14 parity)', () => {
+    // Handlers now recurse — link inside bold renders as nested <a>.
     expect(parseInlineMarkdown('see **[docs](https://x.com)** here')).toBe(
-      'see <strong>[docs](https://x.com)</strong> here',
+      'see <strong><a href="https://x.com">docs</a></strong> here',
     );
   });
-  it('link around bold is literal label', () => {
+  it('link label containing bold recurses (2026-05-14 parity)', () => {
     expect(parseInlineMarkdown('[**bold**](https://x.com)')).toBe(
-      '<a href="https://x.com">**bold**</a>',
+      '<a href="https://x.com"><strong>bold</strong></a>',
     );
   });
   it('multiple bolds in paragraph', () => {
@@ -166,6 +173,137 @@ describe('parseInlineMarkdown — pathological', () => {
   it('bold across newlines', () => {
     expect(parseInlineMarkdown('**foo\nbar**')).toBe(
       '<strong>foo\nbar</strong>',
+    );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// 2026-05-14 extended subset — highlight / strike / code / attr-spans.
+// Mirrors smyra-render/test_inline_md_ext.py cases for cross-language
+// parity. The Python file is the source of truth; if a case here drifts,
+// fix the JS mirror, NOT the Python.
+// ────────────────────────────────────────────────────────────────────────
+
+describe('parseInlineMarkdown — highlight (==hi==)', () => {
+  it('basic', () => {
+    expect(parseInlineMarkdown('==hilite==')).toBe('<mark>hilite</mark>');
+  });
+  it('in prose', () => {
+    expect(parseInlineMarkdown('before ==mid== after')).toBe(
+      'before <mark>mid</mark> after',
+    );
+  });
+  it('empty inner does not match', () => {
+    expect(parseInlineMarkdown('====')).toBe('====');
+  });
+  it('cannot span newline', () => {
+    // Pattern is `==([^=\n]+?)==`, so a literal newline blocks the match.
+    const out = parseInlineMarkdown('==a\nb==');
+    expect(out).not.toContain('<mark>');
+  });
+});
+
+describe('parseInlineMarkdown — strike (~~x~~)', () => {
+  it('basic', () => {
+    expect(parseInlineMarkdown('~~gone~~')).toBe('<s>gone</s>');
+  });
+  it('does not match across newline', () => {
+    const out = parseInlineMarkdown('~~a\nb~~');
+    expect(out).not.toContain('<s>');
+  });
+});
+
+describe('parseInlineMarkdown — inline code (`x`)', () => {
+  it('basic', () => {
+    expect(parseInlineMarkdown('`foo`')).toBe('<code>foo</code>');
+  });
+  it('escapes html inside', () => {
+    expect(parseInlineMarkdown('`<script>`')).toBe(
+      '<code>&lt;script&gt;</code>',
+    );
+  });
+  it('does NOT recurse markdown inside', () => {
+    expect(parseInlineMarkdown('`**not bold**`')).toBe(
+      '<code>**not bold**</code>',
+    );
+  });
+  it('timestamp', () => {
+    expect(parseInlineMarkdown('`08:21`')).toBe('<code>08:21</code>');
+  });
+});
+
+describe('parseInlineMarkdown — attr-span ([x]{...})', () => {
+  it('class shorthand', () => {
+    expect(parseInlineMarkdown('[Axel]{.speaker}')).toBe(
+      '<span class="speaker">Axel</span>',
+    );
+  });
+  it('id shorthand', () => {
+    expect(parseInlineMarkdown('[anchor]{#t1}')).toBe(
+      '<span id="t1">anchor</span>',
+    );
+  });
+  it('data-attr quoted', () => {
+    expect(parseInlineMarkdown('[Axel]{data-speaker="Axel"}')).toBe(
+      '<span data-speaker="Axel">Axel</span>',
+    );
+  });
+  it('data-attr unquoted', () => {
+    expect(parseInlineMarkdown('[t]{data-time=08:21}')).toBe(
+      '<span data-time="08:21">t</span>',
+    );
+  });
+  it('multiple', () => {
+    expect(
+      parseInlineMarkdown('[Axel]{.speaker .axel #t1 data-time="08:21"}'),
+    ).toBe(
+      '<span class="speaker axel" id="t1" data-time="08:21">Axel</span>',
+    );
+  });
+  it('title attr', () => {
+    expect(parseInlineMarkdown('[hover]{title="Click me"}')).toBe(
+      '<span title="Click me">hover</span>',
+    );
+  });
+  it('lang attr', () => {
+    expect(parseInlineMarkdown('[bonjour]{lang="fr"}')).toBe(
+      '<span lang="fr">bonjour</span>',
+    );
+  });
+  it('inner content is recursively parsed', () => {
+    expect(parseInlineMarkdown('[**bold** inside]{.foo}')).toBe(
+      '<span class="foo"><strong>bold</strong> inside</span>',
+    );
+  });
+  it('reject style attr → raw literal (escaped)', () => {
+    expect(parseInlineMarkdown('[x]{style="evil"}')).toBe(
+      '[x]{style=&quot;evil&quot;}',
+    );
+  });
+  it('reject onclick → raw literal', () => {
+    expect(parseInlineMarkdown('[x]{onclick="x"}')).toBe(
+      '[x]{onclick=&quot;x&quot;}',
+    );
+  });
+  it('reject when ANY key is disallowed (mixed)', () => {
+    expect(parseInlineMarkdown('[x]{.ok onerror="x"}')).toBe(
+      '[x]{.ok onerror=&quot;x&quot;}',
+    );
+  });
+});
+
+describe('parseInlineMarkdown — link recursion (2026-05-14)', () => {
+  it('code inner', () => {
+    expect(parseInlineMarkdown('[`code`](https://example.com)')).toBe(
+      '<a href="https://example.com"><code>code</code></a>',
+    );
+  });
+});
+
+describe("parseInlineMarkdown — Daniel's dialog line", () => {
+  it('bold + code combo', () => {
+    expect(parseInlineMarkdown('**Axel** `08:21` Innan vi tittar…')).toBe(
+      '<strong>Axel</strong> <code>08:21</code> Innan vi tittar…',
     );
   });
 });
