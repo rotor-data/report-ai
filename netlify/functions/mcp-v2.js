@@ -137,6 +137,120 @@ async function fetchBrandContext(sql, brandId) {
   return { tokens, fonts, logos };
 }
 
+// ─── Brand ownership guard (corruption defense) ─────────────────────────────
+//
+// Every write that targets `brand_id` MUST verify ownership before mutating.
+// Without this gate, leaking a brand UUID (via list_brands, error messages,
+// editor URL etc.) was enough to let an attacker write fonts/logos/tokens
+// against any tenant's brand. Caller passes the JWT-derived tenant_id; we
+// confirm the brand actually belongs to it. Returns the brand row on
+// success so callers can reuse fields (e.g. name) without re-querying.
+//
+// `expected_tenant_id` is OPTIONAL only because some legacy callers don't
+// know it yet — when omitted, the check degrades to "brand exists" which
+// is still an improvement over no check at all, but is logged for
+// observability. Once JWT tenant_id threading is complete (Job 3 in the
+// hardening plan), all callers will pass it.
+async function assertBrandOwnership(sql, brand_id, expected_tenant_id) {
+  if (!brand_id) {
+    const err = new Error("brand_id is required");
+    err.code = "BRAND_GUARD_NO_ID";
+    throw err;
+  }
+  const rows = await sql`
+    SELECT id, tenant_id, name
+    FROM brands
+    WHERE id = ${brand_id}
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    const err = new Error(`brand ${brand_id} does not exist`);
+    err.code = "BRAND_GUARD_NOT_FOUND";
+    throw err;
+  }
+  const row = rows[0];
+  if (expected_tenant_id) {
+    if (row.tenant_id !== expected_tenant_id) {
+      // Hard reject — this is the corruption-prevention gate. Do NOT
+      // leak the brand's real tenant_id in the error (info-leak).
+      console.warn(
+        `[brand-guard] tenant mismatch: brand=${brand_id} expected_tenant=${expected_tenant_id}`,
+      );
+      const err = new Error(`brand ${brand_id} is not owned by tenant ${expected_tenant_id}`);
+      err.code = "BRAND_GUARD_TENANT_MISMATCH";
+      throw err;
+    }
+  } else {
+    console.warn(
+      `[brand-guard] degraded check (no expected_tenant_id) for brand=${brand_id}`,
+    );
+  }
+  return row;
+}
+
+// Like assertBrandOwnership but for report-scoped writes. SELECTs the
+// report's tenant_id and verifies match against the caller's JWT tenant.
+// Returns the report row { id, tenant_id, brand_id } or throws with a
+// specific error code. Degrades gracefully when expected_tenant_id is
+// null (legacy JWT path) — warns but allows.
+async function assertReportOwnership(sql, report_id, expected_tenant_id) {
+  if (!report_id) {
+    const err = new Error("report_id is required");
+    err.code = "REPORT_GUARD_NO_ID";
+    throw err;
+  }
+  const rows = await sql`
+    SELECT id, tenant_id, brand_id
+    FROM v2_reports
+    WHERE id = ${report_id}
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    const err = new Error(`report ${report_id} does not exist`);
+    err.code = "REPORT_GUARD_NOT_FOUND";
+    throw err;
+  }
+  const row = rows[0];
+  if (expected_tenant_id) {
+    if (row.tenant_id !== expected_tenant_id) {
+      console.warn(
+        `[report-guard] tenant mismatch: report=${report_id} expected_tenant=${expected_tenant_id}`,
+      );
+      const err = new Error(`report ${report_id} is not owned by tenant ${expected_tenant_id}`);
+      err.code = "REPORT_GUARD_TENANT_MISMATCH";
+      throw err;
+    }
+  } else {
+    console.warn(
+      `[report-guard] degraded check (no expected_tenant_id) for report=${report_id}`,
+    );
+  }
+  return row;
+}
+
+// Best-effort audit logger for brand-scoped writes. Failures are logged
+// as warnings and swallowed — we never want a missing audit row to fail
+// the parent write. brand_audit_log is added in migration 037.
+async function logBrandWrite(sql, { brand_id, tenant_id, actor, action, before, after }) {
+  try {
+    await sql`
+      INSERT INTO brand_audit_log (brand_id, tenant_id, actor, action, before, after)
+      VALUES (
+        ${brand_id},
+        ${tenant_id},
+        ${actor || "unknown"},
+        ${action},
+        ${before == null ? null : JSON.stringify(before)}::jsonb,
+        ${after == null ? null : JSON.stringify(after)}::jsonb
+      )
+    `;
+  } catch (err) {
+    console.warn(
+      `[brand-audit] failed to log ${action} for brand=${brand_id}: ${err?.message || err}`,
+    );
+  }
+}
+
 // ─── TOOLS array ────────────────────────────────────────────────────────────
 
 const TOOLS = [
@@ -931,11 +1045,17 @@ const TOOLS = [
 
 // ─── Handler: create ────────────────────────────────────────────────────────
 
-async function handleCreate(userId, args) {
+async function handleCreate(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { tenant_id, brand_id, title, document_type, template_id, page_format } = args;
   if (!tenant_id || !brand_id || !title || !document_type) {
     return errorResult("tenant_id, brand_id, title, and document_type are required.");
+  }
+  // Corruption defense: if JWT carries a tenant_id, args.tenant_id must
+  // match. Otherwise a caller could create reports inside another tenant.
+  if (hubTenantId && tenant_id !== hubTenantId) {
+    console.warn(`[handleCreate] tenant_id mismatch: args=${tenant_id} jwt=${hubTenantId}`);
+    return errorResult(`tenant_id ${tenant_id} does not match authenticated tenant.`);
   }
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'a4_portrait';
 
@@ -1374,21 +1494,69 @@ async function handleGetEditorUrl(userId, args) {
 
 // ─── Handler: save_brand_tokens ─────────────────────────────────────────────
 
-async function handleSaveBrandTokens(userId, args) {
+async function handleSaveBrandTokens(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { brand_id, tokens } = args;
   if (!brand_id || !tokens) return errorResult("brand_id and tokens are required.");
 
+  // Corruption defense: verify the brand belongs to the caller's JWT tenant
+  // BEFORE we touch tokens. Without this gate, a leaked brand UUID was
+  // enough to overwrite any tenant's tokens (root cause of the 2026-05-13
+  // Rotor-corruption incident — fixed via tenant_resolve sequencing, but
+  // the write-path stayed unguarded until this hardening).
+  try {
+    await assertBrandOwnership(sql, brand_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot save tokens: ${e.message}`);
+  }
+  // Capture token state BEFORE the merge so we can write before/after to
+  // the audit log. assertBrandOwnership doesn't SELECT tokens, so do a
+  // separate read.
+  let beforeTokens = null;
+  try {
+    const bt = await sql`SELECT tokens FROM brands WHERE id = ${brand_id} LIMIT 1`;
+    beforeTokens = bt[0]?.tokens || {};
+  } catch (err) {
+    console.warn(`[handleSaveBrandTokens] could not read before-tokens: ${err?.message || err}`);
+  }
+
   // MERGE — only overwrite keys that are provided, preserve the rest.
-  // This prevents session-local overrides from wiping unrelated token keys.
-  const rows = await sql`
-    UPDATE brands
-    SET tokens = COALESCE(tokens, '{}'::jsonb) || ${JSON.stringify(tokens)}::jsonb,
-        updated_at = NOW()
-    WHERE id = ${brand_id}
-    RETURNING id, tenant_id, name, tokens
-  `;
+  // Wrapped in a transaction with a per-brand advisory lock so concurrent
+  // saveBrandTokens calls against the same brand serialise (the JSONB
+  // `||` merge is not atomic against concurrent writers — without the
+  // lock two parallel calls that touch DIFFERENT keys can race and one
+  // can lose). The lock key is the lower 63 bits of the brand_id UUID
+  // hashed; collisions are harmless (just serialise more than needed).
+  // Scope WHERE by both id AND tenant_id (defense in depth — ownership
+  // was just asserted but a stale tenant_id mid-flight is still rejected).
+  // Neon's HTTP client takes a statement array for transactions. The
+  // advisory lock + UPDATE execute in the same TX; the lock auto-releases
+  // on commit/rollback (xact-scoped). `sql.transaction` returns an array
+  // of per-statement results in order.
+  const txResults = await sql.transaction([
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${brand_id}::text, 0))`,
+    sql`
+      UPDATE brands
+      SET tokens = COALESCE(tokens, '{}'::jsonb) || ${JSON.stringify(tokens)}::jsonb,
+          updated_at = NOW()
+      WHERE id = ${brand_id}
+        AND (${hubTenantId}::uuid IS NULL OR tenant_id = ${hubTenantId}::uuid)
+      RETURNING id, tenant_id, name, tokens
+    `,
+  ]);
+  const rows = txResults[1];
   if (!rows.length) return errorResult(`Brand ${brand_id} not found.`);
+
+  // Best-effort audit row. The parent write already succeeded — never
+  // surface audit failures to the caller.
+  await logBrandWrite(sql, {
+    brand_id,
+    tenant_id: rows[0].tenant_id,
+    actor: userId,
+    action: "tokens_update",
+    before: { tokens: beforeTokens },
+    after: { tokens: rows[0].tokens, merged_keys: Object.keys(tokens) },
+  });
 
   return textResult({ brand_id: rows[0].id, updated: true, merged_keys: Object.keys(tokens) });
 }
@@ -1408,11 +1576,21 @@ async function handleGetBrandTokens(userId, args) {
 
 // ─── Handler: upload_font ───────────────────────────────────────────────────
 
-async function handleUploadFont(userId, args) {
+async function handleUploadFont(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { brand_id, family, weight, style, format, data_base64 } = args;
   if (!brand_id || !family || weight == null || !style || !format || !data_base64) {
     return errorResult("All fields are required: brand_id, family, weight, style, format, data_base64.");
+  }
+
+  // Corruption defense: verify the brand belongs to the caller's tenant
+  // before storing a font binary against it. Otherwise a leaked brand_id
+  // is enough to poison another tenant's brand fonts.
+  let brandRow;
+  try {
+    brandRow = await assertBrandOwnership(sql, brand_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot upload font: ${e.message}`);
   }
 
   const rows = await sql`
@@ -1421,16 +1599,34 @@ async function handleUploadFont(userId, args) {
     RETURNING id, brand_id, family, weight, style, format
   `;
 
+  // Audit: log the font upload metadata (NOT the base64 binary).
+  await logBrandWrite(sql, {
+    brand_id,
+    tenant_id: brandRow.tenant_id,
+    actor: userId,
+    action: "font_upload",
+    before: null,
+    after: { font_id: rows[0].id, family, weight, style, format },
+  });
+
   return textResult({ font_id: rows[0].id, family, weight, style, format });
 }
 
 // ─── Handler: upload_logo ───────────────────────────────────────────────────
 
-async function handleUploadLogo(userId, args) {
+async function handleUploadLogo(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { brand_id, variant, format, data_base64 } = args;
   if (!brand_id || !variant || !format || !data_base64) {
     return errorResult("All fields are required: brand_id, variant, format, data_base64.");
+  }
+
+  // Corruption defense: verify ownership before storing logo binary.
+  let brandRow;
+  try {
+    brandRow = await assertBrandOwnership(sql, brand_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot upload logo: ${e.message}`);
   }
 
   const rows = await sql`
@@ -1439,16 +1635,31 @@ async function handleUploadLogo(userId, args) {
     RETURNING id, brand_id, variant, format
   `;
 
+  // Audit: log the logo upload metadata (NOT the base64 binary).
+  await logBrandWrite(sql, {
+    brand_id,
+    tenant_id: brandRow.tenant_id,
+    actor: userId,
+    action: "logo_upload",
+    before: null,
+    after: { logo_id: rows[0].id, variant, format },
+  });
+
   return textResult({ logo_id: rows[0].id, variant, format });
 }
 
 // ─── Handler: upload_asset ──────────────────────────────────────────────────
 
-async function handleUploadAsset(userId, args, event) {
+async function handleUploadAsset(userId, args, event, hubTenantId) {
   const sql = getSql();
   const { tenant_id, filename, mime_type, data_base64 } = args;
   if (!tenant_id || !filename || !mime_type || !data_base64) {
     return errorResult("All fields are required: tenant_id, filename, mime_type, data_base64.");
+  }
+  // Corruption defense: caller cannot upload assets into another tenant.
+  if (hubTenantId && tenant_id !== hubTenantId) {
+    console.warn(`[handleUploadAsset] tenant_id mismatch: args=${tenant_id} jwt=${hubTenantId}`);
+    return errorResult(`tenant_id ${tenant_id} does not match authenticated tenant.`);
   }
 
   // Determine asset_class from mime_type
@@ -1587,10 +1798,15 @@ async function handleListBrands(userId, args) {
 // brand_create step when the user picks "new" at brand_pick during
 // brand_onboard. Returns { brand_id, name } so the workflow can stash
 // the id in state and continue onboarding scoped to it.
-async function handleCreateBrand(userId, args) {
+async function handleCreateBrand(userId, args, _event, hubTenantId) {
   const { tenant_id, name, tokens } = args || {};
   if (!tenant_id || !/^[0-9a-f-]{36}$/i.test(tenant_id)) {
     return errorResult("tenant_id must be a UUID.");
+  }
+  // Corruption defense: caller cannot create brands inside another tenant.
+  if (hubTenantId && tenant_id !== hubTenantId) {
+    console.warn(`[handleCreateBrand] tenant_id mismatch: args=${tenant_id} jwt=${hubTenantId}`);
+    return errorResult(`tenant_id ${tenant_id} does not match authenticated tenant.`);
   }
   if (typeof name !== "string" || name.trim().length === 0 || name.trim().length > 128) {
     return errorResult("name must be a non-empty string (≤128 chars).");
@@ -1685,7 +1901,7 @@ async function handleGetModuleSchema(userId, args) {
 
 // ─── Handler: save_blueprint ────────────────────────────────────────────────
 
-async function handleSaveBlueprint(userId, args) {
+async function handleSaveBlueprint(userId, args, _event, hubTenantId) {
   const sql = getSql();
 
   // Legacy shape detection: old callers passed { report_id, name }.
@@ -1750,6 +1966,22 @@ async function handleSaveBlueprint(userId, args) {
   }
   if (visibility === "tenant" && !tenant_id) {
     return errorResult("tenant_id is required when visibility='tenant'.");
+  }
+
+  // Corruption defense: verify ownership before storing a blueprint.
+  // brand-visibility → assert brand belongs to caller's tenant.
+  // tenant-visibility → assert args.tenant_id matches JWT tenant.
+  if (visibility === "brand") {
+    try {
+      await assertBrandOwnership(sql, brand_id, hubTenantId);
+    } catch (e) {
+      return errorResult(`Cannot save blueprint: ${e.message}`);
+    }
+  } else if (visibility === "tenant") {
+    if (hubTenantId && tenant_id !== hubTenantId) {
+      console.warn(`[handleSaveBlueprint] tenant_id mismatch: args=${tenant_id} jwt=${hubTenantId}`);
+      return errorResult(`tenant_id ${tenant_id} does not match authenticated tenant.`);
+    }
   }
 
   // Smyra-visibility writes are restricted.
@@ -2192,7 +2424,7 @@ async function handlePreviewBlueprint(userId, args) {
 
 // ─── Handler: create_from_blueprint ─────────────────────────────────────────
 
-async function handleCreateFromBlueprint(userId, args) {
+async function handleCreateFromBlueprint(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { blueprint_id, title, document_type } = args;
   if (!blueprint_id || !title || !document_type) {
@@ -2225,6 +2457,14 @@ async function handleCreateFromBlueprint(userId, args) {
     tenantId = brands[0].tenant_id;
   }
 
+  // Corruption defense: verify the resolved brand belongs to the caller's
+  // tenant before creating a report under it.
+  try {
+    await assertBrandOwnership(sql, brandId, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot create from blueprint: ${e.message}`);
+  }
+
   // Create report linked to the blueprint. No modules are seeded — the hub
   // calls get_blueprint separately to fetch design payload and drive the
   // workflow from there.
@@ -2240,7 +2480,7 @@ async function handleCreateFromBlueprint(userId, args) {
 
 // ─── Handler: save_component ────────────────────────────────────────────────
 
-async function handleSaveComponent(userId, args) {
+async function handleSaveComponent(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const {
     component_id,
@@ -2275,6 +2515,14 @@ async function handleSaveComponent(userId, args) {
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'universal';
   if (!brand_id || !component_type || !label || !html_template) {
     return errorResult("brand_id, component_type, label, and html_template are required.");
+  }
+
+  // Corruption defense: verify the brand belongs to the caller's tenant
+  // before any INSERT/UPDATE on brand_components.
+  try {
+    await assertBrandOwnership(sql, brand_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot save component: ${e.message}`);
   }
 
   const variantLabel = (variant_name && String(variant_name).trim()) || 'Default';
@@ -2891,16 +3139,26 @@ async function handleTestRunReport(userId, args) {
 
 // ─── Handler: save_document_css ─────────────────────────────────────────────
 
-async function handleSaveDocumentCss(userId, args) {
+async function handleSaveDocumentCss(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { report_id, document_css } = args || {};
   if (!report_id) return errorResult("report_id is required.");
   if (typeof document_css !== "string") return errorResult("document_css must be a string.");
 
+  // Corruption defense: verify the report belongs to the caller's tenant
+  // before overwriting its CSS. Otherwise a leaked report UUID lets any
+  // caller blank-out another tenant's report styling.
+  try {
+    await assertReportOwnership(sql, report_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot save document_css: ${e.message}`);
+  }
+
   const rows = await sql`
     UPDATE v2_reports
     SET document_css = ${document_css}, updated_at = NOW()
     WHERE id = ${report_id}
+      AND (${hubTenantId}::uuid IS NULL OR tenant_id = ${hubTenantId}::uuid)
     RETURNING id
   `;
   if (!rows.length) return errorResult(`Report ${report_id} not found.`);
@@ -2932,11 +3190,17 @@ async function handleListReports(userId, args) {
 
 // ─── Handler: delete_component ──────────────────────────────────────────────
 
-async function handleDeleteComponent(userId, args) {
+async function handleDeleteComponent(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { component_id, brand_id } = args;
   if (!component_id || !brand_id) {
     return errorResult("component_id and brand_id are required.");
+  }
+  // Corruption defense: verify ownership before deleting.
+  try {
+    await assertBrandOwnership(sql, brand_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot delete component: ${e.message}`);
   }
   const rows = await sql`
     DELETE FROM brand_components
@@ -2949,11 +3213,19 @@ async function handleDeleteComponent(userId, args) {
   return textResult({ deleted: true, component_id: rows[0].id, component_type: rows[0].component_type, variant_name: rows[0].variant_name, label: rows[0].label });
 }
 
-async function handleForkComponent(userId, args) {
+async function handleForkComponent(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { source_component_id, target_brand_id, label, is_default } = args;
   if (!source_component_id || !target_brand_id) {
     return errorResult("source_component_id and target_brand_id are required.");
+  }
+  // Corruption defense: verify the target brand belongs to the caller's
+  // tenant before forking into it. (Source is allowed to be public/cross
+  // -brand — the access check below handles that.)
+  try {
+    await assertBrandOwnership(sql, target_brand_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot fork component: ${e.message}`);
   }
 
   const srcRows = await sql`
@@ -3007,17 +3279,22 @@ async function handleForkComponent(userId, args) {
 
 // ─── Handler: create_design_extraction ──────────────────────────────────────
 
-async function handleCreateDesignExtraction(userId, args) {
+async function handleCreateDesignExtraction(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { brand_id, label, source_description, suggested_tokens, inventory, reference_pages } = args;
   if (!brand_id || !label) {
     return errorResult("brand_id and label are required.");
   }
 
-  // Look up tenant_id for the brand so the extraction inherits it.
-  const brandRows = await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`;
-  if (!brandRows.length) return errorResult(`Brand ${brand_id} not found.`);
-  const tenantId = brandRows[0].tenant_id || null;
+  // Corruption defense: verify brand ownership before creating an
+  // extraction record under it.
+  let brandRow;
+  try {
+    brandRow = await assertBrandOwnership(sql, brand_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot create design extraction: ${e.message}`);
+  }
+  const tenantId = brandRow.tenant_id || null;
 
   const rows = await sql`
     INSERT INTO design_extractions (
@@ -3043,7 +3320,7 @@ async function handleCreateDesignExtraction(userId, args) {
 
 // ─── Handler: update_design_extraction ──────────────────────────────────────
 
-async function handleUpdateDesignExtraction(userId, args) {
+async function handleUpdateDesignExtraction(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { extraction_id, label, source_description, suggested_tokens, inventory, reference_pages, status } = args;
   if (!extraction_id) return errorResult("extraction_id is required.");
@@ -3051,6 +3328,16 @@ async function handleUpdateDesignExtraction(userId, args) {
   const existing = await sql`SELECT * FROM design_extractions WHERE id = ${extraction_id} LIMIT 1`;
   if (!existing.length) return errorResult(`Extraction ${extraction_id} not found.`);
   const cur = existing[0];
+
+  // Corruption defense: verify the parent brand belongs to the caller's
+  // tenant before mutating the extraction row.
+  if (cur.brand_id) {
+    try {
+      await assertBrandOwnership(sql, cur.brand_id, hubTenantId);
+    } catch (e) {
+      return errorResult(`Cannot update design extraction: ${e.message}`);
+    }
+  }
 
   // Merge tokens if provided (overlay, not replace).
   const mergedTokens = suggested_tokens
@@ -3132,7 +3419,7 @@ async function handleListDesignExtractions(userId, args) {
 
 // ─── Handler: apply_design_extraction ───────────────────────────────────────
 
-async function handleApplyDesignExtraction(userId, args) {
+async function handleApplyDesignExtraction(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { extraction_id, token_keys } = args;
   if (!extraction_id) return errorResult("extraction_id is required.");
@@ -3145,6 +3432,13 @@ async function handleApplyDesignExtraction(userId, args) {
   `;
   if (!rows.length) return errorResult(`Extraction ${extraction_id} not found.`);
   const { brand_id, suggested_tokens } = rows[0];
+
+  // Corruption defense: this writes to brands.tokens — gate on ownership.
+  try {
+    await assertBrandOwnership(sql, brand_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot apply design extraction: ${e.message}`);
+  }
   const suggestion = suggested_tokens || {};
 
   // Select which keys to apply.
@@ -4213,12 +4507,22 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
 // Idempotent: existing rows for the same (report_id, page_number) are
 // deleted first, then re-inserted. Safe for retries or patch-loops.
 
-async function handlePersistFreeformPages(userId, args) {
+async function handlePersistFreeformPages(userId, args, _event, hubTenantId) {
   const sql = getSql();
   const { report_id, pages, design_system_css, augmented_design_css_additions, units } = args || {};
 
   if (!report_id || !/^[0-9a-f-]{36}$/i.test(report_id)) {
     return errorResult("report_id is required (UUID).");
+  }
+
+  // Corruption defense: verify the report belongs to the caller's tenant
+  // before persisting any pages/modules/units against it. Without this,
+  // a leaked report UUID lets any caller wipe + replace another tenant's
+  // freeform pages (DELETE + INSERT below is destructive).
+  try {
+    await assertReportOwnership(sql, report_id, hubTenantId);
+  } catch (e) {
+    return errorResult(`Cannot persist pages: ${e.message}`);
   }
   if (!Array.isArray(pages) || pages.length === 0) {
     return errorResult("pages[] required and non-empty.");
@@ -4890,6 +5194,12 @@ export const handler = async (event) => {
 
   const hubUserId = auth.payload.sub ?? auth.payload.user_id ?? auth.payload.tenant_id;
   if (!hubUserId) return jsonResponse(401, { error: "JWT missing subject" });
+  // tenant_id claim is the corruption-defense source-of-truth. Hub mints
+  // JWTs with claims: { tenant_id, user_id }. Hardened handlers verify
+  // args.tenant_id (and brand ownership) against this — never trust the
+  // args alone. May be undefined for legacy / non-hub callers; those go
+  // through the degraded path in assertBrandOwnership().
+  const hubTenantId = typeof auth.payload.tenant_id === "string" ? auth.payload.tenant_id : null;
 
   let rpc;
   try { rpc = JSON.parse(event.body ?? "{}"); } catch { return rpcError(null, -32700, "Parse error"); }
@@ -4909,7 +5219,9 @@ export const handler = async (event) => {
     if (!fn) return rpcError(id, -32601, `Unknown tool: ${name}`);
 
     try {
-      return rpcResult(id, await fn(hubUserId, args, event));
+      // 4th arg = hubTenantId from JWT (corruption-defense source of truth).
+      // Legacy handlers ignore the extra param; hardened handlers use it.
+      return rpcResult(id, await fn(hubUserId, args, event, hubTenantId));
     } catch (e) {
       console.error(`[mcp-v2] ${toolName} failed:`, e);
       // Surface the underlying detail so the user sees something actionable
