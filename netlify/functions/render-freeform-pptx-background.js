@@ -52,8 +52,16 @@ async function callRenderService(path, body, tenantId) {
 
 async function getBlobStore(storeName, event, opts = {}) {
   const { connectLambda, getStore } = await import("@netlify/blobs");
+  // Best-effort: bind Lambda-v1 blobs context if the event carries one.
+  // In Netlify Functions v2 handlers the caller spreads a `Request` here
+  // which has no enumerable .blobs / .headers — connectLambda would throw
+  // on undefined inputs. That's fine: v2's runtime injects the blobs
+  // context via globalThis/NETLIFY_BLOBS_CONTEXT, so getStore({name})
+  // works without it.
+  if (event) {
+    try { connectLambda(event); } catch { /* v2 path: no Lambda event */ }
+  }
   try {
-    if (event) connectLambda(event);
     return getStore({ name: storeName, ...opts });
   } catch {
     const siteID = process.env.NETLIFY_SITE_ID;
