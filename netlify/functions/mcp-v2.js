@@ -1064,10 +1064,12 @@ async function handleCreate(userId, args, _event, hubTenantId) {
     return errorResult(`Brand ${brand_id} not found for tenant ${tenant_id}. Run workflow__brand_onboard first or call list_brands to see available brands.`);
   }
 
+  // created_by: user_id of the creator. Reports are user-scoped — each user
+  // sees only their own reports in list_reports. Sharing is opt-in (future).
   const rows = await sql`
-    INSERT INTO v2_reports (tenant_id, brand_id, template_id, title, document_type, status, page_format)
-    VALUES (${tenant_id}, ${brand_id}, ${template_id || null}, ${title}, ${document_type}, 'draft', ${pageFormatValue})
-    RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, created_at
+    INSERT INTO v2_reports (tenant_id, brand_id, template_id, title, document_type, status, page_format, created_by)
+    VALUES (${tenant_id}, ${brand_id}, ${template_id || null}, ${title}, ${document_type}, 'draft', ${pageFormatValue}, ${userId || null})
+    RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, created_by, created_at
   `;
   return textResult({ report_id: rows[0].id, ...rows[0], next_step: "Add modules with report2__add_module." });
 }
@@ -3173,15 +3175,20 @@ async function handleListReports(userId, args) {
   const cap = Math.min(Math.max(Number(limit) || 20, 1), 100);
   const tenantFilter = tenant_id || null;
   const brandFilter = brand_id || null;
+  // User-scoped reports — caller sees only their own. Sharing across users
+  // is opt-in (future). NULL userId would mean no filter; reject that
+  // explicitly since every authenticated MCP caller has a user_id claim.
+  const creatorFilter = userId || null;
 
   const rows = await sql`
     SELECT r.id, r.title, r.brand_id, r.tenant_id, r.template_id, r.page_format,
-           r.created_at, r.updated_at,
+           r.created_by, r.created_at, r.updated_at,
            (SELECT COUNT(*)::int FROM v2_report_modules m WHERE m.report_id = r.id) AS module_count,
            (SELECT COUNT(*)::int FROM v2_report_pages p WHERE p.report_id = r.id) AS page_count
     FROM v2_reports r
     WHERE (${tenantFilter}::uuid IS NULL OR r.tenant_id = ${tenantFilter}::uuid)
       AND (${brandFilter}::uuid IS NULL OR r.brand_id = ${brandFilter}::uuid)
+      AND (${creatorFilter}::uuid IS NULL OR r.created_by = ${creatorFilter}::uuid)
     ORDER BY r.updated_at DESC
     LIMIT ${cap}
   `;
