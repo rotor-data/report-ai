@@ -1560,6 +1560,74 @@ async function handleSaveBrandTokens(userId, args, _event, hubTenantId) {
     after: { tokens: rows[0].tokens, merged_keys: Object.keys(tokens) },
   });
 
+  // Best-effort mirror to brand-os visual profile so the two stores converge.
+  // The hub uses brand-os as the visual-identity source-of-truth, but Claude
+  // writes colors here first via report2__save_brand_tokens. Without this
+  // mirror the dashboard's brand book and the report renderer drift apart.
+  //
+  // Auth: brand-os expects a platform API key (`Authorization: Bearer`) plus
+  // an `X-Tenant-Id` header naming the tenant to write into; the platform key
+  // role grants admin access on the resolved tenant (see brand-os v1.ts
+  // getPlatformAuth + extractTenantSelector). If `BRAND_OS_PLATFORM_API_KEY`
+  // is not configured we silently skip — the primary write already succeeded.
+  //
+  // Fire-and-forget: we don't await the result. A slow or failing brand-os
+  // must never block the caller's tools/call response (Netlify 26s budget).
+  try {
+    const mergedTokens = rows[0].tokens || {};
+    const colorMap = {
+      primary: mergedTokens.primary_color || mergedTokens.primary,
+      secondary: mergedTokens.secondary_color || mergedTokens.secondary,
+      accent: mergedTokens.accent_color || mergedTokens.accent,
+      surface: mergedTokens.surface_color || mergedTokens.surface,
+      bg_alt: mergedTokens.bg_alt_color || mergedTokens.bg_alt,
+      text: mergedTokens.text_color || mergedTokens.text,
+      bg: mergedTokens.bg_color || mergedTokens.bg,
+    };
+    // Drop undefined keys so we don't blank out brand-os fields the renderer
+    // hasn't touched. Empty payload → nothing worth posting.
+    const colors = {};
+    for (const [k, v] of Object.entries(colorMap)) {
+      if (typeof v === "string" && v.trim()) colors[k] = v;
+    }
+
+    const platformKey = process.env.BRAND_OS_PLATFORM_API_KEY;
+    const brandOsBase = process.env.BRAND_OS_BASE_URL || "https://rotor-brand-os.netlify.app";
+    const tenantId = rows[0].tenant_id;
+
+    if (!platformKey) {
+      console.warn("[brand-os-mirror] BRAND_OS_PLATFORM_API_KEY not configured, skipping mirror-write");
+    } else if (!tenantId) {
+      console.warn("[brand-os-mirror] no tenant_id on brand row, skipping mirror-write");
+    } else if (Object.keys(colors).length === 0) {
+      // Nothing color-shaped to mirror — fonts/spacing are out of scope here.
+    } else {
+      Promise.resolve().then(async () => {
+        try {
+          const res = await fetch(`${brandOsBase}/v1/brand/visual`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${platformKey}`,
+              "X-Tenant-Id": tenantId,
+            },
+            body: JSON.stringify({ brand_id, colors }),
+          });
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            console.warn(`[brand-os-mirror] non-ok ${res.status}: ${txt.slice(0, 200)}`);
+          }
+        } catch (e) {
+          console.warn(`[brand-os-mirror] error: ${e?.message || e}`);
+        }
+      });
+    }
+  } catch (e) {
+    // Mirror setup itself threw — defensive guard so the primary response
+    // is never affected.
+    console.warn(`[brand-os-mirror] setup error: ${e?.message || e}`);
+  }
+
   return textResult({ brand_id: rows[0].id, updated: true, merged_keys: Object.keys(tokens) });
 }
 
