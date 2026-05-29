@@ -8,12 +8,43 @@
  *   Modular report builder with column-based layouts,
  *   Python render service for HTML→PDF, and Netlify Blobs for storage.
  */
+// ─── Cold-start profiler ────────────────────────────────────────────────────
+// Logs once per Lambda cold start. Lightweight (a few Date.now() calls);
+// safe to leave in. Helps diagnose slow imports without keep-warm pings.
+const __coldStart = Date.now();
+const __coldMarks = [['module-start', 0]];
+function __mark(label) { __coldMarks.push([label, Date.now() - __coldStart]); }
 import { randomUUID, randomBytes, createHmac } from "node:crypto";
+__mark('node:crypto');
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
+__mark('verify-hub-jwt');
 import { getSql } from "./db.js";
+__mark('db');
 import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
+__mark('smyra-render-jwt');
 import { createEditorToken } from "./editor-token.js";
-import { validateUnitsOnly } from "../../src/lib/validate-units-only.js";
+__mark('editor-token');
+// validateUnitsOnly pulls in node-html-parser → he + css-select + dom-serializer
+// + entities + nth-check + domhandler (~250 KB transitive). Only called inside
+// persist_freeform_pages-style handlers, not on tools/list or initialize. Lazy-
+// load to keep the cold-start init path light.
+let __validateUnitsOnlyPromise = null;
+async function validateUnitsOnly(...args) {
+  if (!__validateUnitsOnlyPromise) {
+    __validateUnitsOnlyPromise = import("../../src/lib/validate-units-only.js");
+  }
+  const mod = await __validateUnitsOnlyPromise;
+  return mod.validateUnitsOnly(...args);
+}
+
+let __coldLogged = false;
+function __logColdStart() {
+  if (__coldLogged) return;
+  __coldLogged = true;
+  const totalInit = __coldMarks[__coldMarks.length - 1]?.[1] ?? 0;
+  const reqAt = Date.now() - __coldStart;
+  console.log('[cold-start] init breakdown:', __coldMarks, `total_init=${totalInit}ms first_req_at=${reqAt}ms`);
+}
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -4313,7 +4344,7 @@ async function handleRenderFreeformThumbnails(userId, args, event) {
   const unitsModeActive = incomingUnits.length > 0 || pagesReferenceUnits;
   if (unitsModeActive) {
     for (const p of pages) {
-      const v = validateUnitsOnly(p.html, validationMode);
+      const v = await validateUnitsOnly(p.html, validationMode);
       if (!v.valid) {
         const summary = v.violations.slice(0, 10).map(
           (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`
@@ -4652,7 +4683,7 @@ async function handlePersistFreeformPages(userId, args, _event, hubTenantId) {
 
   if (unitsModeActive) {
     for (const p of pages) {
-      const v = validateUnitsOnly(p.html, "production");
+      const v = await validateUnitsOnly(p.html, "production");
       if (!v.valid) {
         const summary = v.violations.slice(0, 10).map(
           (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`
@@ -4895,7 +4926,7 @@ async function handleRenderFreeformPdf(userId, args, event) {
   const unitsModeActive = units.length > 0 || pagesReferenceUnits;
   if (unitsModeActive) {
     for (const p of payload.pages) {
-      const v = validateUnitsOnly(p.html, "production");
+      const v = await validateUnitsOnly(p.html, "production");
       if (!v.valid) {
         const summary = v.violations.slice(0, 10).map(
           (x) => `  - <${x.tag}> "${x.sample.replace(/"/g, '\\"')}"`
@@ -5246,6 +5277,7 @@ const HANDLERS = {
 // ─── Main handler ───────────────────────────────────────────────────────────
 
 export const handler = async (event) => {
+  __logColdStart();
   if (event.httpMethod !== "POST") return jsonResponse(405, { error: "Method Not Allowed" });
 
   const token = readBearerToken(event);
