@@ -551,12 +551,26 @@ const TOOLS = [
   },
   {
     name: "get_brand_tokens",
-    description: "Get brand design tokens.",
+    description: "Fetch a brand's design tokens (colors, typography, spacing) used by the render pipeline. Returns the full tokens JSON plus the brand's id, tenant_id and name. Use before rendering to inspect brand styling or before save_brand_tokens to merge changes. Svenska: hämta varumärkets designtokens (färger, typsnitt, mellanrum).",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { brand_id: { type: "string" } },
       required: ["brand_id"],
+    },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        id: { type: "string" },
+        tenant_id: { type: "string" },
+        name: { type: "string" },
+        tokens: {
+          type: "object",
+          additionalProperties: true,
+          description: "Brand design tokens. Common keys include color.primary, color.accent, color.background, color.foreground, font.heading, font.body, plus brand-specific extensions.",
+        },
+      },
     },
   },
   {
@@ -624,7 +638,7 @@ const TOOLS = [
   // ── Brands ──
   {
     name: "list_brands",
-    description: "List brands belonging to a tenant. Used by the workflow runner to resolve a brand_id at workflow start.",
+    description: "List brands belonging to a tenant. Used by the workflow runner to resolve a brand_id at workflow start. Returns max 50 brands; if has_more is true the tenant has more than 50 brands (unusual — flag for investigation).",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -632,6 +646,28 @@ const TOOLS = [
         tenant_id: { type: "string", description: "Tenant UUID to filter by" },
       },
       required: ["tenant_id"],
+    },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        brands: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              id: { type: "string" },
+              tenant_id: { type: "string" },
+              name: { type: "string" },
+              tokens: { type: "object", additionalProperties: true, description: "Brand design tokens (colors, fonts, spacing). Shape varies per brand." },
+              created_at: { type: "string" },
+            },
+          },
+        },
+        count: { type: "number" },
+        has_more: { type: "boolean" },
+      },
     },
   },
   {
@@ -705,14 +741,40 @@ const TOOLS = [
   },
   {
     name: "list_blueprints",
-    description: "List alpha-v3 blueprints visible to the caller (brand-owned + Smyra templates). Returns only rows with a design_system_css payload — legacy blueprints are excluded. Filter by document_type or style.",
+    description: "List alpha-v3 blueprints visible to the caller (brand-owned + Smyra templates). Returns only rows with a design_system_css payload — legacy blueprints are excluded. Filter by document_type or style. Returns max 50 rows; narrow filter (brand_id, document_type, style) if has_more is true.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
         brand_id: { type: "string", description: "Include blueprints owned by this brand. Omit to see only Smyra-visibility blueprints." },
-        document_type: { type: "string", description: "Filter: 'quarterly' | 'annual' | 'whitepaper' | 'case_study' | 'pitch' | 'newsletter' | 'research_brief' | 'product_spec' | 'esg_report' | 'investor_update'" },
-        style: { type: "string", description: "Filter by style_direction, e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate', 'Technical', 'Expressive', 'Hero'" },
+        document_type: { type: "string", description: "Filter: 'quarterly' | 'annual' | 'whitepaper' | 'case_study' | 'pitch' | 'newsletter' | 'research_brief' | 'product_spec' | 'esg_report' | 'investor_update'", examples: ["quarterly", "annual", "whitepaper", "case_study", "pitch"] },
+        style: { type: "string", description: "Filter by style_direction, e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate', 'Technical', 'Expressive', 'Hero'", examples: ["Editorial", "Minimal", "Dense", "Corporate"] },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        blueprints: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              id: { type: "string" },
+              name: { type: "string" },
+              visibility: { type: "string", enum: ["smyra", "tenant", "brand"] },
+              style_direction: { type: ["string", "null"] },
+              module_count: { type: ["number", "null"] },
+              doctype_hint: { type: ["string", "null"] },
+              cover_thumbnail_url: { type: ["string", "null"] },
+              gallery_url: { type: ["string", "null"] },
+              created_at: { type: "string" },
+            },
+          },
+        },
+        count: { type: "number" },
+        has_more: { type: "boolean", description: "True when more than 50 blueprints match — narrow filters to see them." },
       },
     },
   },
@@ -725,6 +787,28 @@ const TOOLS = [
       required: ["blueprint_id"],
       properties: {
         blueprint_id: { type: "string", description: "UUID of the blueprint to fetch." },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        id: { type: "string" },
+        name: { type: "string" },
+        visibility: { type: "string", enum: ["smyra", "tenant", "brand"] },
+        style_direction: { type: ["string", "null"] },
+        design_system_css: { type: "string", description: "Full CSS design system (tokens + classes)." },
+        sample_pages_html: {
+          type: "array",
+          description: "Array of sample-page entries. Each entry is either a plain HTML string (legacy) or a {html, block_type} object.",
+          items: {},
+        },
+        design_rules: { type: ["string", "null"] },
+        doctype_hint: { type: ["string", "null"] },
+        reference_source: { type: ["string", "null"] },
+        module_count: { type: ["number", "null"] },
+        gallery_url: { type: ["string", "null"] },
+        cover_thumbnail_url: { type: ["string", "null"] },
       },
     },
   },
@@ -806,7 +890,7 @@ const TOOLS = [
   },
   {
     name: "list_components",
-    description: "List components in a brand's component library. Returns all named variants per component_type. Filter by component_type to narrow results. Optionally include public components shared by other brands. Pass report_id to also include report-scoped variants.",
+    description: "List components in a brand's component library. Returns all named variants per component_type. Filter by component_type to narrow results. Optionally include public components shared by other brands. Pass report_id to also include report-scoped variants. Returns max 50 rows; narrow filter (component_type, variant_name) if has_more is true.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -819,6 +903,34 @@ const TOOLS = [
         report_id: { type: "string", description: "If set, results include brand-level variants (report_id IS NULL) AND variants scoped to this report_id. Report-scoped variants appear AFTER brand-level so downstream 'last wins by (type+variant)' logic prefers them." },
       },
       required: ["brand_id"],
+    },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        components: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              id: { type: "string" },
+              brand_id: { type: "string" },
+              component_type: { type: "string" },
+              variant_name: { type: ["string", "null"] },
+              label: { type: ["string", "null"] },
+              is_default: { type: "boolean" },
+              splittable: { type: ["boolean", "null"] },
+              status: { type: "string" },
+              page_format: { type: "string" },
+              report_id: { type: ["string", "null"] },
+              updated_at: { type: "string" },
+            },
+          },
+        },
+        count: { type: "number" },
+        has_more: { type: "boolean", description: "True when more than 50 components match — narrow by component_type or variant_name." },
+      },
     },
   },
   {
