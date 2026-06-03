@@ -291,7 +291,7 @@ const TOOLS = [
   // ── CRUD ──
   {
     name: "create",
-    description: "Create a new v2 report.",
+    description: "Create a new v2 report row (skapa rapport). Requires tenant_id, brand_id, title and document_type. Most callers should use smyra_report_create instead — this is the low-level primitive used by tests, scripts, and the workflow engine to bootstrap an empty report before pages are composed.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -299,9 +299,9 @@ const TOOLS = [
         tenant_id: { type: "string", description: "Tenant UUID" },
         brand_id: { type: "string", description: "Brand UUID" },
         title: { type: "string" },
-        document_type: { type: "string" },
+        document_type: { type: "string", description: "Document type key (e.g. quarterly, annual_report, pitch, case_study, whitepaper, newsletter). Drives stub plan + design defaults.", examples: ["quarterly", "annual_report", "pitch", "case_study", "whitepaper", "newsletter"] },
         template_id: { type: "string", description: "Optional template ID" },
-        page_format: { type: "string", description: "Page format: a4_portrait (default) | a4_landscape | presentation | us_letter | square | digital" },
+        page_format: { type: "string", description: "Page format: a4_portrait (default) | a4_landscape | presentation | us_letter | square | digital", examples: ["a4_portrait", "a4_landscape", "presentation", "us_letter", "square", "digital"] },
       },
       required: ["tenant_id", "brand_id", "title", "document_type"],
     },
@@ -497,7 +497,7 @@ const TOOLS = [
           description: "The report's design_system_css. Injected as document_css into each rendered page.",
         },
         brand_id: { type: "string", description: "Brand UUID for token resolution + blob-scoping." },
-        page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait." },
+        page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait.", examples: ["a4_portrait", "a4_landscape", "presentation", "us_letter", "square", "digital"] },
         return_base64: { type: "boolean", description: "If true, each returned thumbnail also carries png_base64 alongside the URL. Used by workflow pauses that want to attach the image as an MCP image content block for Claude's multimodal view." },
         thumbnail_dpi: { type: "number", description: "When return_base64 is true, rasterize at this DPI instead of the default 150 so the base64 payload stays under MCP response-size limits. Recommended: 72 for design review, 48 for dense multi-page overviews. Ignored when return_base64 is false." },
         units: {
@@ -529,7 +529,7 @@ const TOOLS = [
   },
   {
     name: "get_editor_url",
-    description: "Get a signed editor URL for the visual report editor.",
+    description: "Mint a signed URL to the visual report editor (öppna editor) for a given report_id. The URL embeds a short-lived editor JWT so the SPA can call /api/v2 endpoints. Returns { editor_url, expires_at }. Use this whenever the user wants to manually edit a rendered report.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -578,7 +578,7 @@ const TOOLS = [
   },
   {
     name: "upload_font",
-    description: "Upload a font file for a brand.",
+    description: "Upload a brand font file (woff2/woff/ttf/otf) for use in PDF rendering and the editor (ladda upp typsnitt). Stored in Netlify Blobs, referenced from brand_tokens.fonts. Required: brand_id, family, weight, style, format, data_base64. One call per (family, weight, style) variant — call again to add italic or bold.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -595,7 +595,7 @@ const TOOLS = [
   },
   {
     name: "upload_logo",
-    description: "Upload a logo variant for a brand.",
+    description: "Upload a brand logo variant (ladda upp logotyp) — primary, monochrome, icon, etc — as SVG, PNG, or JPG. Stored per (brand_id, variant) so the render pipeline can pick the right form for cover, header, watermark contexts. Required: brand_id, variant, format, data_base64.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -610,7 +610,7 @@ const TOOLS = [
   },
   {
     name: "upload_asset",
-    description: "Upload an image asset (photo, icon, SVG) for a tenant.",
+    description: "Upload an image asset (photo, icon, SVG) into a tenant's asset library (ladda upp bild). Returned asset_id can be referenced from report modules and components. Use list_assets to discover existing assets before re-uploading. Required: tenant_id, filename, mime_type, data_base64.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -691,7 +691,7 @@ const TOOLS = [
   // ── Templates + Blueprints ──
   {
     name: "list_templates",
-    description: "List available report templates.",
+    description: "List available report templates (lista mallar) — the legacy template_id rows used by build_pages / render_pdf. For alpha-v3 design-language blueprints used by smyra_report_create, see list_blueprints instead. Returns id, name, description, supported document_types.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: "object", properties: {} },
   },
@@ -702,7 +702,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        document_type: { type: "string", description: "Document type key (e.g. quarterly, annual_report, pitch, case_study)" },
+        document_type: { type: "string", description: "Document type key (e.g. quarterly, annual_report, pitch, case_study)", examples: ["quarterly", "annual_report", "pitch", "case_study", "whitepaper", "newsletter"] },
       },
       required: ["document_type"],
     },
@@ -735,7 +735,7 @@ const TOOLS = [
         design_system_css: { type: "string", description: "Full CSS design system — custom properties, base resets, component classes." },
         sample_pages_html: { type: "array", items: {}, description: "Array of sample pages. Each entry is either a plain HTML string (legacy) or a {html, block_type} object where block_type is 'page' (fixed canvas) or 'chapter' (Chromium paginates body prose naturally). Stored as JSONB; readers must accept both shapes." },
         design_rules: { type: "string", description: "Plain-text art-direction rules describing when and how to use this design system." },
-        doctype_hint: { type: "string", description: "Document type hint, e.g. 'quarterly', 'annual'. Stored in document_type column." },
+        doctype_hint: { type: "string", description: "Document type hint, e.g. 'quarterly', 'annual'. Stored in document_type column.", examples: ["quarterly", "annual", "whitepaper", "case_study", "pitch", "newsletter"] },
         reference_source: { type: "string", enum: ["extracted_from_pdf", "user_created", "starter_pack"], description: "How the blueprint was produced." },
         module_count: { type: "number", description: "Approximate number of report modules this blueprint is designed for." },
         source_report_id: { type: "string", description: "Audit trail: the report_id this blueprint was extracted from (if any)." },
@@ -822,8 +822,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        document_type: { type: "string", description: "e.g. 'quarterly', 'annual', 'whitepaper'" },
-        style: { type: "string", description: "e.g. 'Editorial', 'Minimal'" },
+        document_type: { type: "string", description: "e.g. 'quarterly', 'annual', 'whitepaper'", examples: ["quarterly", "annual", "whitepaper", "case_study", "pitch"] },
+        style: { type: "string", description: "e.g. 'Editorial', 'Minimal'", examples: ["Editorial", "Minimal", "Dense", "Corporate", "Technical", "Expressive", "Hero"] },
       },
     },
   },
@@ -865,7 +865,7 @@ const TOOLS = [
       properties: {
         component_id: { type: "string", description: "Existing component ID to update (omit for new component)" },
         brand_id: { type: "string" },
-        component_type: { type: "string", description: "Canonical component type id (validated in application code, DB constraint relaxed)." },
+        component_type: { type: "string", description: "Canonical component type id (validated in application code, DB constraint relaxed). Common: heading, body_text, kpi_grid, pull_quote, chart, photo, cover, footer, divider.", examples: ["heading", "body_text", "kpi_grid", "pull_quote", "chart", "photo", "cover", "footer", "divider"] },
         variant_name: { type: "string", description: "Named variant of this component_type (e.g. 'Bold', 'Minimal', 'Editorial'). Defaults to 'Default'. Two components with the same (component_type, variant_name) for the same brand are NOT allowed — use component_id to update existing." },
         label: { type: "string", description: "Human-readable name, e.g. 'KPI-grupp med accent-border'" },
         html_template: { type: "string", description: "HTML with {{PLACEHOLDER}} tokens. Use component-name-prefixed CSS classes (e.g. '.fs-blocks .val', '.heading-split __word') — NOT inline styles. One stylesheet per document at render time, so classes must not collide with other components." },
@@ -899,7 +899,7 @@ const TOOLS = [
       type: "object",
       properties: {
         brand_id: { type: "string" },
-        component_type: { type: "string", description: "Filter by type (optional)" },
+        component_type: { type: "string", description: "Filter by type (optional)", examples: ["heading", "body_text", "kpi_grid", "pull_quote", "chart", "photo", "cover"] },
         variant_name: { type: "string", description: "Filter to one specific variant (optional)" },
         include_public: { type: "boolean", description: "Also include is_public=true components from other brands" },
         extraction_id: { type: "string", description: "Filter to one specific extraction session" },
@@ -1079,7 +1079,7 @@ const TOOLS = [
   },
   {
     name: "list_design_extractions",
-    description: "List all design_extractions for a brand.",
+    description: "List design_extractions rows for a brand (lista designextraktioner) — reference-PDF analyses that captured colors, fonts, and component inventories. Use to find an extraction_id to feed into apply_design_extraction or save_component(extraction_id=...). Filter by status.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -1105,7 +1105,7 @@ const TOOLS = [
   },
   {
     name: "get_component",
-    description: "Get a single component with its full HTML template.",
+    description: "Fetch one brand_components row with its full html_template, css_template, placeholder_schema and metadata (hämta komponent). Use when list_components returned a candidate and you need the full body to render or edit. For previewing without saving, see render_component_preview.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
