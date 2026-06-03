@@ -626,7 +626,7 @@ const TOOLS = [
 
   {
     name: "list_assets",
-    description: "List uploaded image assets for a tenant. Returns asset_id, filename, mime_type, asset_class (photo/icon/svg), and storage_url. Use to discover available images for placing in report components.",
+    description: "List uploaded image assets for a tenant. Returns asset_id, filename, mime_type, asset_class (photo/icon/svg), and storage_url. Use to discover available images for placing in report components. Returns max 50 rows; narrow with asset_class if has_more is true.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -993,14 +993,14 @@ const TOOLS = [
   },
   {
     name: "list_reports",
-    description: "List existing v2 reports for a tenant or brand. Use when the user wants to reopen, re-render, or edit a previous report. Returns id, title, brand_id, tenant_id, template_id, updated_at, plus module count.",
+    description: "List existing v2 reports for a tenant or brand. Use when the user wants to reopen, re-render, or edit a previous report. Returns id, title, brand_id, tenant_id, template_id, updated_at, plus module count. Returns max 50 rows; narrow filter (brand_id) if has_more is true.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
         tenant_id: { type: "string", description: "Filter by tenant (optional)" },
         brand_id: { type: "string", description: "Filter by brand (optional)" },
-        limit: { type: "number", description: "Max rows (default 20, max 100)" },
+        limit: { type: "number", description: "Max rows (default 50, hard cap 50). Listed for compat — pagination is filter-narrowing only." },
       },
     },
   },
@@ -1991,16 +1991,20 @@ async function handleListAssets(userId, args) {
       SELECT id, filename, mime_type, asset_class, storage_url, size_bytes, created_at
       FROM tenant_assets WHERE tenant_id = ${tenant_id} AND asset_class = ${asset_class}
       ORDER BY created_at DESC
+      LIMIT 51
     `;
   } else {
     rows = await sql`
       SELECT id, filename, mime_type, asset_class, storage_url, size_bytes, created_at
       FROM tenant_assets WHERE tenant_id = ${tenant_id}
       ORDER BY asset_class, created_at DESC
+      LIMIT 51
     `;
   }
 
-  return textResult({ assets: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const assets = has_more ? rows.slice(0, 50) : rows;
+  return textResult({ assets, count: assets.length, has_more });
 }
 
 // ─── Handler: list_templates ────────────────────────────────────────────────
@@ -2010,8 +2014,11 @@ async function handleListTemplates(userId, args) {
   const rows = await sql`
     SELECT id, name, description, document_types, created_at
     FROM report_templates ORDER BY name
+    LIMIT 51
   `;
-  return textResult({ templates: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const templates = has_more ? rows.slice(0, 50) : rows;
+  return textResult({ templates, count: templates.length, has_more });
 }
 
 async function handleGetStubPlan(userId, args) {
@@ -2059,9 +2066,12 @@ async function handleListBrands(userId, args) {
     FROM brands
     WHERE tenant_id = ${tenant_id}
     ORDER BY created_at ASC
+    LIMIT 51
   `;
-  console.log(`[handleListBrands] tenant=${tenant_id} returned ${rows.length} brands`);
-  return textResult({ brands: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const brands = has_more ? rows.slice(0, 50) : rows;
+  console.log(`[handleListBrands] tenant=${tenant_id} returned ${brands.length} brands (has_more=${has_more})`);
+  return textResult({ brands, count: brands.length, has_more });
 }
 
 // ─── Handler: create_brand ───────────────────────────────────────────────────
@@ -2611,7 +2621,7 @@ async function handleListBlueprints(userId, args) {
       ORDER BY
         CASE visibility WHEN 'brand' THEN 0 WHEN 'tenant' THEN 1 WHEN 'smyra' THEN 2 END,
         updated_at DESC
-      LIMIT 100
+      LIMIT 51
     `;
   } else {
     rows = await sql`
@@ -2623,14 +2633,20 @@ async function handleListBlueprints(userId, args) {
         AND (${document_type || null}::text IS NULL OR document_type = ${document_type || null})
         AND (${style || null}::text IS NULL OR style_direction = ${style || null})
       ORDER BY updated_at DESC
-      LIMIT 100
+      LIMIT 51
     `;
   }
 
-  const blueprints = rows.map(shapeBlueprintListRow);
+  // LIMIT 51 lets us detect overflow without an extra COUNT. has_more is
+  // advisory only — narrow filters (brand_id, document_type, style) to see
+  // the rest. No cursor/offset in v1.
+  const has_more = rows.length > 50;
+  const visible = has_more ? rows.slice(0, 50) : rows;
+  const blueprints = visible.map(shapeBlueprintListRow);
   return textResult({
     blueprints,
     count: blueprints.length,
+    has_more,
     filters: { brand_id, document_type, style },
   });
 }
@@ -3017,9 +3033,12 @@ async function handleListComponents(userId, args) {
       )
       AND html_template IS NOT NULL AND trim(html_template) != ''
     ORDER BY component_type, report_id_sort, is_default DESC, variant_name, updated_at DESC
+    LIMIT 51
   `;
 
-  return textResult({ components: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const components = has_more ? rows.slice(0, 50) : rows;
+  return textResult({ components, count: components.length, has_more });
 }
 
 // ─── Handler: fork_component ────────────────────────────────────────────────
@@ -3473,7 +3492,9 @@ async function handleSaveDocumentCss(userId, args, _event, hubTenantId) {
 async function handleListReports(userId, args) {
   const sql = getSql();
   const { tenant_id, brand_id, limit } = args || {};
-  const cap = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  // Hard cap at 50 — see "Pagination" note in tools/list description.
+  // The legacy `limit` arg is still accepted but clamped to 50.
+  const cap = Math.min(Math.max(Number(limit) || 50, 1), 50);
   const tenantFilter = tenant_id || null;
   const brandFilter = brand_id || null;
   // User-scoped reports — caller sees only their own. Sharing across users
@@ -3481,6 +3502,8 @@ async function handleListReports(userId, args) {
   // explicitly since every authenticated MCP caller has a user_id claim.
   const creatorFilter = userId || null;
 
+  // Fetch cap+1 to detect overflow without an extra COUNT.
+  const fetchLimit = cap + 1;
   const rows = await sql`
     SELECT r.id, r.title, r.brand_id, r.tenant_id, r.template_id, r.page_format,
            r.created_by, r.created_at, r.updated_at,
@@ -3491,9 +3514,11 @@ async function handleListReports(userId, args) {
       AND (${brandFilter}::uuid IS NULL OR r.brand_id = ${brandFilter}::uuid)
       AND (${creatorFilter}::uuid IS NULL OR r.created_by = ${creatorFilter}::uuid)
     ORDER BY r.updated_at DESC
-    LIMIT ${cap}
+    LIMIT ${fetchLimit}
   `;
-  return textResult({ reports: rows, count: rows.length });
+  const has_more = rows.length > cap;
+  const reports = has_more ? rows.slice(0, cap) : rows;
+  return textResult({ reports, count: reports.length, has_more });
 }
 
 // ─── Handler: delete_component ──────────────────────────────────────────────
@@ -3720,9 +3745,12 @@ async function handleListDesignExtractions(userId, args) {
     WHERE brand_id = ${brand_id}
       AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
     ORDER BY updated_at DESC
+    LIMIT 51
   `;
 
-  return textResult({ extractions: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const extractions = has_more ? rows.slice(0, 50) : rows;
+  return textResult({ extractions, count: extractions.length, has_more });
 }
 
 // ─── Handler: apply_design_extraction ───────────────────────────────────────
