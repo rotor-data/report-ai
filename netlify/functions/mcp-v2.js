@@ -1633,25 +1633,23 @@ async function handleSaveBrandTokens(userId, args, _event, hubTenantId) {
     } else if (Object.keys(colors).length === 0) {
       // Nothing color-shaped to mirror — fonts/spacing are out of scope here.
     } else {
-      Promise.resolve().then(async () => {
-        try {
-          const res = await fetch(`${brandOsBase}/v1/brand/visual`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${platformKey}`,
-              "X-Tenant-Id": tenantId,
-            },
-            body: JSON.stringify({ brand_id, colors }),
-          });
-          if (!res.ok) {
-            const txt = await res.text().catch(() => "");
-            console.warn(`[brand-os-mirror] non-ok ${res.status}: ${txt.slice(0, 200)}`);
-          }
-        } catch (e) {
-          console.warn(`[brand-os-mirror] error: ${e?.message || e}`);
-        }
-      });
+      // Trigger a Netlify Background Function so the fan-out runs on its
+      // OWN Lambda budget — the foreground request returns immediately.
+      // The previous `Promise.resolve().then(() => fetch(...))` pattern
+      // pinned this Lambda (callbackWaitsForEmptyEventLoop=true default)
+      // until brand-os responded, regressing concurrency under load.
+      const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "https://rotor-report-ai.netlify.app";
+      const triggerSecret = process.env.INTERNAL_TRIGGER_SECRET || "";
+      // brandOsBase preserved for forwarded env continuity, brand-os BG reads its own env.
+      void brandOsBase;
+      fetch(`${siteUrl}/.netlify/functions/brand-os-mirror-background`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-trigger-secret": triggerSecret,
+        },
+        body: JSON.stringify({ tenant_id: tenantId, brand_id, colors }),
+      }).catch((err) => console.warn("[save_brand_tokens] brand-os mirror background trigger failed:", err?.message || err));
     }
   } catch (e) {
     // Mirror setup itself threw — defensive guard so the primary response
@@ -2161,15 +2159,26 @@ async function handleSaveBlueprint(userId, args, _event, hubTenantId) {
     ? firstEntry
     : (firstEntry && typeof firstEntry === "object" && typeof firstEntry.html === "string" ? firstEntry.html : "");
   if (brand_id && firstHtml.length > 0) {
-    Promise.resolve().then(() =>
-      renderBlueprintCover(sql, {
-        blueprintId,
-        sampleHtml: firstHtml,
-        designSystemCss: design_system_css,
-        brandId: brand_id,
-      })
-    ).catch((err) =>
-      console.error(`[blueprint_cover] ${blueprintId} background render failed:`, err?.message || err)
+    // Detached to Netlify Background Function so Chromium rasterise
+    // (5–15s) runs on its OWN Lambda budget. Previously the inline
+    // `Promise.resolve().then(...)` pinned the foreground Lambda
+    // until rasterisation finished.
+    const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "https://rotor-report-ai.netlify.app";
+    const triggerSecret = process.env.INTERNAL_TRIGGER_SECRET || "";
+    fetch(`${siteUrl}/.netlify/functions/blueprint-cover-background`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-trigger-secret": triggerSecret,
+      },
+      body: JSON.stringify({
+        blueprint_id: blueprintId,
+        sample_html: firstHtml,
+        design_system_css,
+        brand_id,
+      }),
+    }).catch((err) =>
+      console.error(`[blueprint_cover] ${blueprintId} background trigger failed:`, err?.message || err)
     );
   }
 
@@ -2181,16 +2190,25 @@ async function handleSaveBlueprint(userId, args, _event, hubTenantId) {
   // included (no brand_id required, the gallery uses the blueprint's own
   // CSS without per-brand fonts so the grid still renders cleanly).
   if (sample_pages_html.length > 0) {
-    Promise.resolve().then(() =>
-      renderBlueprintGallery(sql, {
-        blueprintId,
+    // Detached to Netlify Background Function so the sample-grid render
+    // runs on its OWN Lambda budget.
+    const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "https://rotor-report-ai.netlify.app";
+    const triggerSecret = process.env.INTERNAL_TRIGGER_SECRET || "";
+    fetch(`${siteUrl}/.netlify/functions/blueprint-gallery-background`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-trigger-secret": triggerSecret,
+      },
+      body: JSON.stringify({
+        blueprint_id: blueprintId,
         samples: sample_pages_html,
-        designSystemCss: design_system_css,
-        brandId: brand_id || null,
-        tenantId: tenant_id || null,
-      })
-    ).catch((err) =>
-      console.error(`[blueprint_gallery] ${blueprintId} background render failed:`, err?.message || err)
+        design_system_css,
+        brand_id: brand_id || null,
+        tenant_id: tenant_id || null,
+      }),
+    }).catch((err) =>
+      console.error(`[blueprint_gallery] ${blueprintId} background trigger failed:`, err?.message || err)
     );
   }
 
