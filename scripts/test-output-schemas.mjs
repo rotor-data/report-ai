@@ -25,6 +25,7 @@ const repoRoot = join(__dirname, '..');
 // it only reads env vars inside the handler, not at import time. Still safe
 // to set a placeholder to avoid surprise side-effects from any future
 // module-scope reads.
+if (!process.env.HUB_JWT_ISSUER) process.env.HUB_JWT_ISSUER = 'hub.rotor-platform.com';
 if (!process.env.HUB_JWT_PUBLIC_KEY_PEM && (process.env.TEST_JWT_PRIVATE_KEY_PEM ?? process.env.HUB_JWT_PRIVATE_KEY_PEM)) {
   try {
     const pem = (process.env.TEST_JWT_PRIVATE_KEY_PEM ?? process.env.HUB_JWT_PRIVATE_KEY_PEM).replace(/\\n/g, '\n');

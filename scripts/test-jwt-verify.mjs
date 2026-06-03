@@ -60,6 +60,13 @@ if (!privatePemRaw) {
 }
 const privatePem = normalizePem(privatePemRaw);
 
+// Normalise HUB_JWT_ISSUER before handler loads (see test-mcp-handshake
+// for full rationale — mint uses ||, server uses ??, empty-string GH-
+// secret causes "Invalid issuer" mismatch).
+if (!process.env.HUB_JWT_ISSUER) {
+  process.env.HUB_JWT_ISSUER = 'hub.rotor-platform.com';
+}
+
 // Derive + inject public PEM
 if (!process.env.HUB_JWT_PUBLIC_KEY_PEM) {
   try {
