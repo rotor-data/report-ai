@@ -42,25 +42,24 @@ function collectSqlFiles() {
   return files;
 }
 
-// Pre-Layer-1 migrations are grandfathered — they've been applied to
-// prod many deploys ago and rewriting them retroactively would diff
-// against `_migrations.checksum`. The audit applies only to migrations
-// added from 039 onwards (i.e. anything that lands AFTER this gate is
-// in place).
-const GRANDFATHER_CUTOFF = 39; // first migration number the audit enforces
-
-function migrationNumber(filename) {
-  const m = filename.match(/(\d+)/);
-  return m ? parseInt(m[1], 10) : Infinity;
-}
+// Explicit allowlist of migration filenames that predate the idempotency
+// convention. We bypass the IF NOT EXISTS check ONLY for these — they've
+// been applied to prod many deploys ago and rewriting them would diff
+// against `_migrations.checksum`. ALL OTHER migrations (existing + future)
+// are audited by default — no number-based cutoff that silently
+// grandfathers future migrations into the dead-letter zone.
+const LEGACY_ALLOWLIST = new Set([
+  '001_initial.sql',
+  '002_document_type_templates.sql',
+]);
 
 const allFiles = collectSqlFiles();
 const files = allFiles.filter((f) => {
   const base = f.split('/').pop();
-  return migrationNumber(base) >= GRANDFATHER_CUTOFF;
+  return !LEGACY_ALLOWLIST.has(base);
 });
 const grandfathered = allFiles.length - files.length;
-console.log(`[sql] auditing ${files.length} migration file(s) (${grandfathered} grandfathered pre-${String(GRANDFATHER_CUTOFF).padStart(3, '0')})`);
+console.log(`[sql] auditing ${files.length} migration file(s) (${grandfathered} explicitly allowlisted)`);
 
 // Optional pg-query-parser parse pass.
 let parser = null;
