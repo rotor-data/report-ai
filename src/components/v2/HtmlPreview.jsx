@@ -869,9 +869,36 @@ const HtmlPreview = forwardRef(function HtmlPreview({
     // lands on the shadow host element and cascades to every descendant
     // inside the shadow.
     if (brandCss) {
-      const brandStyle = document.createElement("style");
-      brandStyle.textContent = brandCss.replace(/(^|[^:\w-])(:root)\b/g, "$1:host");
-      shadow.appendChild(brandStyle);
+      // Split @font-face blocks out of brandCss → inject into document.head
+      // (light DOM) instead of the shadow root. Reason: `@font-face` declared
+      // inside shadow DOM is unreliable across browsers — Firefox doesn't
+      // load it at all, and Chromium loads but doesn't always apply it to
+      // shadow descendants. Brand fonts (azo sans, Degular, Obviously, …)
+      // fell back to system serif/sans because of this. Light-DOM @font-face
+      // is loaded once for the document and resolves correctly from inside
+      // every shadow root referring to the same family name.
+      //
+      // Idempotent: we tag the injected <style> with a data-brand-fonts
+      // attribute so re-renders replace the previous block instead of
+      // stacking duplicates.
+      const fontFaceRegex = /@font-face\s*\{[^}]*\}/g;
+      const fontFaceBlocks = (brandCss.match(fontFaceRegex) || []).join("\n");
+      const remainingCss = brandCss.replace(fontFaceRegex, "").trim();
+
+      if (fontFaceBlocks) {
+        const existing = document.head.querySelector("style[data-brand-fonts]");
+        if (existing) existing.remove();
+        const head = document.createElement("style");
+        head.setAttribute("data-brand-fonts", "true");
+        head.textContent = fontFaceBlocks;
+        document.head.appendChild(head);
+      }
+
+      if (remainingCss) {
+        const brandStyle = document.createElement("style");
+        brandStyle.textContent = remainingCss.replace(/(^|[^:\w-])(:root)\b/g, "$1:host");
+        shadow.appendChild(brandStyle);
+      }
     }
 
     // 2. Editor chrome styles (selection, hover, page frame)

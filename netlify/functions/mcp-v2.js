@@ -110,8 +110,11 @@ function textResult(data) {
   return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] };
 }
 
-function errorResult(msg) {
-  return { content: [{ type: "text", text: msg }], isError: true };
+function errorResult(msg, next_step) {
+  // next_step (optional): actionable hint for Claude on how to recover.
+  // Appended as a second line so plain-text clients still see the error first.
+  const text = next_step ? `${msg}\nNext step: ${next_step}` : msg;
+  return { content: [{ type: "text", text }], isError: true };
 }
 
 // ─── Render service helper ──────────────────────────────────────────────────
@@ -288,16 +291,17 @@ const TOOLS = [
   // ── CRUD ──
   {
     name: "create",
-    description: "Create a new v2 report.",
+    description: "Create a new v2 report row (skapa rapport). Requires tenant_id, brand_id, title and document_type. Most callers should use smyra_report_create instead — this is the low-level primitive used by tests, scripts, and the workflow engine to bootstrap an empty report before pages are composed.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
         tenant_id: { type: "string", description: "Tenant UUID" },
         brand_id: { type: "string", description: "Brand UUID" },
         title: { type: "string" },
-        document_type: { type: "string" },
+        document_type: { type: "string", description: "Document type key (e.g. quarterly, annual_report, pitch, case_study, whitepaper, newsletter). Drives stub plan + design defaults.", examples: ["quarterly", "annual_report", "pitch", "case_study", "whitepaper", "newsletter"] },
         template_id: { type: "string", description: "Optional template ID" },
-        page_format: { type: "string", description: "Page format: a4_portrait (default) | a4_landscape | presentation | us_letter | square | digital" },
+        page_format: { type: "string", description: "Page format: a4_portrait (default) | a4_landscape | presentation | us_letter | square | digital", examples: ["a4_portrait", "a4_landscape", "presentation", "us_letter", "square", "digital"] },
       },
       required: ["tenant_id", "brand_id", "title", "document_type"],
     },
@@ -305,6 +309,7 @@ const TOOLS = [
   {
     name: "get_structure",
     description: "Get full report structure: report metadata, pages, and modules as a JSON tree.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { report_id: { type: "string" } },
@@ -316,6 +321,7 @@ const TOOLS = [
   {
     name: "build_pages",
     description: "Run page builder algorithm: assigns modules to pages based on height budget (240mm default). Full-bleed modules get their own page.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { report_id: { type: "string" } },
@@ -325,6 +331,7 @@ const TOOLS = [
   {
     name: "render_pdf",
     description: "Generate PDF via Python render service. Stores result in Netlify Blobs.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -337,6 +344,7 @@ const TOOLS = [
   {
     name: "persist_freeform_pages",
     description: "alpha-v3: writes the final set of freeform HTML pages into v2_report_pages + v2_report_modules so the editor (/editor/v2?token=…) and the legacy render_pdf tool can find them. Called by smyra-core at module_review approve_all, BEFORE enqueueRender. The report must already exist (created_at row in v2_reports). Existing rows for the same (report_id, page_number) are replaced so retries and patches converge. Also writes the final document_css onto v2_reports.document_css.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["report_id", "pages", "design_system_css"],
@@ -378,6 +386,7 @@ const TOOLS = [
   {
     name: "render_freeform_pdf",
     description: "alpha-v3 render path: renders a PDF from freeform HTML pages + design_system_css passed inline. Used by the rotor-platform-hub's render-worker-background when a render_jobs row carries a freeform payload. Unlike render_pdf this does NOT read v2_report_pages — the caller is the source of truth for page content. Use render_pdf for legacy v2 reports.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["payload", "report_id", "mode"],
@@ -422,6 +431,7 @@ const TOOLS = [
   {
     name: "render_freeform_pptx",
     description: "alpha-v3 render path: renders an editable PowerPoint (.pptx) from the same freeform HTML pages + design_system_css used by render_freeform_pdf. Uses hybrid bbox-overlay: each slide gets a pixel-perfect PNG background (gradients, illustrations, decoration preserved) with native PowerPoint text boxes + replaceable images on top, so the user can open in PowerPoint / Keynote / Google Slides and edit text natively. Decoration in the PNG layer is NOT editable. Returns a download URL.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["payload", "report_id"],
@@ -465,6 +475,7 @@ const TOOLS = [
   {
     name: "render_freeform_thumbnails",
     description: "Render a list of freeform HTML pages as PNG thumbnails. Used by smyra-core workflow steps (design_language, page_design, module_review) to show the user visual previews of what Claude is about to approve, so they don't sign off blindly. Stores PNGs in the report-ai-assets blob store and returns hash-stable URLs.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["pages", "design_system_css", "brand_id"],
@@ -486,7 +497,7 @@ const TOOLS = [
           description: "The report's design_system_css. Injected as document_css into each rendered page.",
         },
         brand_id: { type: "string", description: "Brand UUID for token resolution + blob-scoping." },
-        page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait." },
+        page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait.", examples: ["a4_portrait", "a4_landscape", "presentation", "us_letter", "square", "digital"] },
         return_base64: { type: "boolean", description: "If true, each returned thumbnail also carries png_base64 alongside the URL. Used by workflow pauses that want to attach the image as an MCP image content block for Claude's multimodal view." },
         thumbnail_dpi: { type: "number", description: "When return_base64 is true, rasterize at this DPI instead of the default 150 so the base64 payload stays under MCP response-size limits. Recommended: 72 for design review, 48 for dense multi-page overviews. Ignored when return_base64 is false." },
         units: {
@@ -500,6 +511,7 @@ const TOOLS = [
   {
     name: "preview_plan",
     description: "Render a stub PDF from a plan_structure plan (no DB writes) and return per-module thumbnail URLs. Used by workflow plan-review steps to show visual previews before build_modules runs. Each plan module is converted to stub content (heading/body_sketch text becomes the rendered content) and rendered through the same Python service as final reports.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -517,7 +529,8 @@ const TOOLS = [
   },
   {
     name: "get_editor_url",
-    description: "Get a signed editor URL for the visual report editor.",
+    description: "Mint a signed URL to the visual report editor (öppna editor) for a given report_id. The URL embeds a short-lived editor JWT so the SPA can call /api/v2 endpoints. Returns { editor_url, expires_at }. Use this whenever the user wants to manually edit a rendered report.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { report_id: { type: "string" } },
@@ -529,6 +542,7 @@ const TOOLS = [
   {
     name: "save_brand_tokens",
     description: "Save or update brand design tokens (colors, typography, spacing).",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -540,16 +554,32 @@ const TOOLS = [
   },
   {
     name: "get_brand_tokens",
-    description: "Get brand design tokens.",
+    description: "Fetch a brand's design tokens (colors, typography, spacing) used by the render pipeline. Returns the full tokens JSON plus the brand's id, tenant_id and name. Use before rendering to inspect brand styling or before save_brand_tokens to merge changes. Svenska: hämta varumärkets designtokens (färger, typsnitt, mellanrum).",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { brand_id: { type: "string" } },
       required: ["brand_id"],
     },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        id: { type: "string" },
+        tenant_id: { type: "string" },
+        name: { type: "string" },
+        tokens: {
+          type: "object",
+          additionalProperties: true,
+          description: "Brand design tokens. Common keys include color.primary, color.accent, color.background, color.foreground, font.heading, font.body, plus brand-specific extensions.",
+        },
+      },
+    },
   },
   {
     name: "upload_font",
-    description: "Upload a font file for a brand.",
+    description: "Upload a brand font file (woff2/woff/ttf/otf) for use in PDF rendering and the editor (ladda upp typsnitt). Stored in Netlify Blobs, referenced from brand_tokens.fonts. Required: brand_id, family, weight, style, format, data_base64. One call per (family, weight, style) variant — call again to add italic or bold.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -565,7 +595,8 @@ const TOOLS = [
   },
   {
     name: "upload_logo",
-    description: "Upload a logo variant for a brand.",
+    description: "Upload a brand logo variant (ladda upp logotyp) — primary, monochrome, icon, etc — as SVG, PNG, or JPG. Stored per (brand_id, variant) so the render pipeline can pick the right form for cover, header, watermark contexts. Required: brand_id, variant, format, data_base64.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -579,7 +610,8 @@ const TOOLS = [
   },
   {
     name: "upload_asset",
-    description: "Upload an image asset (photo, icon, SVG) for a tenant.",
+    description: "Upload an image asset (photo, icon, SVG) into a tenant's asset library (ladda upp bild). Returned asset_id can be referenced from report modules and components. Use list_assets to discover existing assets before re-uploading. Required: tenant_id, filename, mime_type, data_base64.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -594,7 +626,8 @@ const TOOLS = [
 
   {
     name: "list_assets",
-    description: "List uploaded image assets for a tenant. Returns asset_id, filename, mime_type, asset_class (photo/icon/svg), and storage_url. Use to discover available images for placing in report components.",
+    description: "List uploaded image assets for a tenant. Returns asset_id, filename, mime_type, asset_class (photo/icon/svg), and storage_url. Use to discover available images for placing in report components. Returns max 50 rows; narrow with asset_class if has_more is true.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -608,7 +641,8 @@ const TOOLS = [
   // ── Brands ──
   {
     name: "list_brands",
-    description: "List brands belonging to a tenant. Used by the workflow runner to resolve a brand_id at workflow start.",
+    description: "List brands belonging to a tenant. Used by the workflow runner to resolve a brand_id at workflow start. Returns max 50 brands; if has_more is true the tenant has more than 50 brands (unusual — flag for investigation).",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -616,10 +650,33 @@ const TOOLS = [
       },
       required: ["tenant_id"],
     },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        brands: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              id: { type: "string" },
+              tenant_id: { type: "string" },
+              name: { type: "string" },
+              tokens: { type: "object", additionalProperties: true, description: "Brand design tokens (colors, fonts, spacing). Shape varies per brand." },
+              created_at: { type: "string" },
+            },
+          },
+        },
+        count: { type: "number" },
+        has_more: { type: "boolean" },
+      },
+    },
   },
   {
     name: "create_brand",
     description: "Create a new brand row for a tenant. Used by the brand_onboard workflow when the user picks 'new' instead of an existing brand. Returns { brand_id, name }. tokens default to {} — the onboarding flow fills them via brand-os later.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -634,16 +691,18 @@ const TOOLS = [
   // ── Templates + Blueprints ──
   {
     name: "list_templates",
-    description: "List available report templates.",
+    description: "List available report templates (lista mallar) — the legacy template_id rows used by build_pages / render_pdf. For alpha-v3 design-language blueprints used by smyra_report_create, see list_blueprints instead. Returns id, name, description, supported document_types.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "get_stub_plan",
     description: "Get the default module stub plan for a document type. Returns an ordered list of modules (cover, text_spread, kpi_grid, etc.) that form the standard structure for this document type.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
-        document_type: { type: "string", description: "Document type key (e.g. quarterly, annual_report, pitch, case_study)" },
+        document_type: { type: "string", description: "Document type key (e.g. quarterly, annual_report, pitch, case_study)", examples: ["quarterly", "annual_report", "pitch", "case_study", "whitepaper", "newsletter"] },
       },
       required: ["document_type"],
     },
@@ -651,6 +710,7 @@ const TOOLS = [
   {
     name: "get_module_schema",
     description: "Get JSON schema for module types and slot categories. Optionally filter by template or module type.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -662,6 +722,7 @@ const TOOLS = [
   {
     name: "save_blueprint",
     description: "Save an alpha-v3 design-language blueprint (design_system_css + sample_pages_html + design_rules). Called by smyra-core after a design-extraction or user-driven design session. Returns blueprint_id. Visibility: 'brand' (default), 'tenant', or 'smyra' (requires ALLOW_SMYRA_WRITE env var).",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["name", "design_system_css", "sample_pages_html", "design_rules"],
@@ -674,7 +735,7 @@ const TOOLS = [
         design_system_css: { type: "string", description: "Full CSS design system — custom properties, base resets, component classes." },
         sample_pages_html: { type: "array", items: {}, description: "Array of sample pages. Each entry is either a plain HTML string (legacy) or a {html, block_type} object where block_type is 'page' (fixed canvas) or 'chapter' (Chromium paginates body prose naturally). Stored as JSONB; readers must accept both shapes." },
         design_rules: { type: "string", description: "Plain-text art-direction rules describing when and how to use this design system." },
-        doctype_hint: { type: "string", description: "Document type hint, e.g. 'quarterly', 'annual'. Stored in document_type column." },
+        doctype_hint: { type: "string", description: "Document type hint, e.g. 'quarterly', 'annual'. Stored in document_type column.", examples: ["quarterly", "annual", "whitepaper", "case_study", "pitch", "newsletter"] },
         reference_source: { type: "string", enum: ["extracted_from_pdf", "user_created", "starter_pack"], description: "How the blueprint was produced." },
         module_count: { type: "number", description: "Approximate number of report modules this blueprint is designed for." },
         source_report_id: { type: "string", description: "Audit trail: the report_id this blueprint was extracted from (if any)." },
@@ -683,19 +744,47 @@ const TOOLS = [
   },
   {
     name: "list_blueprints",
-    description: "List alpha-v3 blueprints visible to the caller (brand-owned + Smyra templates). Returns only rows with a design_system_css payload — legacy blueprints are excluded. Filter by document_type or style.",
+    description: "List alpha-v3 blueprints visible to the caller (brand-owned + Smyra templates). Returns only rows with a design_system_css payload — legacy blueprints are excluded. Filter by document_type or style. Returns max 50 rows; narrow filter (brand_id, document_type, style) if has_more is true.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
         brand_id: { type: "string", description: "Include blueprints owned by this brand. Omit to see only Smyra-visibility blueprints." },
-        document_type: { type: "string", description: "Filter: 'quarterly' | 'annual' | 'whitepaper' | 'case_study' | 'pitch' | 'newsletter' | 'research_brief' | 'product_spec' | 'esg_report' | 'investor_update'" },
-        style: { type: "string", description: "Filter by style_direction, e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate', 'Technical', 'Expressive', 'Hero'" },
+        document_type: { type: "string", description: "Filter: 'quarterly' | 'annual' | 'whitepaper' | 'case_study' | 'pitch' | 'newsletter' | 'research_brief' | 'product_spec' | 'esg_report' | 'investor_update'", examples: ["quarterly", "annual", "whitepaper", "case_study", "pitch"] },
+        style: { type: "string", description: "Filter by style_direction, e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate', 'Technical', 'Expressive', 'Hero'", examples: ["Editorial", "Minimal", "Dense", "Corporate"] },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        blueprints: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              id: { type: "string" },
+              name: { type: "string" },
+              visibility: { type: "string", enum: ["smyra", "tenant", "brand"] },
+              style_direction: { type: ["string", "null"] },
+              module_count: { type: ["number", "null"] },
+              doctype_hint: { type: ["string", "null"] },
+              cover_thumbnail_url: { type: ["string", "null"] },
+              gallery_url: { type: ["string", "null"] },
+              created_at: { type: "string" },
+            },
+          },
+        },
+        count: { type: "number" },
+        has_more: { type: "boolean", description: "True when more than 50 blueprints match — narrow filters to see them." },
       },
     },
   },
   {
     name: "get_blueprint",
     description: "Fetch the full alpha-v3 payload for a blueprint: design_system_css + sample_pages_html + design_rules + visibility. Called by smyra-core setup.ts right after the user picks a blueprint in the start-point. Enforces visibility-based auth.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["blueprint_id"],
@@ -703,21 +792,45 @@ const TOOLS = [
         blueprint_id: { type: "string", description: "UUID of the blueprint to fetch." },
       },
     },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        id: { type: "string" },
+        name: { type: "string" },
+        visibility: { type: "string", enum: ["smyra", "tenant", "brand"] },
+        style_direction: { type: ["string", "null"] },
+        design_system_css: { type: "string", description: "Full CSS design system (tokens + classes)." },
+        sample_pages_html: {
+          type: "array",
+          description: "Array of sample-page entries. Each entry is either a plain HTML string (legacy) or a {html, block_type} object.",
+          items: {},
+        },
+        design_rules: { type: ["string", "null"] },
+        doctype_hint: { type: ["string", "null"] },
+        reference_source: { type: ["string", "null"] },
+        module_count: { type: ["number", "null"] },
+        gallery_url: { type: ["string", "null"] },
+        cover_thumbnail_url: { type: ["string", "null"] },
+      },
+    },
   },
   {
     name: "list_smyra_templates",
     description: "List Smyra platform-level alpha-v3 blueprints (visibility='smyra'). Curated templates available to every tenant as a starting point. Returns alpha-v3 shape only (design_system_css required).",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
-        document_type: { type: "string", description: "e.g. 'quarterly', 'annual', 'whitepaper'" },
-        style: { type: "string", description: "e.g. 'Editorial', 'Minimal'" },
+        document_type: { type: "string", description: "e.g. 'quarterly', 'annual', 'whitepaper'", examples: ["quarterly", "annual", "whitepaper", "case_study", "pitch"] },
+        style: { type: "string", description: "e.g. 'Editorial', 'Minimal'", examples: ["Editorial", "Minimal", "Dense", "Corporate", "Technical", "Expressive", "Hero"] },
       },
     },
   },
   {
     name: "preview_blueprint",
     description: "Get a detailed view of one blueprint: its slot structure, narrative guidance, large thumbnail URL, and a 'chat_summary' sentence describing what Claude will ask the user for. Use when the user wants to see a template in detail before committing.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -729,6 +842,7 @@ const TOOLS = [
   {
     name: "create_from_blueprint",
     description: "Create a new report linked to an alpha-v3 blueprint. For Smyra-visibility blueprints (no owner brand), pass brand_id explicitly. The blueprint must have design_system_css set (alpha-v3 only — legacy blueprints are rejected). Returns report_id; call get_blueprint separately for the full design payload.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -745,12 +859,13 @@ const TOOLS = [
   {
     name: "save_component",
     description: "Save or update a reusable HTML component in a brand's component library. Components are small HTML templates (~10-30 lines) with {{PLACEHOLDER}} tokens. A brand can have multiple NAMED VARIANTS of the same component_type (e.g. 'Bold', 'Minimal', 'Editorial' headings) — pass `variant_name` to distinguish them. Set is_default=true to make one variant the default for its component_type. Pass component_id to update an existing component.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
         component_id: { type: "string", description: "Existing component ID to update (omit for new component)" },
         brand_id: { type: "string" },
-        component_type: { type: "string", description: "Canonical component type id (validated in application code, DB constraint relaxed)." },
+        component_type: { type: "string", description: "Canonical component type id (validated in application code, DB constraint relaxed). Common: heading, body_text, kpi_grid, pull_quote, chart, photo, cover, footer, divider.", examples: ["heading", "body_text", "kpi_grid", "pull_quote", "chart", "photo", "cover", "footer", "divider"] },
         variant_name: { type: "string", description: "Named variant of this component_type (e.g. 'Bold', 'Minimal', 'Editorial'). Defaults to 'Default'. Two components with the same (component_type, variant_name) for the same brand are NOT allowed — use component_id to update existing." },
         label: { type: "string", description: "Human-readable name, e.g. 'KPI-grupp med accent-border'" },
         html_template: { type: "string", description: "HTML with {{PLACEHOLDER}} tokens. Use component-name-prefixed CSS classes (e.g. '.fs-blocks .val', '.heading-split __word') — NOT inline styles. One stylesheet per document at render time, so classes must not collide with other components." },
@@ -778,12 +893,13 @@ const TOOLS = [
   },
   {
     name: "list_components",
-    description: "List components in a brand's component library. Returns all named variants per component_type. Filter by component_type to narrow results. Optionally include public components shared by other brands. Pass report_id to also include report-scoped variants.",
+    description: "List components in a brand's component library. Returns all named variants per component_type. Filter by component_type to narrow results. Optionally include public components shared by other brands. Pass report_id to also include report-scoped variants. Returns max 50 rows; narrow filter (component_type, variant_name) if has_more is true.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
         brand_id: { type: "string" },
-        component_type: { type: "string", description: "Filter by type (optional)" },
+        component_type: { type: "string", description: "Filter by type (optional)", examples: ["heading", "body_text", "kpi_grid", "pull_quote", "chart", "photo", "cover"] },
         variant_name: { type: "string", description: "Filter to one specific variant (optional)" },
         include_public: { type: "boolean", description: "Also include is_public=true components from other brands" },
         extraction_id: { type: "string", description: "Filter to one specific extraction session" },
@@ -791,10 +907,39 @@ const TOOLS = [
       },
       required: ["brand_id"],
     },
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        components: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              id: { type: "string" },
+              brand_id: { type: "string" },
+              component_type: { type: "string" },
+              variant_name: { type: ["string", "null"] },
+              label: { type: ["string", "null"] },
+              is_default: { type: "boolean" },
+              splittable: { type: ["boolean", "null"] },
+              status: { type: "string" },
+              page_format: { type: "string" },
+              report_id: { type: ["string", "null"] },
+              updated_at: { type: "string" },
+            },
+          },
+        },
+        count: { type: "number" },
+        has_more: { type: "boolean", description: "True when more than 50 components match — narrow by component_type or variant_name." },
+      },
+    },
   },
   {
     name: "render_brand_components",
     description: "DEV: renders all saved brand_components for a brand into a single overview document (one card per component: name, variant, splittable flag, and the rendered preview). Returns a PDF URL so you can visually browse the entire library. Complements /v2/components dashboard.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -807,6 +952,7 @@ const TOOLS = [
   {
     name: "measure_height",
     description: "Measure the rendered height (mm) of an HTML fragment at a given page width. Thin wrapper around smyra-render /render/measure. Used by page-compose to detect page overflow before writing modules.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -822,6 +968,7 @@ const TOOLS = [
   {
     name: "test_pipeline_smoke",
     description: "DEV (low-level pipeline test): creates a mini-report by inserting modules directly from the brand's existing library — SKIPS the workflow. Use to test compose/render/CSS pipeline in isolation. For a full workflow run (setup → plan → design → render, driven with canned inputs), use `workflow__test_run_report` instead.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -834,6 +981,7 @@ const TOOLS = [
   {
     name: "save_document_css",
     description: "Persist the assembled document-level stylesheet on v2_reports.document_css. Used by compose_pages after components are chosen; the editor and PDF render both load this exact string so preview and output match.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -845,19 +993,21 @@ const TOOLS = [
   },
   {
     name: "list_reports",
-    description: "List existing v2 reports for a tenant or brand. Use when the user wants to reopen, re-render, or edit a previous report. Returns id, title, brand_id, tenant_id, template_id, updated_at, plus module count.",
+    description: "List existing v2 reports for a tenant or brand. Use when the user wants to reopen, re-render, or edit a previous report. Returns id, title, brand_id, tenant_id, template_id, updated_at, plus module count. Returns max 50 rows; narrow filter (brand_id) if has_more is true.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
         tenant_id: { type: "string", description: "Filter by tenant (optional)" },
         brand_id: { type: "string", description: "Filter by brand (optional)" },
-        limit: { type: "number", description: "Max rows (default 20, max 100)" },
+        limit: { type: "number", description: "Max rows (default 50, hard cap 50). Listed for compat — pagination is filter-narrowing only." },
       },
     },
   },
   {
     name: "delete_component",
     description: "Delete a component from a brand's library. Use when the user wants to clean up unused or bad variants. Cannot be undone. For soft-delete (keep for history but hide from pickers), use save_component with status='deprecated' instead.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -870,6 +1020,7 @@ const TOOLS = [
   {
     name: "fork_component",
     description: "Copy a component from any brand's library (must be is_public=true if the source brand differs) into the target brand's library. Returns the new component_id. Use this to reuse a McKinsey-style pullquote designed for brand A in brand B's reports.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -884,6 +1035,7 @@ const TOOLS = [
   {
     name: "create_design_extraction",
     description: "Create a new design_extractions row for storing reference-PDF design tokens and component inventory. This is the ONLY safe place to store colors/fonts extracted from a reference document. Do NOT call save_brand_tokens with reference colors — they would overwrite the real brand. The extraction can later be promoted to brand tokens via apply_design_extraction if the user explicitly wants it.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -900,6 +1052,7 @@ const TOOLS = [
   {
     name: "update_design_extraction",
     description: "Update a design_extractions row. Use to add/replace suggested_tokens, inventory, reference_pages, or change status ('draft' → 'ready' → 'applied').",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -917,6 +1070,7 @@ const TOOLS = [
   {
     name: "get_design_extraction",
     description: "Fetch a design_extractions row by id, including suggested_tokens, inventory, and reference_pages.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { extraction_id: { type: "string" } },
@@ -925,7 +1079,8 @@ const TOOLS = [
   },
   {
     name: "list_design_extractions",
-    description: "List all design_extractions for a brand.",
+    description: "List design_extractions rows for a brand (lista designextraktioner) — reference-PDF analyses that captured colors, fonts, and component inventories. Use to find an extraction_id to feed into apply_design_extraction or save_component(extraction_id=...). Filter by status.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -938,6 +1093,7 @@ const TOOLS = [
   {
     name: "apply_design_extraction",
     description: "EXPLICIT user action — promotes an extraction's suggested_tokens onto the real brand.tokens. This is the ONLY path that changes a brand's colors/fonts from reference data. Requires explicit user confirmation. Sets extraction.status='applied'.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -949,7 +1105,8 @@ const TOOLS = [
   },
   {
     name: "get_component",
-    description: "Get a single component with its full HTML template.",
+    description: "Fetch one brand_components row with its full html_template, css_template, placeholder_schema and metadata (hämta komponent). Use when list_components returned a candidate and you need the full body to render or edit. For previewing without saving, see render_component_preview.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -961,6 +1118,7 @@ const TOOLS = [
   {
     name: "render_component_preview",
     description: "Render a component with placeholder values (or lorem ipsum defaults) and return the measured height. Useful for previewing a component before adding it to a report.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -976,6 +1134,7 @@ const TOOLS = [
   {
     name: "rasterize_pdf",
     description: "Convert PDF pages to PNG images via the Python render service.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -988,6 +1147,7 @@ const TOOLS = [
   {
     name: "rasterize_upload",
     description: "Rasterize an uploaded PDF (referenced via upload_token from request_upload) into per-page PNG images. Returns base64 JPEGs + cached image URLs. Used by design.extract_blueprint to feed reference pages back to the LLM as multimodal vision input. Server-side caps apply: dpi ≤ 72, max_pages ≤ 12 — values above these clamp silently to keep the response under Lambda's 6MB cap and the function under its 60s timeout.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1002,6 +1162,7 @@ const TOOLS = [
   {
     name: "request_upload",
     description: "Generate a one-time upload link for the user. Use this when the user wants to provide a PDF or image as a reference document but it's too large to include in the conversation. Returns a URL where the user can drag-and-drop their file. After they confirm the upload is done, use the returned upload_token with extract_design_from_pdf or other tools.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1012,6 +1173,7 @@ const TOOLS = [
   {
     name: "check_upload",
     description: "Check if a file has been uploaded via a previously generated upload link.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1023,6 +1185,7 @@ const TOOLS = [
   {
     name: "extract_design_from_pdf",
     description: "LAYER 2 META-TOOL. Extract brand design tokens from a reference PDF. Provide upload_token (from request_upload), source_url, or pdf_base64. The server analyzes the PDF structure directly — no images needed.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1038,6 +1201,7 @@ const TOOLS = [
   {
     name: "generate_template",
     description: "LAYER 2 META-TOOL. Returns an instruction chain to analyze a reference HTML file and generate a token-based Jinja2 template variant.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1050,6 +1214,7 @@ const TOOLS = [
   {
     name: "debug_rendering",
     description: "LAYER 2 META-TOOL. Returns an instruction chain to debug a rendering issue for a specific module. Claude inspects the module, renders it, rasterizes the output, and suggests a fix.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1062,6 +1227,7 @@ const TOOLS = [
   {
     name: "create_slot_variant",
     description: "LAYER 2 META-TOOL. Returns an instruction chain to design a new slot content variant (within text/data/media categories).",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1086,13 +1252,19 @@ async function handleCreate(userId, args, _event, hubTenantId) {
   // match. Otherwise a caller could create reports inside another tenant.
   if (hubTenantId && tenant_id !== hubTenantId) {
     console.warn(`[handleCreate] tenant_id mismatch: args=${tenant_id} jwt=${hubTenantId}`);
-    return errorResult(`tenant_id ${tenant_id} does not match authenticated tenant.`);
+    return errorResult(
+      `tenant_id ${tenant_id} does not match authenticated tenant.`,
+      "Verify the tenant_id with brand__get_context, or omit tenant_id and let the hub resolve it from the JWT.",
+    );
   }
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'a4_portrait';
 
   const brandCheck = await sql`SELECT id FROM brands WHERE id = ${brand_id}::uuid AND tenant_id = ${tenant_id}::uuid LIMIT 1`;
   if (brandCheck.length === 0) {
-    return errorResult(`Brand ${brand_id} not found for tenant ${tenant_id}. Run workflow__brand_onboard first or call list_brands to see available brands.`);
+    return errorResult(
+      `Brand ${brand_id} not found for tenant ${tenant_id}.`,
+      "Call report2__list_brands with this tenant_id to see existing brand_ids, then pass that id instead. If no brands exist, run workflow__brand_onboard first.",
+    );
   }
 
   // created_by: user_id of the creator. Reports are user-scoped — each user
@@ -1819,16 +1991,20 @@ async function handleListAssets(userId, args) {
       SELECT id, filename, mime_type, asset_class, storage_url, size_bytes, created_at
       FROM tenant_assets WHERE tenant_id = ${tenant_id} AND asset_class = ${asset_class}
       ORDER BY created_at DESC
+      LIMIT 51
     `;
   } else {
     rows = await sql`
       SELECT id, filename, mime_type, asset_class, storage_url, size_bytes, created_at
       FROM tenant_assets WHERE tenant_id = ${tenant_id}
       ORDER BY asset_class, created_at DESC
+      LIMIT 51
     `;
   }
 
-  return textResult({ assets: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const assets = has_more ? rows.slice(0, 50) : rows;
+  return textResult({ assets, count: assets.length, has_more });
 }
 
 // ─── Handler: list_templates ────────────────────────────────────────────────
@@ -1838,8 +2014,11 @@ async function handleListTemplates(userId, args) {
   const rows = await sql`
     SELECT id, name, description, document_types, created_at
     FROM report_templates ORDER BY name
+    LIMIT 51
   `;
-  return textResult({ templates: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const templates = has_more ? rows.slice(0, 50) : rows;
+  return textResult({ templates, count: templates.length, has_more });
 }
 
 async function handleGetStubPlan(userId, args) {
@@ -1887,9 +2066,12 @@ async function handleListBrands(userId, args) {
     FROM brands
     WHERE tenant_id = ${tenant_id}
     ORDER BY created_at ASC
+    LIMIT 51
   `;
-  console.log(`[handleListBrands] tenant=${tenant_id} returned ${rows.length} brands`);
-  return textResult({ brands: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const brands = has_more ? rows.slice(0, 50) : rows;
+  console.log(`[handleListBrands] tenant=${tenant_id} returned ${brands.length} brands (has_more=${has_more})`);
+  return textResult({ brands, count: brands.length, has_more });
 }
 
 // ─── Handler: create_brand ───────────────────────────────────────────────────
@@ -2439,7 +2621,7 @@ async function handleListBlueprints(userId, args) {
       ORDER BY
         CASE visibility WHEN 'brand' THEN 0 WHEN 'tenant' THEN 1 WHEN 'smyra' THEN 2 END,
         updated_at DESC
-      LIMIT 100
+      LIMIT 51
     `;
   } else {
     rows = await sql`
@@ -2451,14 +2633,20 @@ async function handleListBlueprints(userId, args) {
         AND (${document_type || null}::text IS NULL OR document_type = ${document_type || null})
         AND (${style || null}::text IS NULL OR style_direction = ${style || null})
       ORDER BY updated_at DESC
-      LIMIT 100
+      LIMIT 51
     `;
   }
 
-  const blueprints = rows.map(shapeBlueprintListRow);
+  // LIMIT 51 lets us detect overflow without an extra COUNT. has_more is
+  // advisory only — narrow filters (brand_id, document_type, style) to see
+  // the rest. No cursor/offset in v1.
+  const has_more = rows.length > 50;
+  const visible = has_more ? rows.slice(0, 50) : rows;
+  const blueprints = visible.map(shapeBlueprintListRow);
   return textResult({
     blueprints,
     count: blueprints.length,
+    has_more,
     filters: { brand_id, document_type, style },
   });
 }
@@ -2486,12 +2674,18 @@ async function handleGetBlueprint(userId, args) {
     WHERE id = ${blueprint_id}
     LIMIT 1
   `;
-  if (!rows.length) return errorResult("blueprint not found.");
+  if (!rows.length) return errorResult(
+    "blueprint not found.",
+    "Call report2__list_blueprints (optionally with brand_id=<your brand>) to find available blueprints. Smyra-curated templates are visible to all tenants.",
+  );
   const r = rows[0];
 
   // Alpha-v3 only — legacy rows have no design_system_css
   if (!r.design_system_css) {
-    return errorResult("blueprint is legacy (no alpha-v3 payload).");
+    return errorResult(
+      "blueprint is legacy (no alpha-v3 payload).",
+      "This blueprint predates alpha-v3 and isn't usable for new reports. Use report2__list_blueprints to find an alpha-v3 blueprint instead.",
+    );
   }
 
   // Visibility auth:
@@ -2633,7 +2827,10 @@ async function handleSaveComponent(userId, args, _event, hubTenantId) {
   const statusValue = ['draft', 'ready', 'deprecated'].includes(status) ? status : 'ready';
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'universal';
   if (!brand_id || !component_type || !label || !html_template) {
-    return errorResult("brand_id, component_type, label, and html_template are required.");
+    return errorResult(
+      "brand_id, component_type, label, and html_template are required.",
+      "Check the tool's inputSchema for required fields. component_type should be a canonical id (e.g. 'heading', 'kpi_grid', 'pull_quote').",
+    );
   }
 
   // Corruption defense: verify the brand belongs to the caller's tenant
@@ -2641,7 +2838,10 @@ async function handleSaveComponent(userId, args, _event, hubTenantId) {
   try {
     await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot save component: ${e.message}`);
+    return errorResult(
+      `Cannot save component: ${e.message}`,
+      "Call report2__list_brands to see brands your tenant owns, then pass that brand_id. Cross-tenant writes are blocked.",
+    );
   }
 
   const variantLabel = (variant_name && String(variant_name).trim()) || 'Default';
@@ -2833,9 +3033,12 @@ async function handleListComponents(userId, args) {
       )
       AND html_template IS NOT NULL AND trim(html_template) != ''
     ORDER BY component_type, report_id_sort, is_default DESC, variant_name, updated_at DESC
+    LIMIT 51
   `;
 
-  return textResult({ components: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const components = has_more ? rows.slice(0, 50) : rows;
+  return textResult({ components, count: components.length, has_more });
 }
 
 // ─── Handler: fork_component ────────────────────────────────────────────────
@@ -3289,7 +3492,9 @@ async function handleSaveDocumentCss(userId, args, _event, hubTenantId) {
 async function handleListReports(userId, args) {
   const sql = getSql();
   const { tenant_id, brand_id, limit } = args || {};
-  const cap = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  // Hard cap at 50 — see "Pagination" note in tools/list description.
+  // The legacy `limit` arg is still accepted but clamped to 50.
+  const cap = Math.min(Math.max(Number(limit) || 50, 1), 50);
   const tenantFilter = tenant_id || null;
   const brandFilter = brand_id || null;
   // User-scoped reports — caller sees only their own. Sharing across users
@@ -3297,6 +3502,8 @@ async function handleListReports(userId, args) {
   // explicitly since every authenticated MCP caller has a user_id claim.
   const creatorFilter = userId || null;
 
+  // Fetch cap+1 to detect overflow without an extra COUNT.
+  const fetchLimit = cap + 1;
   const rows = await sql`
     SELECT r.id, r.title, r.brand_id, r.tenant_id, r.template_id, r.page_format,
            r.created_by, r.created_at, r.updated_at,
@@ -3307,9 +3514,11 @@ async function handleListReports(userId, args) {
       AND (${brandFilter}::uuid IS NULL OR r.brand_id = ${brandFilter}::uuid)
       AND (${creatorFilter}::uuid IS NULL OR r.created_by = ${creatorFilter}::uuid)
     ORDER BY r.updated_at DESC
-    LIMIT ${cap}
+    LIMIT ${fetchLimit}
   `;
-  return textResult({ reports: rows, count: rows.length });
+  const has_more = rows.length > cap;
+  const reports = has_more ? rows.slice(0, cap) : rows;
+  return textResult({ reports, count: reports.length, has_more });
 }
 
 // ─── Handler: delete_component ──────────────────────────────────────────────
@@ -3536,9 +3745,12 @@ async function handleListDesignExtractions(userId, args) {
     WHERE brand_id = ${brand_id}
       AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
     ORDER BY updated_at DESC
+    LIMIT 51
   `;
 
-  return textResult({ extractions: rows, count: rows.length });
+  const has_more = rows.length > 50;
+  const extractions = has_more ? rows.slice(0, 50) : rows;
+  return textResult({ extractions, count: extractions.length, has_more });
 }
 
 // ─── Handler: apply_design_extraction ───────────────────────────────────────
@@ -4876,10 +5088,16 @@ async function handleRenderFreeformPdf(userId, args, event) {
 
   // ── 1. Validate input ──────────────────────────────────────────────────────
   if (!payload || !report_id || !mode) {
-    return errorResult("payload, report_id, and mode are required.");
+    return errorResult(
+      "payload, report_id, and mode are required.",
+      "If you started smyra_report_create, let the workflow's render_preview step call this — don't call report2__render_freeform_pdf directly mid-flow.",
+    );
   }
   if (!Array.isArray(payload.pages) || payload.pages.length === 0) {
-    return errorResult("payload.pages must be a non-empty array.");
+    return errorResult(
+      "payload.pages must be a non-empty array.",
+      "Run smyra_report_create through module_review/approve_all to persist pages, then re-render. Alternatively supply pages inline in payload.pages.",
+    );
   }
   for (const p of payload.pages) {
     if (typeof p.page_num !== "number") {
