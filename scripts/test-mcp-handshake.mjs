@@ -71,6 +71,15 @@ if (!privatePemRaw) {
 
 const privatePem = normalizePem(privatePemRaw);
 
+// Normalise HUB_JWT_ISSUER — GH Actions secrets that are unset evaluate
+// to empty string in the workflow env. JS `??` keeps the empty string
+// (server-side mcp-v2.js uses ??), JS `||` falls back to default (this
+// script's mint uses ||). Mismatch → "Invalid issuer". Set the env var
+// to the resolved value BEFORE the handler module loads its constants.
+if (!process.env.HUB_JWT_ISSUER) {
+  process.env.HUB_JWT_ISSUER = 'hub.rotor-platform.com';
+}
+
 // Derive public PEM if not set — handler requires HUB_JWT_PUBLIC_KEY_PEM
 if (!process.env.HUB_JWT_PUBLIC_KEY_PEM) {
   try {
