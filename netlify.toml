@@ -1,5 +1,8 @@
 [build]
-  command = "npm run build"
+  # Layer 1 test-suite gates the deploy: lint + SQL audit + bundle-smoke
+  # all run before the Vite build. If any fail, the deploy aborts.
+  # See scripts/{lint-check,sql-syntax-check,bundle-smoke}.mjs.
+  command = "npm run lint-check && npm run sql-syntax && npm run bundle-smoke && npm run build"
   publish = "dist"
   functions = "netlify/functions"
 
