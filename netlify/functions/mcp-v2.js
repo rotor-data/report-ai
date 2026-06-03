@@ -289,6 +289,7 @@ const TOOLS = [
   {
     name: "create",
     description: "Create a new v2 report.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -305,6 +306,7 @@ const TOOLS = [
   {
     name: "get_structure",
     description: "Get full report structure: report metadata, pages, and modules as a JSON tree.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { report_id: { type: "string" } },
@@ -316,6 +318,7 @@ const TOOLS = [
   {
     name: "build_pages",
     description: "Run page builder algorithm: assigns modules to pages based on height budget (240mm default). Full-bleed modules get their own page.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { report_id: { type: "string" } },
@@ -325,6 +328,7 @@ const TOOLS = [
   {
     name: "render_pdf",
     description: "Generate PDF via Python render service. Stores result in Netlify Blobs.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -337,6 +341,7 @@ const TOOLS = [
   {
     name: "persist_freeform_pages",
     description: "alpha-v3: writes the final set of freeform HTML pages into v2_report_pages + v2_report_modules so the editor (/editor/v2?token=…) and the legacy render_pdf tool can find them. Called by smyra-core at module_review approve_all, BEFORE enqueueRender. The report must already exist (created_at row in v2_reports). Existing rows for the same (report_id, page_number) are replaced so retries and patches converge. Also writes the final document_css onto v2_reports.document_css.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["report_id", "pages", "design_system_css"],
@@ -378,6 +383,7 @@ const TOOLS = [
   {
     name: "render_freeform_pdf",
     description: "alpha-v3 render path: renders a PDF from freeform HTML pages + design_system_css passed inline. Used by the rotor-platform-hub's render-worker-background when a render_jobs row carries a freeform payload. Unlike render_pdf this does NOT read v2_report_pages — the caller is the source of truth for page content. Use render_pdf for legacy v2 reports.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["payload", "report_id", "mode"],
@@ -422,6 +428,7 @@ const TOOLS = [
   {
     name: "render_freeform_pptx",
     description: "alpha-v3 render path: renders an editable PowerPoint (.pptx) from the same freeform HTML pages + design_system_css used by render_freeform_pdf. Uses hybrid bbox-overlay: each slide gets a pixel-perfect PNG background (gradients, illustrations, decoration preserved) with native PowerPoint text boxes + replaceable images on top, so the user can open in PowerPoint / Keynote / Google Slides and edit text natively. Decoration in the PNG layer is NOT editable. Returns a download URL.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["payload", "report_id"],
@@ -465,6 +472,7 @@ const TOOLS = [
   {
     name: "render_freeform_thumbnails",
     description: "Render a list of freeform HTML pages as PNG thumbnails. Used by smyra-core workflow steps (design_language, page_design, module_review) to show the user visual previews of what Claude is about to approve, so they don't sign off blindly. Stores PNGs in the report-ai-assets blob store and returns hash-stable URLs.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["pages", "design_system_css", "brand_id"],
@@ -500,6 +508,7 @@ const TOOLS = [
   {
     name: "preview_plan",
     description: "Render a stub PDF from a plan_structure plan (no DB writes) and return per-module thumbnail URLs. Used by workflow plan-review steps to show visual previews before build_modules runs. Each plan module is converted to stub content (heading/body_sketch text becomes the rendered content) and rendered through the same Python service as final reports.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -518,6 +527,7 @@ const TOOLS = [
   {
     name: "get_editor_url",
     description: "Get a signed editor URL for the visual report editor.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { report_id: { type: "string" } },
@@ -529,6 +539,7 @@ const TOOLS = [
   {
     name: "save_brand_tokens",
     description: "Save or update brand design tokens (colors, typography, spacing).",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -541,6 +552,7 @@ const TOOLS = [
   {
     name: "get_brand_tokens",
     description: "Get brand design tokens.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { brand_id: { type: "string" } },
@@ -550,6 +562,7 @@ const TOOLS = [
   {
     name: "upload_font",
     description: "Upload a font file for a brand.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -566,6 +579,7 @@ const TOOLS = [
   {
     name: "upload_logo",
     description: "Upload a logo variant for a brand.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -580,6 +594,7 @@ const TOOLS = [
   {
     name: "upload_asset",
     description: "Upload an image asset (photo, icon, SVG) for a tenant.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -595,6 +610,7 @@ const TOOLS = [
   {
     name: "list_assets",
     description: "List uploaded image assets for a tenant. Returns asset_id, filename, mime_type, asset_class (photo/icon/svg), and storage_url. Use to discover available images for placing in report components.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -609,6 +625,7 @@ const TOOLS = [
   {
     name: "list_brands",
     description: "List brands belonging to a tenant. Used by the workflow runner to resolve a brand_id at workflow start.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -620,6 +637,7 @@ const TOOLS = [
   {
     name: "create_brand",
     description: "Create a new brand row for a tenant. Used by the brand_onboard workflow when the user picks 'new' instead of an existing brand. Returns { brand_id, name }. tokens default to {} — the onboarding flow fills them via brand-os later.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -635,11 +653,13 @@ const TOOLS = [
   {
     name: "list_templates",
     description: "List available report templates.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "get_stub_plan",
     description: "Get the default module stub plan for a document type. Returns an ordered list of modules (cover, text_spread, kpi_grid, etc.) that form the standard structure for this document type.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -651,6 +671,7 @@ const TOOLS = [
   {
     name: "get_module_schema",
     description: "Get JSON schema for module types and slot categories. Optionally filter by template or module type.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -662,6 +683,7 @@ const TOOLS = [
   {
     name: "save_blueprint",
     description: "Save an alpha-v3 design-language blueprint (design_system_css + sample_pages_html + design_rules). Called by smyra-core after a design-extraction or user-driven design session. Returns blueprint_id. Visibility: 'brand' (default), 'tenant', or 'smyra' (requires ALLOW_SMYRA_WRITE env var).",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["name", "design_system_css", "sample_pages_html", "design_rules"],
@@ -684,6 +706,7 @@ const TOOLS = [
   {
     name: "list_blueprints",
     description: "List alpha-v3 blueprints visible to the caller (brand-owned + Smyra templates). Returns only rows with a design_system_css payload — legacy blueprints are excluded. Filter by document_type or style.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -696,6 +719,7 @@ const TOOLS = [
   {
     name: "get_blueprint",
     description: "Fetch the full alpha-v3 payload for a blueprint: design_system_css + sample_pages_html + design_rules + visibility. Called by smyra-core setup.ts right after the user picks a blueprint in the start-point. Enforces visibility-based auth.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       required: ["blueprint_id"],
@@ -707,6 +731,7 @@ const TOOLS = [
   {
     name: "list_smyra_templates",
     description: "List Smyra platform-level alpha-v3 blueprints (visibility='smyra'). Curated templates available to every tenant as a starting point. Returns alpha-v3 shape only (design_system_css required).",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -718,6 +743,7 @@ const TOOLS = [
   {
     name: "preview_blueprint",
     description: "Get a detailed view of one blueprint: its slot structure, narrative guidance, large thumbnail URL, and a 'chat_summary' sentence describing what Claude will ask the user for. Use when the user wants to see a template in detail before committing.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -729,6 +755,7 @@ const TOOLS = [
   {
     name: "create_from_blueprint",
     description: "Create a new report linked to an alpha-v3 blueprint. For Smyra-visibility blueprints (no owner brand), pass brand_id explicitly. The blueprint must have design_system_css set (alpha-v3 only — legacy blueprints are rejected). Returns report_id; call get_blueprint separately for the full design payload.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -745,6 +772,7 @@ const TOOLS = [
   {
     name: "save_component",
     description: "Save or update a reusable HTML component in a brand's component library. Components are small HTML templates (~10-30 lines) with {{PLACEHOLDER}} tokens. A brand can have multiple NAMED VARIANTS of the same component_type (e.g. 'Bold', 'Minimal', 'Editorial' headings) — pass `variant_name` to distinguish them. Set is_default=true to make one variant the default for its component_type. Pass component_id to update an existing component.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -779,6 +807,7 @@ const TOOLS = [
   {
     name: "list_components",
     description: "List components in a brand's component library. Returns all named variants per component_type. Filter by component_type to narrow results. Optionally include public components shared by other brands. Pass report_id to also include report-scoped variants.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -795,6 +824,7 @@ const TOOLS = [
   {
     name: "render_brand_components",
     description: "DEV: renders all saved brand_components for a brand into a single overview document (one card per component: name, variant, splittable flag, and the rendered preview). Returns a PDF URL so you can visually browse the entire library. Complements /v2/components dashboard.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -807,6 +837,7 @@ const TOOLS = [
   {
     name: "measure_height",
     description: "Measure the rendered height (mm) of an HTML fragment at a given page width. Thin wrapper around smyra-render /render/measure. Used by page-compose to detect page overflow before writing modules.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -822,6 +853,7 @@ const TOOLS = [
   {
     name: "test_pipeline_smoke",
     description: "DEV (low-level pipeline test): creates a mini-report by inserting modules directly from the brand's existing library — SKIPS the workflow. Use to test compose/render/CSS pipeline in isolation. For a full workflow run (setup → plan → design → render, driven with canned inputs), use `workflow__test_run_report` instead.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -834,6 +866,7 @@ const TOOLS = [
   {
     name: "save_document_css",
     description: "Persist the assembled document-level stylesheet on v2_reports.document_css. Used by compose_pages after components are chosen; the editor and PDF render both load this exact string so preview and output match.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -846,6 +879,7 @@ const TOOLS = [
   {
     name: "list_reports",
     description: "List existing v2 reports for a tenant or brand. Use when the user wants to reopen, re-render, or edit a previous report. Returns id, title, brand_id, tenant_id, template_id, updated_at, plus module count.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -858,6 +892,7 @@ const TOOLS = [
   {
     name: "delete_component",
     description: "Delete a component from a brand's library. Use when the user wants to clean up unused or bad variants. Cannot be undone. For soft-delete (keep for history but hide from pickers), use save_component with status='deprecated' instead.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -870,6 +905,7 @@ const TOOLS = [
   {
     name: "fork_component",
     description: "Copy a component from any brand's library (must be is_public=true if the source brand differs) into the target brand's library. Returns the new component_id. Use this to reuse a McKinsey-style pullquote designed for brand A in brand B's reports.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -884,6 +920,7 @@ const TOOLS = [
   {
     name: "create_design_extraction",
     description: "Create a new design_extractions row for storing reference-PDF design tokens and component inventory. This is the ONLY safe place to store colors/fonts extracted from a reference document. Do NOT call save_brand_tokens with reference colors — they would overwrite the real brand. The extraction can later be promoted to brand tokens via apply_design_extraction if the user explicitly wants it.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -900,6 +937,7 @@ const TOOLS = [
   {
     name: "update_design_extraction",
     description: "Update a design_extractions row. Use to add/replace suggested_tokens, inventory, reference_pages, or change status ('draft' → 'ready' → 'applied').",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -917,6 +955,7 @@ const TOOLS = [
   {
     name: "get_design_extraction",
     description: "Fetch a design_extractions row by id, including suggested_tokens, inventory, and reference_pages.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: { extraction_id: { type: "string" } },
@@ -926,6 +965,7 @@ const TOOLS = [
   {
     name: "list_design_extractions",
     description: "List all design_extractions for a brand.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -938,6 +978,7 @@ const TOOLS = [
   {
     name: "apply_design_extraction",
     description: "EXPLICIT user action — promotes an extraction's suggested_tokens onto the real brand.tokens. This is the ONLY path that changes a brand's colors/fonts from reference data. Requires explicit user confirmation. Sets extraction.status='applied'.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -950,6 +991,7 @@ const TOOLS = [
   {
     name: "get_component",
     description: "Get a single component with its full HTML template.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -961,6 +1003,7 @@ const TOOLS = [
   {
     name: "render_component_preview",
     description: "Render a component with placeholder values (or lorem ipsum defaults) and return the measured height. Useful for previewing a component before adding it to a report.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -976,6 +1019,7 @@ const TOOLS = [
   {
     name: "rasterize_pdf",
     description: "Convert PDF pages to PNG images via the Python render service.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -988,6 +1032,7 @@ const TOOLS = [
   {
     name: "rasterize_upload",
     description: "Rasterize an uploaded PDF (referenced via upload_token from request_upload) into per-page PNG images. Returns base64 JPEGs + cached image URLs. Used by design.extract_blueprint to feed reference pages back to the LLM as multimodal vision input. Server-side caps apply: dpi ≤ 72, max_pages ≤ 12 — values above these clamp silently to keep the response under Lambda's 6MB cap and the function under its 60s timeout.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1002,6 +1047,7 @@ const TOOLS = [
   {
     name: "request_upload",
     description: "Generate a one-time upload link for the user. Use this when the user wants to provide a PDF or image as a reference document but it's too large to include in the conversation. Returns a URL where the user can drag-and-drop their file. After they confirm the upload is done, use the returned upload_token with extract_design_from_pdf or other tools.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1012,6 +1058,7 @@ const TOOLS = [
   {
     name: "check_upload",
     description: "Check if a file has been uploaded via a previously generated upload link.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1023,6 +1070,7 @@ const TOOLS = [
   {
     name: "extract_design_from_pdf",
     description: "LAYER 2 META-TOOL. Extract brand design tokens from a reference PDF. Provide upload_token (from request_upload), source_url, or pdf_base64. The server analyzes the PDF structure directly — no images needed.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1038,6 +1086,7 @@ const TOOLS = [
   {
     name: "generate_template",
     description: "LAYER 2 META-TOOL. Returns an instruction chain to analyze a reference HTML file and generate a token-based Jinja2 template variant.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1050,6 +1099,7 @@ const TOOLS = [
   {
     name: "debug_rendering",
     description: "LAYER 2 META-TOOL. Returns an instruction chain to debug a rendering issue for a specific module. Claude inspects the module, renders it, rasterizes the output, and suggests a fix.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1062,6 +1112,7 @@ const TOOLS = [
   {
     name: "create_slot_variant",
     description: "LAYER 2 META-TOOL. Returns an instruction chain to design a new slot content variant (within text/data/media categories).",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
