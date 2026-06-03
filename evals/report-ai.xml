@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  report-ai MCP tool-selection eval, v1 (2026-06-03).
+
+  Goal: verify Claude picks the right report2__* (or smyra_*) tool given
+  realistic Swedish + English requests against the report-ai module's
+  51-tool surface. Used by scripts/eval-runner.mjs with the Anthropic SDK
+  + the live tools/list shape served by mcp-v2.
+
+  Scoring: precision@1 — the FIRST tool Claude calls must be in
+  expected_tools[]. Multiple acceptable tools allowed per question
+  (e.g. smyra_report_create vs report2__create).
+
+  Baseline tracked in evals/baseline.json — see scripts/eval-runner.mjs
+  for regression-gate semantics.
+-->
+<evaluation>
+
+  <!-- Q1: rendering a draft PDF. Alpha-v3 reports go via render_freeform_pdf
+       (payload-driven, no v2_report_pages lookup). Legacy render_pdf is
+       acceptable too but discouraged for new flows. -->
+  <qa_pair>
+    <question>Rendera denna rapport som PDF, draft-läge.</question>
+    <expected_tools>report2__render_freeform_pdf,report2__render_pdf</expected_tools>
+  </qa_pair>
+
+  <!-- Q2: PowerPoint export — only one tool exists. -->
+  <qa_pair>
+    <question>Exportera rapporten som PowerPoint.</question>
+    <expected_tools>report2__render_freeform_pptx</expected_tools>
+  </qa_pair>
+
+  <!-- Q3: list blueprints scoped by brand name. Claude needs to pick
+       list_blueprints over list_smyra_templates (which is a shorthand for
+       visibility='smyra' only). -->
+  <qa_pair>
+    <question>Lista alla blueprints för brandet Freebo.</question>
+    <expected_tools>report2__list_blueprints</expected_tools>
+  </qa_pair>
+
+  <!-- Q4: save current design as blueprint. -->
+  <qa_pair>
+    <question>Spara denna design som ett nytt blueprint för brandet.</question>
+    <expected_tools>report2__save_blueprint</expected_tools>
+  </qa_pair>
+
+  <!-- Q5: upload a font file. -->
+  <qa_pair>
+    <question>Ladda upp font Helvetica för tenant Rotor.</question>
+    <expected_tools>report2__upload_font</expected_tools>
+  </qa_pair>
+
+  <!-- Q6: upload a logo. -->
+  <qa_pair>
+    <question>Ladda upp logotypen för brand Freebo.</question>
+    <expected_tools>report2__upload_logo</expected_tools>
+  </qa_pair>
+
+  <!-- Q7: starting a fresh report. smyra_report_create is the user-facing
+       workflow tool (alpha-v3 pipeline); report2__create is the raw row-
+       create. Both acceptable here — Claude usually picks the workflow. -->
+  <qa_pair>
+    <question>Skapa en ny rapport från ett blueprint.</question>
+    <expected_tools>smyra_report_create,report2__create</expected_tools>
+  </qa_pair>
+
+  <!-- Q8: open in editor — get_editor_url mints the HMAC capability
+       token + returns the /editor/v2?token=… URL. -->
+  <qa_pair>
+    <question>Öppna rapporten med id 9f3b-... i editorn.</question>
+    <expected_tools>report2__get_editor_url</expected_tools>
+  </qa_pair>
+
+  <!-- Q9: list user's own reports. -->
+  <qa_pair>
+    <question>Lista alla mina rapporter.</question>
+    <expected_tools>report2__list_reports</expected_tools>
+  </qa_pair>
+
+  <!-- Q10: delete a component. delete_component is the only matching tool. -->
+  <qa_pair>
+    <question>Ta bort komponenten med id abc-123 från brand-biblioteket.</question>
+    <expected_tools>report2__delete_component</expected_tools>
+  </qa_pair>
+
+</evaluation>
