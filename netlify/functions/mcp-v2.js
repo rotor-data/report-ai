@@ -377,7 +377,7 @@ const TOOLS = [
   },
   {
     name: "render_freeform_pdf",
-    description: "alpha-v3 render path: renders a PDF from freeform HTML pages + design_system_css passed inline. Used by the rotor-platform-hub's render-worker-background when a render_jobs row carries a freeform payload. Unlike render_pdf this does NOT read v2_report_pages — the caller is the source of truth for page content. Use render_pdf for legacy v2 reports.",
+    description: "Rendera rapport som PDF, exportera som PDF, generera PDF-fil, ladda ner som PDF, draft-läge. Render report to PDF, export PDF, download PDF. alpha-v3 render path: renders a PDF from freeform HTML pages + design_system_css passed inline. Used by the rotor-platform-hub's render-worker-background when a render_jobs row carries a freeform payload. Unlike render_pdf this does NOT read v2_report_pages — the caller is the source of truth for page content. Use render_pdf for legacy v2 reports.",
     inputSchema: {
       type: "object",
       required: ["payload", "report_id", "mode"],
@@ -421,7 +421,7 @@ const TOOLS = [
   },
   {
     name: "render_freeform_pptx",
-    description: "alpha-v3 render path: renders an editable PowerPoint (.pptx) from the same freeform HTML pages + design_system_css used by render_freeform_pdf. Uses hybrid bbox-overlay: each slide gets a pixel-perfect PNG background (gradients, illustrations, decoration preserved) with native PowerPoint text boxes + replaceable images on top, so the user can open in PowerPoint / Keynote / Google Slides and edit text natively. Decoration in the PNG layer is NOT editable. Returns a download URL.",
+    description: "Rendera som PowerPoint, exportera till pptx, skapa presentation, generera .pptx-fil, slides export. Render to PowerPoint, export pptx, create slide deck. alpha-v3 render path: renders an editable PowerPoint (.pptx) from the same freeform HTML pages + design_system_css used by render_freeform_pdf. Hybrid bbox-overlay: each slide gets a pixel-perfect PNG background (gradients, illustrations preserved) with native PowerPoint text boxes + replaceable images on top, so users can edit in PowerPoint / Keynote / Google Slides. Decoration in the PNG layer is NOT editable. Returns a download URL.",
     inputSchema: {
       type: "object",
       required: ["payload", "report_id"],
@@ -517,7 +517,7 @@ const TOOLS = [
   },
   {
     name: "get_editor_url",
-    description: "Get a signed editor URL for the visual report editor.",
+    description: "Öppna rapport i editor, redigera rapport-länk, ge mig redigeringslänken, visual editor link. Open report in editor, get editor URL, edit report in browser. Get a signed editor URL for the visual report editor.",
     inputSchema: {
       type: "object",
       properties: { report_id: { type: "string" } },
@@ -549,7 +549,7 @@ const TOOLS = [
   },
   {
     name: "upload_font",
-    description: "Upload a font file for a brand.",
+    description: "Ladda upp font, lägg till brand-font, importera typsnitt, registrera ny font för brand. Upload font file, add brand font, register typeface. Upload a font file for a brand.",
     inputSchema: {
       type: "object",
       properties: {
@@ -565,7 +565,7 @@ const TOOLS = [
   },
   {
     name: "upload_logo",
-    description: "Upload a logo variant for a brand.",
+    description: "Ladda upp logo, ladda upp logotypen, lägg till brand-logo, importera logotyp, registrera logotyp-variant för brand. Upload logo, add brand logo, register logo variant. Upload a logo variant for a brand.",
     inputSchema: {
       type: "object",
       properties: {
@@ -661,7 +661,7 @@ const TOOLS = [
   },
   {
     name: "save_blueprint",
-    description: "Save an alpha-v3 design-language blueprint (design_system_css + sample_pages_html + design_rules). Called by smyra-core after a design-extraction or user-driven design session. Returns blueprint_id. Visibility: 'brand' (default), 'tenant', or 'smyra' (requires ALLOW_SMYRA_WRITE env var).",
+    description: "Spara denna design som blueprint, lagra mall, spara design för återanvändning, spara som mall. Save design as blueprint, store template for reuse. Save an alpha-v3 design-language blueprint (design_system_css + sample_pages_html + design_rules). Called by smyra-core after a design-extraction or user-driven design session. Returns blueprint_id. Visibility: 'brand' (default), 'tenant', or 'smyra' (requires ALLOW_SMYRA_WRITE env var).",
     inputSchema: {
       type: "object",
       required: ["name", "design_system_css", "sample_pages_html", "design_rules"],
@@ -683,7 +683,7 @@ const TOOLS = [
   },
   {
     name: "list_blueprints",
-    description: "List alpha-v3 blueprints visible to the caller (brand-owned + Smyra templates). Returns only rows with a design_system_css payload — legacy blueprints are excluded. Filter by document_type or style.",
+    description: "Lista alla blueprints för brand, mallar för rapporter, visa sparade rapport-mallar, vilka blueprints finns. List blueprints, show report templates, browse available designs. List alpha-v3 blueprints visible to the caller (brand-owned + Smyra templates). Returns only rows with a design_system_css payload — legacy blueprints are excluded. Filter by document_type or style.",
     inputSchema: {
       type: "object",
       properties: {
@@ -845,7 +845,7 @@ const TOOLS = [
   },
   {
     name: "list_reports",
-    description: "List existing v2 reports for a tenant or brand. Use when the user wants to reopen, re-render, or edit a previous report. Returns id, title, brand_id, tenant_id, template_id, updated_at, plus module count.",
+    description: "Lista alla mina rapporter, mina dokument, visa sparade rapporter, vilka rapporter har jag. List my reports, show my documents, browse saved reports. List existing v2 reports for a tenant or brand. Use when the user wants to reopen, re-render, or edit a previous report. Returns id, title, brand_id, tenant_id, template_id, updated_at, plus module count.",
     inputSchema: {
       type: "object",
       properties: {
@@ -857,7 +857,7 @@ const TOOLS = [
   },
   {
     name: "delete_component",
-    description: "Delete a component from a brand's library. Use when the user wants to clean up unused or bad variants. Cannot be undone. For soft-delete (keep for history but hide from pickers), use save_component with status='deprecated' instead.",
+    description: "Ta bort komponent från rapport, radera komponent från brand-bibliotek, ta bort variant. Delete component from brand library, remove component variant. Use when the user wants to clean up unused or bad variants. Cannot be undone. For soft-delete (keep for history but hide from pickers), use save_component with status='deprecated' instead.",
     inputSchema: {
       type: "object",
       properties: {

@@ -58,8 +58,9 @@ const HUB_TOOLS = [
   {
     name: 'smyra_report_create',
     description:
-      "Start eller fortsätt en multi-step rapportskapande-workflow (alpha-v3 freeform HTML pipeline). " +
-      "Användarvänligt entry-point för \"skriv en rapport\"-requests. Förvald över report2__create för end-to-end-flöden.",
+      "Skapa en ny rapport från grunden — end-to-end pipeline. " +
+      "Use ONLY for new-report creation (skriv en rapport, ny rapport, create report). " +
+      "For render / blueprint / asset / list / edit, use the dedicated report2__ tool.",
   },
 ];
 
