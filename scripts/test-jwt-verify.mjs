@@ -53,7 +53,7 @@ function mintJwt({ privatePem, aud, sub, tenantId, ttlSec = 300 }) {
   return `${signInput}.${base64url(signer.sign(key))}`;
 }
 
-const privatePemRaw = process.env.HUB_JWT_PRIVATE_KEY_PEM;
+const privatePemRaw = (process.env.TEST_JWT_PRIVATE_KEY_PEM ?? process.env.HUB_JWT_PRIVATE_KEY_PEM);
 if (!privatePemRaw) {
   console.warn('[jwt-verify] HUB_JWT_PRIVATE_KEY_PEM not set — skipping (CI-only check).');
   process.exit(0);

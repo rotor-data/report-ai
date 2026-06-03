@@ -25,9 +25,9 @@ const repoRoot = join(__dirname, '..');
 // it only reads env vars inside the handler, not at import time. Still safe
 // to set a placeholder to avoid surprise side-effects from any future
 // module-scope reads.
-if (!process.env.HUB_JWT_PUBLIC_KEY_PEM && process.env.HUB_JWT_PRIVATE_KEY_PEM) {
+if (!process.env.HUB_JWT_PUBLIC_KEY_PEM && (process.env.TEST_JWT_PRIVATE_KEY_PEM ?? process.env.HUB_JWT_PRIVATE_KEY_PEM)) {
   try {
-    const pem = process.env.HUB_JWT_PRIVATE_KEY_PEM.replace(/\\n/g, '\n');
+    const pem = (process.env.TEST_JWT_PRIVATE_KEY_PEM ?? process.env.HUB_JWT_PRIVATE_KEY_PEM).replace(/\\n/g, '\n');
     process.env.HUB_JWT_PUBLIC_KEY_PEM = createPublicKey(pem).export({ format: 'pem', type: 'spki' });
   } catch { /* ignore */ }
 }
