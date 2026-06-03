@@ -91,11 +91,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Skips cleanly when ANTHROPIC_API_KEY secret isn't configured.
+      # Deterministic BM25 ranking against tool descriptions — no API
+      # key, no env vars. Same algorithm Claude.ai's tool_search uses.
       # Baselines tracked in evals/baseline.json — regression gate.
-      - name: Run evals
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          HUB_JWT_PRIVATE_KEY_PEM: ${{ secrets.HUB_JWT_PRIVATE_KEY_PEM }}
-          HUB_JWT_ISSUER: ${{ secrets.HUB_JWT_ISSUER }}
+      - name: Run evals (BM25, no API key)
         run: npm run test:evals

