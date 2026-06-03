@@ -1,0 +1,9 @@
+{
+  "__doc__": "Ratchet for test-description-length.mjs. Tools listed here are grandfathered at the recorded length; descriptions can be SHORTENED but not grow further. New tools must land within [50..1000] chars from day one.",
+  "report2__create": { "min": 23 },
+  "report2__get_brand_tokens": { "min": 24 },
+  "report2__list_design_extractions": { "min": 40 },
+  "report2__list_templates": { "min": 32 },
+  "report2__upload_font": { "min": 31 },
+  "report2__upload_logo": { "min": 34 }
+}
