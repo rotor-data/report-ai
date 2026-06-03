@@ -1,0 +1,101 @@
+name: Test-suite — Layers 1+2+3
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+
+jobs:
+  layer1:
+    name: Layer 1 — pre-deploy gate (lint + SQL + bundle smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install eslint (Layer 1 dev tool, not in package.json)
+        run: npm install --no-save eslint@^9
+
+      - name: Lint + syntax check
+        run: npm run lint-check
+
+      - name: SQL migration audit
+        run: npm run sql-syntax
+
+      - name: Bundle smoke (functions load cleanly)
+        run: npm run bundle-smoke
+
+  layer2:
+    name: Layer 2 — integration (handshake + schemas + audits)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: layer1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Source-only audits — always run, no env needed.
+      - name: OutputSchema integrity
+        run: npm run test:output-schemas
+
+      - name: Tool annotations audit
+        run: npm run test:annotations
+
+      - name: Pagination audit
+        run: npm run test:pagination
+
+      # Auth-passing tests — skip cleanly when secrets aren't configured.
+      # The scripts themselves exit 0 with a warning when env is unset, so
+      # this fails only on actual regressions.
+      - name: MCP handshake
+        env:
+          HUB_JWT_PRIVATE_KEY_PEM: ${{ secrets.HUB_JWT_PRIVATE_KEY_PEM }}
+          HUB_JWT_ISSUER: ${{ secrets.HUB_JWT_ISSUER }}
+        run: npm run test:handshake
+
+      - name: JWT verify round-trip
+        env:
+          HUB_JWT_PRIVATE_KEY_PEM: ${{ secrets.HUB_JWT_PRIVATE_KEY_PEM }}
+          HUB_JWT_ISSUER: ${{ secrets.HUB_JWT_ISSUER }}
+        run: npm run test:jwt
+
+  layer3:
+    name: Layer 3 — eval suite (tool-selection precision@1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: layer2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Skips cleanly when ANTHROPIC_API_KEY secret isn't configured.
+      # Baselines tracked in evals/baseline.json — regression gate.
+      - name: Run evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HUB_JWT_PRIVATE_KEY_PEM: ${{ secrets.HUB_JWT_PRIVATE_KEY_PEM }}
+          HUB_JWT_ISSUER: ${{ secrets.HUB_JWT_ISSUER }}
+        run: npm run test:evals

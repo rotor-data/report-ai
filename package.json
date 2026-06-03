@@ -11,7 +11,16 @@
     "sql-syntax": "node scripts/sql-syntax-check.mjs",
     "bundle-smoke": "node scripts/bundle-smoke.mjs",
     "migrate-check": "node scripts/migration-idempotency-check.mjs",
-    "layer1": "npm run lint-check && npm run sql-syntax && npm run bundle-smoke"
+    "layer1": "npm run lint-check && npm run sql-syntax && npm run bundle-smoke",
+    "test:handshake": "node scripts/test-mcp-handshake.mjs",
+    "test:output-schemas": "node scripts/test-output-schemas.mjs",
+    "test:annotations": "node scripts/test-tool-annotations.mjs",
+    "test:pagination": "node scripts/test-pagination.mjs",
+    "test:jwt": "node scripts/test-jwt-verify.mjs",
+    "test:evals": "node scripts/eval-runner.mjs",
+    "layer2": "npm run test:output-schemas && npm run test:annotations && npm run test:pagination && npm run test:handshake && npm run test:jwt",
+    "layer3": "npm run test:evals",
+    "test:all": "npm run layer1 && npm run layer2 && npm run layer3"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
