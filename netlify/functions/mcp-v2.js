@@ -110,8 +110,11 @@ function textResult(data) {
   return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] };
 }
 
-function errorResult(msg) {
-  return { content: [{ type: "text", text: msg }], isError: true };
+function errorResult(msg, next_step) {
+  // next_step (optional): actionable hint for Claude on how to recover.
+  // Appended as a second line so plain-text clients still see the error first.
+  const text = next_step ? `${msg}\nNext step: ${next_step}` : msg;
+  return { content: [{ type: "text", text }], isError: true };
 }
 
 // ─── Render service helper ──────────────────────────────────────────────────
@@ -1249,13 +1252,19 @@ async function handleCreate(userId, args, _event, hubTenantId) {
   // match. Otherwise a caller could create reports inside another tenant.
   if (hubTenantId && tenant_id !== hubTenantId) {
     console.warn(`[handleCreate] tenant_id mismatch: args=${tenant_id} jwt=${hubTenantId}`);
-    return errorResult(`tenant_id ${tenant_id} does not match authenticated tenant.`);
+    return errorResult(
+      `tenant_id ${tenant_id} does not match authenticated tenant.`,
+      "Verify the tenant_id with brand__get_context, or omit tenant_id and let the hub resolve it from the JWT.",
+    );
   }
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'a4_portrait';
 
   const brandCheck = await sql`SELECT id FROM brands WHERE id = ${brand_id}::uuid AND tenant_id = ${tenant_id}::uuid LIMIT 1`;
   if (brandCheck.length === 0) {
-    return errorResult(`Brand ${brand_id} not found for tenant ${tenant_id}. Run workflow__brand_onboard first or call list_brands to see available brands.`);
+    return errorResult(
+      `Brand ${brand_id} not found for tenant ${tenant_id}.`,
+      "Call report2__list_brands with this tenant_id to see existing brand_ids, then pass that id instead. If no brands exist, run workflow__brand_onboard first.",
+    );
   }
 
   // created_by: user_id of the creator. Reports are user-scoped — each user
@@ -2649,12 +2658,18 @@ async function handleGetBlueprint(userId, args) {
     WHERE id = ${blueprint_id}
     LIMIT 1
   `;
-  if (!rows.length) return errorResult("blueprint not found.");
+  if (!rows.length) return errorResult(
+    "blueprint not found.",
+    "Call report2__list_blueprints (optionally with brand_id=<your brand>) to find available blueprints. Smyra-curated templates are visible to all tenants.",
+  );
   const r = rows[0];
 
   // Alpha-v3 only — legacy rows have no design_system_css
   if (!r.design_system_css) {
-    return errorResult("blueprint is legacy (no alpha-v3 payload).");
+    return errorResult(
+      "blueprint is legacy (no alpha-v3 payload).",
+      "This blueprint predates alpha-v3 and isn't usable for new reports. Use report2__list_blueprints to find an alpha-v3 blueprint instead.",
+    );
   }
 
   // Visibility auth:
@@ -2796,7 +2811,10 @@ async function handleSaveComponent(userId, args, _event, hubTenantId) {
   const statusValue = ['draft', 'ready', 'deprecated'].includes(status) ? status : 'ready';
   const pageFormatValue = (page_format && typeof page_format === 'string') ? page_format : 'universal';
   if (!brand_id || !component_type || !label || !html_template) {
-    return errorResult("brand_id, component_type, label, and html_template are required.");
+    return errorResult(
+      "brand_id, component_type, label, and html_template are required.",
+      "Check the tool's inputSchema for required fields. component_type should be a canonical id (e.g. 'heading', 'kpi_grid', 'pull_quote').",
+    );
   }
 
   // Corruption defense: verify the brand belongs to the caller's tenant
@@ -2804,7 +2822,10 @@ async function handleSaveComponent(userId, args, _event, hubTenantId) {
   try {
     await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot save component: ${e.message}`);
+    return errorResult(
+      `Cannot save component: ${e.message}`,
+      "Call report2__list_brands to see brands your tenant owns, then pass that brand_id. Cross-tenant writes are blocked.",
+    );
   }
 
   const variantLabel = (variant_name && String(variant_name).trim()) || 'Default';
@@ -5039,10 +5060,16 @@ async function handleRenderFreeformPdf(userId, args, event) {
 
   // ── 1. Validate input ──────────────────────────────────────────────────────
   if (!payload || !report_id || !mode) {
-    return errorResult("payload, report_id, and mode are required.");
+    return errorResult(
+      "payload, report_id, and mode are required.",
+      "If you started smyra_report_create, let the workflow's render_preview step call this — don't call report2__render_freeform_pdf directly mid-flow.",
+    );
   }
   if (!Array.isArray(payload.pages) || payload.pages.length === 0) {
-    return errorResult("payload.pages must be a non-empty array.");
+    return errorResult(
+      "payload.pages must be a non-empty array.",
+      "Run smyra_report_create through module_review/approve_all to persist pages, then re-render. Alternatively supply pages inline in payload.pages.",
+    );
   }
   for (const p of payload.pages) {
     if (typeof p.page_num !== "number") {
