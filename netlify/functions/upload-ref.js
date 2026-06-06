@@ -76,7 +76,8 @@ export default async (req) => {
   // --- Upload page ---
   if (req.method === "GET") {
     const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-    const html = uploadPageHtml(token, siteUrl);
+    const mode = url.searchParams.get("mode") === "units" ? "units" : "rasterize";
+    const html = uploadPageHtml(token, siteUrl, mode);
     return new Response(html, {
       headers: { "Content-Type": "text/html; charset=utf-8", ...CORS },
     });
@@ -229,13 +230,26 @@ export function verifyUploadToken(token) {
   return sig === expected;
 }
 
-function uploadPageHtml(token, siteUrl) {
+function uploadPageHtml(token, siteUrl, mode = "rasterize") {
+  const isUnits = mode === "units";
+  const title = isUnits
+    ? "Ladda upp innehåll till rapporten"
+    : "Ladda upp referensdokument";
+  const hint = isUnits
+    ? "Skicka PDF, Word (.docx), Markdown eller textfil med själva innehållet — servern extraherar texten och Claude fortsätter direkt med rapporten. Gå tillbaka till Claude.ai när uppladdningen är klar."
+    : "PDF:en analyseras direkt av servern. Inga bilder skickas till Claude — bara strukturerad data om färger, typsnitt och layout. Gå tillbaka till Claude.ai när uppladdningen är klar.";
+  const dropText = isUnits
+    ? "Dra in PDF, .docx, .md eller .txt — eller klicka"
+    : "Dra in PDF eller klicka";
+  const accept = isUnits
+    ? ".pdf,application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.md,.markdown,text/markdown,.txt,text/plain"
+    : ".pdf,application/pdf,.png,.jpg,.jpeg,.svg,image/*";
   return `<!DOCTYPE html>
 <html lang="sv">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ladda upp referensdokument</title>
+<title>${title}</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -278,14 +292,14 @@ function uploadPageHtml(token, siteUrl) {
 </head>
 <body>
 <div class="card">
-  <h1>Ladda upp referensdokument</h1>
-  <p class="hint">PDF:en analyseras direkt av servern. Inga bilder skickas till Claude — bara strukturerad data om färger, typsnitt och layout. Gå tillbaka till Claude.ai när uppladdningen är klar.</p>
+  <h1>${title}</h1>
+  <p class="hint">${hint}</p>
 
   <div class="dropzone" id="dropzone">
     <div class="icon">&#128196;</div>
-    <p>Dra in PDF eller klicka</p>
+    <p>${dropText}</p>
   </div>
-  <input type="file" id="fileInput" accept=".pdf,application/pdf,.png,.jpg,.jpeg,.svg,image/*">
+  <input type="file" id="fileInput" accept="${accept}">
   <div class="status" id="status"></div>
 </div>
 

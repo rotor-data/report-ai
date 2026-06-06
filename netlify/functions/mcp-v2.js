@@ -14,7 +14,7 @@
 const __coldStart = Date.now();
 const __coldMarks = [['module-start', 0]];
 function __mark(label) { __coldMarks.push([label, Date.now() - __coldStart]); }
-import { randomUUID, randomBytes, createHmac } from "node:crypto";
+import { randomUUID, randomBytes, createHmac, createHash } from "node:crypto";
 __mark('node:crypto');
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 __mark('verify-hub-jwt');
@@ -1161,13 +1161,25 @@ const TOOLS = [
   },
   {
     name: "request_upload",
-    description: "Generate a one-time upload link for the user. Use this when the user wants to provide a PDF or image as a reference document but it's too large to include in the conversation. Returns a URL where the user can drag-and-drop their file. After they confirm the upload is done, use the returned upload_token with extract_design_from_pdf or other tools.",
+    description: "Generate a one-time upload link for the user. Two modes: (1) `purpose='rasterize'` (default) for reference PDFs/images used by design extraction — token consumed by rasterize_upload / extract_design_from_pdf. (2) `purpose='units'` for report SOURCE CONTENT (PDF/DOCX/Markdown/TXT whitepapers) — token consumed by get_uploaded_units which returns extracted text for the smyra_report_create workflow. Returns a URL where the user drags-and-drops their file. After they confirm upload, call check_upload to verify, then the appropriate consumer tool.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
-        purpose: { type: "string", description: "Brief description shown to user, e.g. 'reference PDF for design extraction'" },
+        purpose: { type: "string", enum: ["rasterize", "units"], description: "'rasterize' (default) = reference doc for design extraction. 'units' = source content (PDF/DOCX/MD/TXT) for report body — widens accepted MIME types and surfaces a content-focused upload page." },
       },
+    },
+  },
+  {
+    name: "get_uploaded_units",
+    description: "Consume an upload_token whose request_upload was created with purpose='units'. Reads the uploaded file from blob storage, detects format (PDF/DOCX/Markdown/TXT), extracts plain text server-side (pdf-parse / mammoth / utf8) and returns it. Use the returned `raw_content` to resume smyra_report_create's input.collect step with `{ choice: 'upload_file', raw_content: '<text>', _collect_skip_gate: true }` — the workflow's existing unit parser turns the text into ContentUnit[] on resume. Strictly read-only; the blob stays in place until the token expires.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        upload_token: { type: "string", description: "Token from request_upload (purpose='units')" },
+      },
+      required: ["upload_token"],
     },
   },
   {
@@ -4189,21 +4201,141 @@ function _verifyUploadTokenInline(token) {
 
 async function handleRequestUpload(userId, args) {
   try {
+    const purpose = args?.purpose === "units" ? "units" : "rasterize";
     const { token } = _createUploadTokenInline();
     const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-    const uploadUrl = `${siteUrl}/upload-ref?token=${token}`;
+    const modeQuery = purpose === "units" ? "&mode=units" : "";
+    const uploadUrl = `${siteUrl}/upload-ref?token=${token}${modeQuery}`;
+
+    const instruction = purpose === "units"
+      ? "Ge användaren denna länk. Filen (PDF/DOCX/Markdown/TXT) skickas till servern, texten extraheras där. När användaren bekräftar att uppladdningen är klar: kalla `check_upload` för att verifiera, sen `get_uploaded_units` för att hämta texten, sen resume:a smyra_report_create-workflowet med { choice: 'upload_file', raw_content: '<text>', _collect_skip_gate: true }."
+      : "Ge användaren denna länk. Filen analyseras direkt av servern — inga bilder skickas genom konversationen. När användaren bekräftar att uppladdningen är klar, använd upload_token med rasterize_upload, extract_design_from_pdf eller check_upload.";
 
     return textResult({
       upload_token: token,
       upload_url: uploadUrl,
+      purpose,
       expires_in_minutes: 30,
-      instruction: "Ge användaren denna länk. Filen analyseras direkt av servern — inga bilder skickas genom konversationen. När användaren bekräftar att uppladdningen är klar, använd upload_token med rasterize_upload, extract_design_from_pdf eller check_upload.",
+      instruction,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[request_upload] failed:", msg, err?.stack);
     return errorResult(`Failed to generate upload token: ${msg}`);
   }
+}
+
+// ─── Handler: get_uploaded_units ───────────────────────────────────────────
+// Consumes a purpose='units' upload_token. Reads the blob, detects format
+// from stored metadata (filename / mimeType), extracts plain text via
+// pdf-parse / mammoth / utf8, and returns it as `raw_content` so the
+// smyra_report_create workflow can resume input.collect via the existing
+// raw_content path (which parses to units server-side in collect.ts).
+
+const _UNITS_MIME_PDF  = "application/pdf";
+const _UNITS_MIME_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+function _detectUnitsFormat(filename, mime) {
+  const name = (filename || "").toLowerCase();
+  const m = (mime || "").toLowerCase();
+  if (m === _UNITS_MIME_PDF || name.endsWith(".pdf")) return "pdf";
+  if (m === _UNITS_MIME_DOCX || name.endsWith(".docx")) return "docx";
+  if (m === "text/markdown" || name.endsWith(".md") || name.endsWith(".markdown")) return "md";
+  if (m.startsWith("text/") || name.endsWith(".txt")) return "text";
+  return null;
+}
+
+async function _extractPdfText(buffer) {
+  const mod = await import("pdf-parse");
+  const pdfParse = mod.default || mod;
+  const result = await pdfParse(buffer);
+  return (result?.text || "").trim();
+}
+
+async function _extractDocxText(buffer) {
+  // Lazy require — mammoth is optional. If it isn't installed in this
+  // deployment we surface a clean error instead of a cryptic import crash.
+  let mammoth;
+  try {
+    const mod = await import("mammoth");
+    mammoth = mod.default || mod;
+  } catch (err) {
+    throw new Error("DOCX support unavailable (mammoth not installed). Use PDF, Markdown or text instead.");
+  }
+  // convertToMarkdown preserves heading levels, lists, emphasis and
+  // blockquotes so the downstream unit parser can recover document
+  // structure. extractRawText would flatten everything to plain paragraphs.
+  const result = await mammoth.convertToMarkdown({ buffer });
+  return (result?.value || "").trim();
+}
+
+async function handleGetUploadedUnits(userId, args, event) {
+  const { upload_token } = args || {};
+  if (!upload_token) return errorResult("upload_token is required.");
+  if (!_verifyUploadTokenInline(upload_token)) {
+    return errorResult("Upload token is invalid or expired.");
+  }
+
+  let store;
+  try {
+    store = await getBlobStore("upload-refs", event);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return errorResult(`Blob store unreachable: ${msg}`);
+  }
+
+  // Read blob + metadata in parallel. Metadata gives us filename/mime that
+  // upload-ref.js stored at upload time; without it we can't reliably
+  // detect format (no client hint in the token itself).
+  let fileBuf;
+  let meta;
+  try {
+    [fileBuf, meta] = await Promise.all([
+      store.get(`${upload_token}/file`, { type: "arrayBuffer" }),
+      store.getMetadata(`${upload_token}/file`).catch(() => null),
+    ]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return errorResult(`Blob read failed: ${msg}`);
+  }
+  if (!fileBuf) {
+    return errorResult("No file found for this upload token. Ask the user to complete the upload first (check_upload returns uploaded:false until they do).");
+  }
+
+  const filename = meta?.metadata?.filename || "";
+  const mime = meta?.metadata?.mimeType || "";
+  const format = _detectUnitsFormat(filename, mime);
+  if (!format) {
+    return errorResult(`Unsupported file type: mime=${mime} filename=${filename}. Supported: PDF, DOCX, Markdown, plain text.`);
+  }
+
+  const buffer = Buffer.from(fileBuf);
+  let text = "";
+  try {
+    if (format === "pdf")       text = await _extractPdfText(buffer);
+    else if (format === "docx") text = await _extractDocxText(buffer);
+    else                        text = buffer.toString("utf8").trim();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[get_uploaded_units] ${format} extract failed:`, msg);
+    return errorResult(`Failed to extract ${format}: ${msg}`);
+  }
+
+  if (!text || text.length < 1) {
+    return errorResult(`Extracted text was empty — the ${format} file may be image-only or corrupt. Ask the user to paste the text directly instead.`);
+  }
+
+  // SHA-256 hash for round-trip verification (matches v2-ingest contract).
+  const sourceHash = createHash("sha256").update(text).digest("hex");
+
+  return textResult({
+    raw_content: text,
+    format,
+    char_count: text.length,
+    source_hash: sourceHash,
+    filename,
+    next_step: "Resume smyra_report_create with { choice: 'upload_file', raw_content: '<the raw_content value above>', _collect_skip_gate: true }.",
+  });
 }
 
 // ─── Handler: check_upload ─────────────────────────────────────────────────
@@ -5533,6 +5665,7 @@ const HANDLERS = {
   rasterize_upload:      handleRasterizeUpload,
   request_upload:        handleRequestUpload,
   check_upload:          handleCheckUpload,
+  get_uploaded_units:    handleGetUploadedUnits,
   // Layer 2 meta-code tools
   extract_design_from_pdf: handleExtractDesignFromPdf,
   generate_template:       handleGenerateTemplate,
