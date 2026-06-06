@@ -638,6 +638,490 @@
   color: #b91c1c;
 }
 
+/* ── UnitTypeIcon ─────────────────────────────────────────────────── */
+.smyra-editor .unit-type-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font: 700 10.5px/1 ui-sans-serif, system-ui, sans-serif;
+  flex: 0 0 auto;
+  user-select: none;
+}
+.smyra-editor .unit-type-icon--compact {
+  width: 24px;
+  height: 24px;
+}
+.smyra-editor .unit-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font: 600 10.5px/1.2 ui-sans-serif, system-ui, sans-serif;
+}
+.smyra-editor .unit-type-chip-glyph {
+  font-weight: 800;
+}
+.smyra-editor .unit-type-chip-label {
+  letter-spacing: 0.02em;
+}
+
+/* ── UnitsListPanel — filter bar ──────────────────────────────────── */
+.smyra-editor .units-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line, #e4e4e7);
+  background: #fafafa;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.smyra-editor .units-filter-search {
+  flex: 1 1 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--line, #d4d4d8);
+  border-radius: 4px;
+  background: #fff;
+}
+.smyra-editor .units-filter-search:focus {
+  outline: 2px solid #b85a73;
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.smyra-editor .units-filter-types {
+  flex: 0 0 auto;
+}
+.smyra-editor .units-filter-types > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid var(--line, #d4d4d8);
+  border-radius: 4px;
+  background: #fff;
+}
+.smyra-editor .units-filter-types > summary::-webkit-details-marker { display: none; }
+.smyra-editor .units-filter-count {
+  display: inline-block;
+  background: #b85a73;
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: 10px;
+  margin-left: 4px;
+}
+.smyra-editor .units-filter-types-list {
+  position: absolute;
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid var(--line, #d4d4d8);
+  border-radius: 6px;
+  padding: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 5;
+  max-width: 280px;
+}
+.smyra-editor .units-type-pill {
+  border: none;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font: 600 10.5px/1.2 ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+}
+.smyra-editor .units-type-pill--active {
+  outline: 1.5px solid currentColor;
+  outline-offset: -1.5px;
+}
+.smyra-editor .units-heavy-toggle {
+  border: 1px solid var(--line, #d4d4d8);
+  border-radius: 4px;
+  background: #fff;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.smyra-editor .units-heavy-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.smyra-editor .units-heavy-toggle--on {
+  background: #fee2e2;
+  border-color: #f87171;
+  color: #991b1b;
+}
+.smyra-editor .units-clear-filters {
+  border: none;
+  background: transparent;
+  color: #b85a73;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+/* ── Bulk-edit bar ────────────────────────────────────────────────── */
+.smyra-editor .units-bulk-bar {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line, #e4e4e7);
+  background: #fff;
+}
+.smyra-editor .units-bulk-bar--open {
+  background: #fef3c7;
+}
+.smyra-editor .units-bulk-toggle {
+  border: 1px dashed var(--line, #d4d4d8);
+  background: transparent;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  width: 100%;
+  color: #52525b;
+}
+.smyra-editor .units-bulk-toggle:hover {
+  border-color: #b85a73;
+  color: #b85a73;
+}
+.smyra-editor .units-bulk-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.smyra-editor .units-bulk-action {
+  border: 1px solid var(--line, #d4d4d8);
+  background: #fff;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.smyra-editor .units-bulk-action--primary {
+  background: #b85a73;
+  color: #fff;
+  border-color: #b85a73;
+}
+.smyra-editor .units-bulk-action--primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.smyra-editor .units-bulk-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: #71717a;
+}
+.smyra-editor .units-bulk-close {
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  cursor: pointer;
+  color: #71717a;
+  padding: 0 4px;
+}
+.smyra-editor .units-bulk-section {
+  margin-top: 4px;
+}
+.smyra-editor .units-bulk-section > summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 0;
+  color: #52525b;
+}
+.smyra-editor .units-bulk-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 4px;
+}
+.smyra-editor .units-bulk-input {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 4px 6px;
+  border: 1px solid var(--line, #d4d4d8);
+  border-radius: 4px;
+  background: #fff;
+}
+.smyra-editor .units-bulk-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #52525b;
+}
+.smyra-editor .units-bulk-hint {
+  font-size: 11px;
+  color: #71717a;
+  margin: 0;
+  font-style: italic;
+}
+
+/* ── Page groups + rows ───────────────────────────────────────────── */
+.smyra-editor .units-empty-state {
+  font-size: 11.5px;
+  color: #71717a;
+  padding: 16px 8px;
+  text-align: center;
+}
+.smyra-editor .units-page-group {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+}
+.smyra-editor .units-page-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f4f4f5;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  color: #3f3f46;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.smyra-editor .units-page-group-head:hover {
+  background: #e4e4e7;
+}
+.smyra-editor .units-page-group-caret {
+  font-size: 10px;
+  color: #71717a;
+  width: 10px;
+}
+.smyra-editor .units-page-group-label {
+  flex: 1;
+  text-align: left;
+}
+.smyra-editor .units-page-group-count {
+  font-size: 10.5px;
+  color: #71717a;
+  background: #fff;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.smyra-editor .units-page-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0 8px;
+}
+.smyra-editor .units-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: #fff;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.smyra-editor .units-row:hover {
+  background: #fef3c7;
+  border-color: #facc15;
+}
+.smyra-editor .units-row--selected {
+  background: #ffe4e6;
+  border-color: #b85a73;
+}
+.smyra-editor .units-row--dragging {
+  opacity: 0.5;
+}
+.smyra-editor .units-row--drop-before {
+  border-top: 2px solid #b85a73;
+}
+.smyra-editor .units-row--drop-after {
+  border-bottom: 2px solid #b85a73;
+}
+.smyra-editor .units-row-bulk {
+  margin-top: 4px;
+}
+.smyra-editor .units-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.smyra-editor .units-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.smyra-editor .units-row-id {
+  font-size: 10px;
+  color: #71717a;
+  background: #f4f4f5;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smyra-editor .units-row-preview {
+  font-size: 11.5px;
+  color: #27272a;
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.35;
+}
+
+/* ── UnitEditPopover ──────────────────────────────────────────────── */
+.smyra-editor .unit-popover-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.05);
+  z-index: 200;
+}
+.smyra-editor .unit-popover {
+  position: fixed;
+  z-index: 201;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong, #d4d4d8);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--ink, #2a2a2e);
+  max-height: 80vh;
+}
+.smyra-editor .unit-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line, #e4e4e7);
+}
+.smyra-editor .unit-popover-id {
+  flex: 1;
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #71717a;
+  background: #f4f4f5;
+  padding: 2px 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smyra-editor .unit-popover-close {
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  color: #71717a;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.smyra-editor .unit-popover-body {
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.smyra-editor .unit-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.smyra-editor .unit-popover-row .unit-field-label {
+  margin: 0;
+}
+.smyra-editor .unit-popover-toolbar {
+  display: flex;
+  gap: 4px;
+}
+.smyra-editor .unit-popover-toolbar button {
+  border: 1px solid var(--line, #d4d4d8);
+  background: #fff;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.smyra-editor .unit-popover-toolbar button:hover {
+  background: #f4f4f5;
+  border-color: #b85a73;
+  color: #b85a73;
+}
+.smyra-editor .unit-popover-textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 8px;
+  border: 1px solid var(--line, #d4d4d8);
+  border-radius: 4px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.smyra-editor .unit-popover-textarea:focus {
+  outline: 2px solid #b85a73;
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.smyra-editor .unit-popover-textarea--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.smyra-editor .unit-popover-error {
+  font-size: 11px;
+  color: #b91c1c;
+}
+.smyra-editor .unit-popover-fulleditor {
+  border: 1px dashed var(--line, #d4d4d8);
+  background: transparent;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #52525b;
+  margin-top: 4px;
+}
+.smyra-editor .unit-popover-fulleditor:hover {
+  border-color: #b85a73;
+  color: #b85a73;
+}
+.smyra-editor .unit-popover-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line, #e4e4e7);
+}
+.smyra-editor .unit-popover-btn {
+  border: 1px solid var(--line, #d4d4d8);
+  background: #fff;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.smyra-editor .unit-popover-btn--primary {
+  background: #b85a73;
+  color: #fff;
+  border-color: #b85a73;
+}
+.smyra-editor .unit-popover-btn--primary:hover {
+  background: #94445b;
+}
+
 /* ── Inspector (v4 — Smyra light palette) ──────────────────────── */
 .smyra-editor .editor-inspector-v3 {
   background: #fff;
