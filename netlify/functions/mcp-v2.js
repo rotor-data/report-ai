@@ -2241,6 +2241,36 @@ async function handleSaveBlueprint(userId, args, _event, hubTenantId) {
   }
   if (!design_rules) return errorResult("design_rules is required.");
 
+  // Validate sample_pages_html structure via validate-units-only in
+  // sample-mode. Catches blueprints saved with inline body text in
+  // text-bearing elements (<h1-6>, <p>, <blockquote>, <li>, etc.)
+  // without a data-unit slot ref. Such blueprints break fill-mode —
+  // the fill step copies sample HTML verbatim, persist validator
+  // (production-mode) then rejects the resulting pages because they
+  // have no units to bind to. Found 2026-06-07 via "Rotor 2.0 — Katalog".
+  // mode='sample' allows inline text INSIDE data-unit elements (acts
+  // as placeholder for preview rendering) but requires every text
+  // element to HAVE a data-unit ref.
+  for (let i = 0; i < sample_pages_html.length; i++) {
+    const entry = sample_pages_html[i];
+    const html = typeof entry === "string" ? entry : entry?.html;
+    if (typeof html !== "string" || html.length === 0) continue;
+    const result = await validateUnitsOnly(html, "sample");
+    if (!result.valid) {
+      const violations = result.violations
+        .slice(0, 5)
+        .map((v) => `  - <${v.tag}> "${v.sample}" (${v.reason})`)
+        .join("\n");
+      return errorResult(
+        `sample_pages_html[${i}] contains text-bearing elements without data-unit refs. ` +
+        `Blueprints must define data-unit slot IDs on every <h1-6>, <p>, <blockquote>, <li> ` +
+        `etc. so fill-mode can bind user content. Violations:\n${violations}\n\n` +
+        `Add data-unit="slot_<n>" attributes to each text element. Inline text inside ` +
+        `data-unit elements is allowed as a placeholder for blueprint previews.`
+      );
+    }
+  }
+
   // Validate visibility-specific requirements
   if (visibility === "brand" && !brand_id) {
     return errorResult("brand_id is required when visibility='brand'.");
