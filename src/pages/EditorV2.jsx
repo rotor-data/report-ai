@@ -4,6 +4,8 @@ import { api } from "../api/client";
 import { useUiStore } from "../stores/uiStore";
 import HtmlPreview from "../components/v2/HtmlPreview";
 import ImagePickerDialog from "../components/v2/ImagePickerDialog";
+import UnitsListPanel from "../components/v2/UnitsListPanel";
+import UnitEditPopover from "../components/v2/UnitEditPopover";
 import "./EditorV2.css";
 
 const MODULE_TYPES = ["cover", "chapter_break", "back_cover", "layout"];
@@ -63,6 +65,15 @@ export default function EditorV2() {
 
   // Debounced save timer for contentEditable live edits
   const saveTimerRef = useRef(null);
+
+  // ─── Alpha-v3 units side-panel + popover state ─────────────────────
+  // `highlightedUnitId` flows from UnitsListPanel hover → HtmlPreview's
+  // outline. `selectedUnitId` is the clicked unit in the list (for
+  // visual selection styling). `unitPopover` carries the anchor rect +
+  // unit when the user clicks a [data-unit] element on the canvas.
+  const [highlightedUnitId, setHighlightedUnitId] = useState(null);
+  const [selectedUnitId, setSelectedUnitId] = useState(null);
+  const [unitPopover, setUnitPopover] = useState(null); // { unit, anchorRect } | null
 
   // Module-level undo stack. Snapshots a reversible action, NOT the
   // full state. Each entry has { kind, payload } and the inverse is
@@ -164,6 +175,64 @@ export default function EditorV2() {
     }
     return m;
   }, [pages]);
+
+  // unit DB id → 0-based page index, derived by scanning each module's
+  // html_cache for `data-unit="<unit_id>"` references. Used by the
+  // alpha-v3 units side panel to group rows under their host page.
+  // Rebuilds on every module / units change — both are small relative
+  // to render cost, and the regex pass is O(modules × units) which is
+  // fine for the 100-unit ceiling we care about.
+  const unitPageMap = useMemo(() => {
+    const out = new Map();
+    if (!units?.length || !modules?.length) return out;
+    // Build a lookup of unit_id (the stable string) → db id so we can
+    // map regex hits back to row ids. Two units in the same report can't
+    // share a unit_id (UNIQUE in migration 030).
+    const idByUnitId = new Map();
+    for (const u of units) idByUnitId.set(u.unit_id, u.id);
+    modules.forEach((mod, idx) => {
+      const html = mod?.html_cache || "";
+      if (!html) return;
+      // Match both quote styles. `data-unit="…"` is the canonical form.
+      const re = /data-unit=(?:"([^"]+)"|'([^']+)')/g;
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const refId = m[1] || m[2];
+        const dbId = idByUnitId.get(refId);
+        if (dbId && !out.has(dbId)) out.set(dbId, idx);
+      }
+    });
+    return out;
+  }, [units, modules]);
+
+  // Reorder handler — bulk PATCH per moved unit + neighbours so the
+  // server-side order_index stays monotonic within the page window.
+  // The server (v2-content-units PATCH) accepts order_index since this
+  // panel rebuild; older deploys silently ignore it (the field is just
+  // dropped by Zod's strict() — but the schema isn't strict, so the
+  // worst case is a 400 from a future-tightened endpoint).
+  const onReorderUnits = useCallback((_movedId, _newOrderIndex, updates) => {
+    if (!Array.isArray(updates) || updates.length === 0) return;
+    // Optimistic local update first so the list reflects new ordering
+    // even before the network round-trips. We rebuild the units array
+    // with the new order_index values and re-sort.
+    setUnits((prev) => {
+      const byId = new Map(prev.map((u) => [u.id, u]));
+      for (const upd of updates) {
+        const u = byId.get(upd.id);
+        if (u) byId.set(upd.id, { ...u, order_index: upd.order_index });
+      }
+      const next = Array.from(byId.values());
+      next.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
+      return next;
+    });
+    for (const upd of updates) {
+      api.patchV2ContentUnit(upd.id, { order_index: upd.order_index }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn("[units reorder]", upd.id, err?.message || err);
+      });
+    }
+  }, []);
 
   // Move a component subtree between modules. Source and target are
   // PATCHed in parallel. Uses html_cache as the source of truth (the
@@ -1141,6 +1210,13 @@ export default function EditorV2() {
                 onSwapVariant={(vId) => onSwapVariant(mod, vId)}
                 onSaveContent={(patch) => onSaveContent(mod.id, patch)}
                 onSelectionChange={(info) => handleSelectionChange(mod, info)}
+                highlightedUnitId={highlightedUnitId}
+                onUnitClick={(unitId, anchorRect) => {
+                  const u = units.find((x) => x.unit_id === unitId || x.id === unitId);
+                  if (!u) return;
+                  setSelectedUnitId(u.id);
+                  setUnitPopover({ unit: u, anchorRect });
+                }}
               />
             ))
           )}
@@ -1190,10 +1266,41 @@ export default function EditorV2() {
         {/* ─── Far right: alpha-v3 content units panel (only if any) ─── */}
         {units.length > 0 ? (
           <aside className="editor-units-panel">
-            <UnitsPanel units={units} onPatchUnit={onPatchUnit} />
+            <UnitsListPanel
+              units={units}
+              pageMap={unitPageMap}
+              selectedUnitId={selectedUnitId}
+              onSelect={(u) => setSelectedUnitId(u.id)}
+              onEdit={(u) => {
+                // No anchor rect — popover falls back to fixed top-left.
+                // Used for keyboard-driven double-clicks in the list.
+                setUnitPopover({ unit: u, anchorRect: null });
+                setSelectedUnitId(u.id);
+              }}
+              onPatchUnit={onPatchUnit}
+              onHoverUnit={setHighlightedUnitId}
+              onReorder={onReorderUnits}
+            />
           </aside>
         ) : null}
       </div>
+
+      {/* Inline unit-edit popover (canvas click → here). */}
+      {unitPopover ? (
+        <UnitEditPopover
+          unit={unitPopover.unit}
+          anchorRect={unitPopover.anchorRect}
+          onPatchUnit={onPatchUnit}
+          onClose={() => setUnitPopover(null)}
+          onOpenFullEditor={(u) => {
+            // Surface the unit row in the side panel and close the popover —
+            // the "full editor" surfaces are still per-type cards in the
+            // side panel, so the cleanest UX for v1 is to select + close.
+            setSelectedUnitId(u.id);
+            setUnitPopover(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1240,6 +1347,10 @@ function ModuleCard({
   onSwapVariant,
   onSaveContent,
   onSelectionChange,
+  // Alpha-v3 units integration: hover from side panel paints an outline
+  // on canvas; click on a [data-unit] element opens the inline popover.
+  highlightedUnitId,
+  onUnitClick,
 }) {
   const innerRef = useRef(null);
   // Forward the HtmlPreview imperative handle up to EditorV2 via the
@@ -1383,6 +1494,8 @@ function ModuleCard({
           zoom={zoom}
           showGrid={showGrid}
           showOverflow={showOverflow}
+          highlightedUnitId={highlightedUnitId}
+          onUnitClick={onUnitClick}
         />
       </div>
     </section>

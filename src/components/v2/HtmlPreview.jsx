@@ -537,6 +537,16 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   // persistent, unambiguous tool surface that doesn't depend on the
   // fragile floating bar.
   onSelectionChange,
+  // Alpha-v3 units integration (panel-rebuild Fas 3 + 4):
+  // - highlightedUnitId: when matching a `[data-unit]` element in the
+  //   preview, paint a smooth orange outline so hovering the side panel
+  //   visually pinpoints the unit on canvas.
+  // - onUnitClick(unitId, anchorRect): fired when the user clicks any
+  //   `[data-unit]` element (the unit ref string + viewport bounds so the
+  //   parent can anchor an edit popover). Click is suppressed from the
+  //   regular selection path when it lands inside a unit ref.
+  highlightedUnitId = null,
+  onUnitClick,
 }, forwardedRef) {
   const containerRef = useRef(null);
   const [selected, setSelected] = useState(null);
@@ -592,10 +602,12 @@ const HtmlPreview = forwardRef(function HtmlPreview({
   const onComponentDragStartRef = useRef(onComponentDragStart);
   const onComponentDragEndRef = useRef(onComponentDragEnd);
   const onSelectionChangeRef = useRef(onSelectionChange);
+  const onUnitClickRef = useRef(onUnitClick);
   useEffect(() => { onHtmlChangeRef.current = onHtmlChange; });
   useEffect(() => { onComponentDragStartRef.current = onComponentDragStart; });
   useEffect(() => { onComponentDragEndRef.current = onComponentDragEnd; });
   useEffect(() => { onSelectionChangeRef.current = onSelectionChange; });
+  useEffect(() => { onUnitClickRef.current = onUnitClick; });
 
   // Emit selection info to the parent whenever `selected` changes so
   // the inspector panel can render the right actions. Includes a
@@ -828,6 +840,30 @@ const HtmlPreview = forwardRef(function HtmlPreview({
       return true;
     },
   }), [selected, moduleId, logos, assets]);
+
+  // Alpha-v3 unit hover-highlight: tag the matching [data-unit] element
+  // inside the shadow DOM with `.unit-highlight` whenever the side panel
+  // reports a hover. We clear any previous mark before applying so the
+  // outline doesn't pile up across rapid hovers. The class itself is
+  // styled by the chrome <style> block injected by injectHtml (search
+  // for ".unit-highlight" further down). Shadow-DOM-safe: we walk the
+  // open shadow root, not the light DOM.
+  useEffect(() => {
+    const shadow = containerRef.current?.shadowRoot;
+    if (!shadow) return undefined;
+    // Clear stale outlines.
+    shadow.querySelectorAll(".unit-highlight").forEach((el) =>
+      el.classList.remove("unit-highlight")
+    );
+    if (!highlightedUnitId) return undefined;
+    // CSS attribute selector — escape quotes defensively.
+    const safe = String(highlightedUnitId).replace(/"/g, '\\"');
+    const matches = shadow.querySelectorAll(`[data-unit="${safe}"]`);
+    matches.forEach((el) => el.classList.add("unit-highlight"));
+    return () => {
+      matches.forEach((el) => el.classList.remove("unit-highlight"));
+    };
+  }, [highlightedUnitId, html, units]);
 
   // Pre-substitute alpha-v3 [data-unit] placeholders in the source HTML.
   // We skip the call entirely when there are no units — the selector
@@ -1128,6 +1164,20 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         letter-spacing: .03em;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
       }
+      /* Alpha-v3 unit hover-highlight — driven by the units side panel.
+         Smooth transition + offset orange outline so it doesn't compete
+         with the rose selection styling. Pointer cursor hints that the
+         unit is click-editable via the inline popover. */
+      .preview-root [data-unit] {
+        cursor: pointer;
+        transition: outline-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+      }
+      .preview-root [data-unit].unit-highlight {
+        outline: 2px solid #f97316;
+        outline-offset: 3px;
+        box-shadow: 0 0 0 5px rgba(249, 115, 22, 0.18);
+        background-color: rgba(249, 115, 22, 0.05);
+      }
       /* Drop zone markers for intra-page reorder */
       .preview-root [data-editor-selectable].dz-before {
         box-shadow: 0 -3px 0 0 #b85a73, 0 0 0 4px rgba(184, 90, 115, 0.12) !important;
@@ -1412,6 +1462,29 @@ const HtmlPreview = forwardRef(function HtmlPreview({
         e.preventDefault();
         setImagePicker({ target: e.target });
         return;
+      }
+
+      // Alpha-v3 click-to-edit-unit: walk up from the click target until
+      // we find an element carrying a `data-unit` attribute. The selectors
+      // injected by `substituteUnits` add that attr to every unit body —
+      // we use it as the unit-ref anchor for the inline edit popover.
+      // Holding Alt falls through to regular element selection so users
+      // can still pick the wrapping element for layout edits.
+      if (onUnitClickRef.current && !e.altKey) {
+        const unitEl = e.target?.closest?.("[data-unit]");
+        if (unitEl && root.contains(unitEl)) {
+          const unitId = unitEl.getAttribute("data-unit");
+          if (unitId) {
+            e.preventDefault();
+            const r = unitEl.getBoundingClientRect();
+            // Pass viewport-space rect — popover handles its own clamping.
+            onUnitClickRef.current(unitId, {
+              top: r.top, bottom: r.bottom, left: r.left, right: r.right,
+              width: r.width, height: r.height,
+            });
+            return;
+          }
+        }
       }
 
       const el = findSelectable(e.target, root);

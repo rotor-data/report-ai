@@ -15,6 +15,7 @@ import { z } from "zod";
 import { json, noContent } from "./cors.js";
 import { requireHubOrEditorAuth, editorScopeMismatch } from "./auth-middleware.js";
 import { getSql } from "./db.js";
+import { editDistance } from "../../src/lib/edit-distance.js";
 
 // metadata is JSONB — accept any shape but cap raw payload size to keep a
 // runaway client from filling the column with megabytes.
@@ -24,9 +25,23 @@ const updateSchema = z.object({
   text: z.string().nullable().optional(),
   level: z.number().int().min(1).max(6).nullable().optional(),
   metadata: z.record(z.string(), z.any()).nullable().optional(),
+  // Drag-to-reorder support: integer position within the report's units list.
+  // The renderer/editor sort by order_index, so changing this is a no-op for
+  // text contents but reshuffles the on-page ordering when refs are
+  // re-resolved. Negative values are rejected.
+  order_index: z.number().int().min(0).optional(),
+  // Type-change support (rare, but needed for bulk-edit "change type").
+  // Loose validation — server doesn't enforce the catalogue here; the
+  // renderer falls back to a generic block for unknown types.
+  type: z.string().min(1).max(64).optional(),
 }).refine(
-  (d) => d.text !== undefined || d.level !== undefined || d.metadata !== undefined,
-  { message: "Provide at least one of: text, level, metadata" },
+  (d) =>
+    d.text !== undefined
+    || d.level !== undefined
+    || d.metadata !== undefined
+    || d.order_index !== undefined
+    || d.type !== undefined,
+  { message: "Provide at least one of: text, level, metadata, order_index, type" },
 );
 
 function parseBody(event) {
@@ -116,17 +131,45 @@ export const handler = async (event) => {
     const newMetadata = parsed.data.metadata === undefined
       ? existing.metadata
       : (parsed.data.metadata ?? {});
+    const newOrderIndex = parsed.data.order_index === undefined
+      ? existing.order_index
+      : parsed.data.order_index;
+    const newType = parsed.data.type === undefined ? existing.type : parsed.data.type;
 
     const updated = await sql`
       UPDATE v2_content_units
       SET text = ${newText},
           level = ${newLevel},
           metadata = ${JSON.stringify(newMetadata)}::jsonb,
+          order_index = ${newOrderIndex},
+          type = ${newType},
           updated_at = NOW()
       WHERE id = ${unitId}
       RETURNING id, report_id, unit_id, type, level, text, metadata,
                 order_index, created_at, updated_at
     `;
+
+    // Fire-and-forget feedback row: capture the (before, after) delta so the
+    // parse heuristics can learn from real edits. We only record when text or
+    // type actually changed — order_index/metadata-only edits aren't
+    // interesting to the parse model. Detached promise MUST have a .catch
+    // (see hub CLAUDE.md "Fire-and-forget DB writes MUST have .catch") to
+    // avoid unhandledRejection crashing the Lambda.
+    const textChanged = parsed.data.text !== undefined && parsed.data.text !== existing.text;
+    const typeChanged = parsed.data.type !== undefined && parsed.data.type !== existing.type;
+    if (textChanged || typeChanged) {
+      const dist = editDistance(existing.text, newText);
+      sql`
+        INSERT INTO unit_parse_feedback
+          (report_id, unit_id, original_text, original_type,
+           edited_text, edited_type, edit_distance)
+        VALUES
+          (${existing.report_id}, ${existing.unit_id},
+           ${existing.text}, ${existing.type},
+           ${newText}, ${newType}, ${dist})
+        ON CONFLICT (report_id, unit_id, created_at) DO NOTHING
+      `.catch((err) => console.warn("[unit-parse-feedback]", err?.message || err));
+    }
 
     return json(event, 200, { item: updated[0] });
   } catch (err) {
