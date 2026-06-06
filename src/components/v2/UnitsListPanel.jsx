@@ -543,15 +543,6 @@ function BulkEditMenu({
           </button>
         </div>
       </details>
-
-      <details className="units-bulk-section">
-        <summary>Språkkorrigering</summary>
-        <div className="units-bulk-section-body">
-          <p className="units-bulk-hint">
-            Kräver API-nyckel — kommer i senare release.
-          </p>
-        </div>
-      </details>
     </div>
   );
 }
