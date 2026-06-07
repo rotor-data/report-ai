@@ -2219,6 +2219,7 @@ async function handleSaveBlueprint(userId, args, _event, hubTenantId) {
     reference_source,
     module_count,
     source_report_id,
+    page_format,
   } = args;
 
   // Validate required alpha-v3 fields
@@ -2332,6 +2333,7 @@ async function handleSaveBlueprint(userId, args, _event, hubTenantId) {
       reference_source,
       module_count,
       source_report_id,
+      page_format,
       modules,
       slots
     ) VALUES (
@@ -2347,6 +2349,7 @@ async function handleSaveBlueprint(userId, args, _event, hubTenantId) {
       ${reference_source || null},
       ${module_count != null ? module_count : null},
       ${source_report_id || null},
+      ${page_format || 'a4_portrait'},
       NULL,
       NULL
     )
@@ -2627,6 +2630,10 @@ function shapeBlueprintFullRow(r) {
     module_count: r.module_count != null ? r.module_count : null,
     gallery_url: r.gallery_url || null,
     cover_thumbnail_url: r.cover_thumbnail_url || null,
+    // page_format so setup can adopt the blueprint's authored format on pick.
+    // (2026-06-07: without this, picking a landscape/presentation blueprint
+    // opened the report in portrait.)
+    page_format: r.page_format || 'a4_portrait',
   };
 }
 
@@ -2770,7 +2777,7 @@ async function handlePreviewBlueprint(userId, args) {
     : r.narrative_guidance;
 
   return textResult({
-    ...shapeBlueprintRow(r, { includeThumb: true }),
+    ...shapeBlueprintFullRow(r),
     slots: slots || null,
     narrative_guidance: narrative || null,
     modules: modules || null,  // legacy compat
