@@ -170,6 +170,12 @@ const CODE_RE = /`([^`\n]+?)`/g;
 const LINK_RE = /\[([^\]]*)\]\(([^)\s]+)\)/g;
 // Attribute-span: [text]{attrs}. Inner text forbids `]`; attrs body forbids `}`.
 const ATTR_SPAN_RE = /\[([^\]]+)\]\{([^}]+)\}/g;
+// Markdown footnotes — mirror of inline_md.py. `[^1]` ref -> superscript
+// marker; `[^1]: text` definition -> marker + flowing text. DEF must precede
+// REF (same start, tie-break keeps first-listed). Keeps editor preview in
+// sync with the PDF renderer (Daniel 2026-06-08).
+const FN_DEF_RE = /\[\^([^\]\s]{1,24})\]:[ \t]?/g;
+const FN_REF_RE = /\[\^([^\]\s]{1,24})\]/g;
 const BR_RE = /<br\s*\/?>/gi;
 
 function boldHandler(m) {
@@ -222,8 +228,20 @@ function brHandler() {
   return '<br>';
 }
 
+function fnDefHandler(m) {
+  // Footnote definition `[^1]: ...` -> raised marker; rest of the line flows on.
+  return `<sup class="fn-def">${escape(m[1])}</sup> `;
+}
+
+function fnRefHandler(m) {
+  // Inline footnote reference `[^1]` -> raised marker number.
+  return `<sup class="fn-ref">${escape(m[1])}</sup>`;
+}
+
 const MATCHERS = [
   [BOLD_RE, boldHandler],
+  [FN_DEF_RE, fnDefHandler],
+  [FN_REF_RE, fnRefHandler],
   [HILITE_RE, hiliteHandler],
   [STRIKE_RE, strikeHandler],
   [CODE_RE, codeHandler],

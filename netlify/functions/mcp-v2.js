@@ -296,11 +296,11 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tenant_id: { type: "string", description: "Tenant UUID" },
-        brand_id: { type: "string", description: "Brand UUID" },
-        title: { type: "string" },
+        tenant_id: { type: "string", description: "Tenant UUID. Resolve via brand__get_context or list_brands." },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
+        title: { type: "string", description: "Report title shown in the editor and PDF." },
         document_type: { type: "string", description: "Document type key (e.g. quarterly, annual_report, pitch, case_study, whitepaper, newsletter). Drives stub plan + design defaults.", examples: ["quarterly", "annual_report", "pitch", "case_study", "whitepaper", "newsletter"] },
-        template_id: { type: "string", description: "Optional template ID" },
+        template_id: { type: "string", description: "Optional legacy template ID from report2__list_templates. Omit for alpha-v3 freeform reports." },
         page_format: { type: "string", description: "Page format: a4_portrait (default) | a4_landscape | presentation | us_letter | square | digital", examples: ["a4_portrait", "a4_landscape", "presentation", "us_letter", "square", "digital"] },
       },
       required: ["tenant_id", "brand_id", "title", "document_type"],
@@ -312,7 +312,7 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
-      properties: { report_id: { type: "string" } },
+      properties: { report_id: { type: "string", description: "Report UUID from report2__create or report2__list_reports." } },
       required: ["report_id"],
     },
   },
@@ -324,7 +324,7 @@ const TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
-      properties: { report_id: { type: "string" } },
+      properties: { report_id: { type: "string", description: "Report UUID from report2__create or report2__list_reports." } },
       required: ["report_id"],
     },
   },
@@ -335,8 +335,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        report_id: { type: "string" },
-        mode: { type: "string", enum: ["draft", "final"], description: "Draft includes watermark" },
+        report_id: { type: "string", description: "Report UUID from report2__list_reports. Must have pages already (via build_pages or persist_freeform_pages)." },
+        mode: { type: "string", enum: ["draft", "final"], description: "'draft' adds a watermark; 'final' is the clean export.", examples: ["draft", "final"] },
       },
       required: ["report_id", "mode"],
     },
@@ -393,25 +393,27 @@ const TOOLS = [
       properties: {
         payload: {
           type: "object",
+          description: "The render payload — Claude is the source of truth for page content (this tool does NOT read v2_report_pages).",
           required: ["pages", "design_system_css", "brand_id"],
           properties: {
             pages: {
               type: "array",
+              description: "Ordered freeform pages. One object per page.",
               items: {
                 type: "object",
                 required: ["page_num", "html"],
                 properties: {
-                  page_num: { type: "number" },
-                  module_ids: { type: "array", items: { type: "string" } },
-                  html: { type: "string" },
+                  page_num: { type: "number", description: "1-indexed page number." },
+                  module_ids: { type: "array", items: { type: "string" }, description: "Optional module ids backing this page (audit only)." },
+                  html: { type: "string", description: "Freeform HTML for the page — a <section class='page'> root as produced by page_design." },
                 },
               },
             },
-            design_system_css: { type: "string" },
-            augmented_design_css_additions: { type: "string" },
-            brand_id: { type: "string" },
-            page_format: { type: "string" },
-            title: { type: "string" },
+            design_system_css: { type: "string", description: "The report's design_system_css (:root tokens + class rules), injected as document_css." },
+            augmented_design_css_additions: { type: "string", description: "Optional CSS appended after design_system_css (module_review patches)." },
+            brand_id: { type: "string", description: "Brand UUID from report2__list_brands — drives token/font resolution + blob scoping." },
+            page_format: { type: "string", description: "Page format. Default a4_portrait.", examples: ["a4_portrait", "a4_landscape", "presentation", "us_letter", "square", "digital"] },
+            title: { type: "string", description: "Optional report title for the PDF metadata." },
             units: {
               type: "array",
               description: "Optional content units array. When supplied, takes precedence over the v2_content_units DB lookup. Used by in-flight sample renders (design_language, render_preview) where units haven't been persisted yet. Items: {unit_id, type, level?, text?, metadata?, order_index}.",
@@ -423,8 +425,8 @@ const TOOLS = [
             },
           },
         },
-        report_id: { type: "string" },
-        mode: { type: "string", enum: ["draft", "final"] },
+        report_id: { type: "string", description: "Report UUID this render belongs to (for blob scoping / job tracking)." },
+        mode: { type: "string", enum: ["draft", "final"], description: "'draft' adds a watermark; 'final' is the clean export.", examples: ["draft", "final"] },
       },
     },
   },
@@ -438,25 +440,27 @@ const TOOLS = [
       properties: {
         payload: {
           type: "object",
+          description: "The render payload — same shape as render_freeform_pdf's payload.",
           required: ["pages", "design_system_css", "brand_id"],
           properties: {
             pages: {
               type: "array",
+              description: "Ordered freeform pages. One object per slide.",
               items: {
                 type: "object",
                 required: ["page_num", "html"],
                 properties: {
-                  page_num: { type: "number" },
-                  module_ids: { type: "array", items: { type: "string" } },
-                  html: { type: "string" },
+                  page_num: { type: "number", description: "1-indexed page/slide number." },
+                  module_ids: { type: "array", items: { type: "string" }, description: "Optional module ids backing this page (audit only)." },
+                  html: { type: "string", description: "Freeform HTML for the page — a <section class='page'> root." },
                 },
               },
             },
-            design_system_css: { type: "string" },
-            augmented_design_css_additions: { type: "string" },
-            brand_id: { type: "string" },
-            page_format: { type: "string" },
-            title: { type: "string" },
+            design_system_css: { type: "string", description: "The report's design_system_css, injected as document_css." },
+            augmented_design_css_additions: { type: "string", description: "Optional CSS appended after design_system_css." },
+            brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
+            page_format: { type: "string", description: "Page format. Default a4_portrait.", examples: ["a4_portrait", "a4_landscape", "presentation", "us_letter", "square", "digital"] },
+            title: { type: "string", description: "Optional report title." },
             units: {
               type: "array",
               description: "Optional content units array (same as render_freeform_pdf).",
@@ -468,7 +472,7 @@ const TOOLS = [
             },
           },
         },
-        report_id: { type: "string" },
+        report_id: { type: "string", description: "Report UUID this render belongs to (for blob scoping / job tracking)." },
       },
     },
   },
@@ -487,8 +491,8 @@ const TOOLS = [
             type: "object",
             required: ["page_num", "html"],
             properties: {
-              page_num: { type: "number" },
-              html: { type: "string" },
+              page_num: { type: "number", description: "1-indexed page number." },
+              html: { type: "string", description: "Freeform HTML for the page — a <section class='page'> root." },
             },
           },
         },
@@ -499,6 +503,7 @@ const TOOLS = [
         brand_id: { type: "string", description: "Brand UUID for token resolution + blob-scoping." },
         page_format: { type: "string", description: "a4_portrait | a4_landscape | presentation | us_letter | square | digital. Default a4_portrait.", examples: ["a4_portrait", "a4_landscape", "presentation", "us_letter", "square", "digital"] },
         return_base64: { type: "boolean", description: "If true, each returned thumbnail also carries png_base64 alongside the URL. Used by workflow pauses that want to attach the image as an MCP image content block for Claude's multimodal view." },
+        samples_only: { type: "boolean", description: "Set true for design_language sample renders whose HTML references unit IDs that don't exist in v2_content_units yet. Forwards keep_placeholders to the renderer so unresolved data-unit elements keep their inline placeholder copy instead of rendering empty. Default false (production: missing units render empty)." },
         thumbnail_dpi: { type: "number", description: "When return_base64 is true, rasterize at this DPI instead of the default 150 so the base64 payload stays under MCP response-size limits. Recommended: 72 for design review, 48 for dense multi-page overviews. Ignored when return_base64 is false." },
         units: {
           type: "array",
@@ -515,13 +520,36 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string", description: "Brand UUID for tokens/fonts/logos" },
-        tenant_id: { type: "string", description: "Tenant UUID for blob namespacing" },
-        template_id: { type: "string", description: "Optional template ID, defaults to standard-v1" },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands — for tokens/fonts/logos." },
+        tenant_id: { type: "string", description: "Tenant UUID for blob namespacing." },
+        template_id: { type: "string", description: "Optional template ID, defaults to standard-v1." },
         plan: {
           type: "array",
-          description: "Plan modules (same shape as report2.plan_structure output): {local_id, module_type, title, summary?, column_preset?, slots?}",
-          items: { type: "object" },
+          description: "Plan modules (same shape as report2.plan_structure output).",
+          items: {
+            type: "object",
+            required: ["local_id", "module_type", "title"],
+            properties: {
+              local_id: { type: "string", description: "Caller-stable id for this module within the plan." },
+              module_type: { type: "string", description: "Module type key. 'cover'/'back_cover'/'chapter_break' get bespoke stub content; everything else renders as a layout of slots.", examples: ["cover", "text_spread", "kpi_grid", "pull_quote", "chart"] },
+              title: { type: "string", description: "Module heading text. Used as cover/chapter title and as the per-slot heading fallback." },
+              summary: { type: "string", description: "Optional body sketch / summary. Used as cover subtitle / back_cover disclaimer stub content." },
+              column_preset: { type: "string", description: "Optional layout column preset (becomes content.columns). Defaults to 'full'.", examples: ["full", "single", "two_col"] },
+              slots: {
+                type: "array",
+                description: "Optional slot content entries for layout modules. Each slot's category drives how heading/body_sketch are rendered (text → heading+body, data → label+value, media → caption).",
+                items: {
+                  type: "object",
+                  properties: {
+                    category: { type: "string", description: "Slot category.", examples: ["text", "data", "media"] },
+                    heading: { type: "string", description: "Slot heading / label / caption (falls back to the module title for text slots)." },
+                    body_sketch: { type: "string", description: "Slot body / value sketch text used as stub content." },
+                  },
+                  additionalProperties: true,
+                },
+              },
+            },
+          },
         },
       },
       required: ["brand_id", "plan"],
@@ -533,7 +561,7 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
-      properties: { report_id: { type: "string" } },
+      properties: { report_id: { type: "string", description: "Report UUID from report2__list_reports." } },
       required: ["report_id"],
     },
   },
@@ -546,8 +574,18 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string" },
-        tokens: { type: "object", description: "Brand design tokens JSONB" },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
+        tokens: {
+          type: "object",
+          description: "Brand design tokens (JSONB). Merged onto existing tokens.",
+          additionalProperties: true,
+          properties: {
+            color: { type: "object", description: "Color tokens, e.g. { primary, accent, background, foreground } (hex strings).", additionalProperties: true },
+            font: { type: "object", description: "Font tokens, e.g. { heading, body } (font-family names).", additionalProperties: true },
+            spacing: { type: "object", description: "Spacing scale tokens.", additionalProperties: true },
+          },
+          examples: [{ color: { primary: "#0A2540", accent: "#00D4FF" }, font: { heading: "Inter", body: "Inter" } }],
+        },
       },
       required: ["brand_id", "tokens"],
     },
@@ -558,7 +596,7 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
-      properties: { brand_id: { type: "string" } },
+      properties: { brand_id: { type: "string", description: "Brand UUID from report2__list_brands." } },
       required: ["brand_id"],
     },
     outputSchema: {
@@ -583,12 +621,12 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string" },
-        family: { type: "string" },
-        weight: { type: "integer" },
-        style: { type: "string", enum: ["normal", "italic"] },
-        format: { type: "string", enum: ["woff2", "woff", "ttf", "otf"] },
-        data_base64: { type: "string" },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
+        family: { type: "string", description: "Font-family name as referenced in CSS, e.g. 'Inter'." },
+        weight: { type: "integer", description: "Numeric font weight, e.g. 400 (regular), 700 (bold).", examples: [400, 500, 700] },
+        style: { type: "string", enum: ["normal", "italic"], description: "Font style.", examples: ["normal", "italic"] },
+        format: { type: "string", enum: ["woff2", "woff", "ttf", "otf"], description: "Font file format (matches the uploaded bytes).", examples: ["woff2", "ttf"] },
+        data_base64: { type: "string", description: "The font file bytes, base64-encoded (no data: URI prefix)." },
       },
       required: ["brand_id", "family", "weight", "style", "format", "data_base64"],
     },
@@ -600,10 +638,10 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string" },
-        variant: { type: "string", description: "e.g. primary, monochrome, icon" },
-        format: { type: "string", enum: ["svg", "png", "jpg"] },
-        data_base64: { type: "string" },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
+        variant: { type: "string", description: "Logo variant key.", examples: ["primary", "monochrome", "icon"] },
+        format: { type: "string", enum: ["svg", "png", "jpg"], description: "Logo file format (matches the uploaded bytes).", examples: ["svg", "png"] },
+        data_base64: { type: "string", description: "The logo file bytes, base64-encoded (no data: URI prefix)." },
       },
       required: ["brand_id", "variant", "format", "data_base64"],
     },
@@ -615,10 +653,10 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tenant_id: { type: "string" },
-        filename: { type: "string" },
-        mime_type: { type: "string" },
-        data_base64: { type: "string" },
+        tenant_id: { type: "string", description: "Tenant UUID that owns the asset library." },
+        filename: { type: "string", description: "Original filename, e.g. 'hero.png'." },
+        mime_type: { type: "string", description: "MIME type of the bytes.", examples: ["image/png", "image/jpeg", "image/svg+xml"] },
+        data_base64: { type: "string", description: "The image bytes, base64-encoded (no data: URI prefix)." },
       },
       required: ["tenant_id", "filename", "mime_type", "data_base64"],
     },
@@ -631,8 +669,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tenant_id: { type: "string" },
-        asset_class: { type: "string", description: "Filter by class: photo, icon, svg. Omit for all." },
+        tenant_id: { type: "string", description: "Tenant UUID that owns the asset library." },
+        asset_class: { type: "string", description: "Filter by class. Omit for all.", examples: ["photo", "icon", "svg"] },
       },
       required: ["tenant_id"],
     },
@@ -714,8 +752,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        template_id: { type: "string" },
-        module_type: { type: "string", enum: VALID_MODULE_TYPES },
+        template_id: { type: "string", description: "Optional template ID to scope the schema. From report2__list_templates." },
+        module_type: { type: "string", enum: VALID_MODULE_TYPES, description: "Optional single module type to return the schema for. Omit for all types." },
       },
     },
   },
@@ -834,7 +872,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        blueprint_id: { type: "string" },
+        blueprint_id: { type: "string", description: "Blueprint UUID from report2__list_blueprints." },
       },
       required: ["blueprint_id"],
     },
@@ -846,10 +884,10 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        blueprint_id: { type: "string" },
-        title: { type: "string" },
-        document_type: { type: "string" },
-        brand_id: { type: "string", description: "Required when the blueprint is Smyra-visibility (has no owner brand). Ignored for brand-owned blueprints." },
+        blueprint_id: { type: "string", description: "Blueprint UUID from report2__list_blueprints. Must be alpha-v3 (has design_system_css)." },
+        title: { type: "string", description: "Title for the new report." },
+        document_type: { type: "string", description: "Document type key for the new report.", examples: ["quarterly", "annual_report", "pitch", "case_study", "whitepaper", "newsletter"] },
+        brand_id: { type: "string", description: "Required when the blueprint is Smyra-visibility (has no owner brand). Ignored for brand-owned blueprints. From report2__list_brands." },
       },
       required: ["blueprint_id", "title", "document_type"],
     },
@@ -863,17 +901,32 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        component_id: { type: "string", description: "Existing component ID to update (omit for new component)" },
-        brand_id: { type: "string" },
+        component_id: { type: "string", description: "Existing component ID to update (omit for new component). From report2__list_components." },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands — owns this component." },
         component_type: { type: "string", description: "Canonical component type id (validated in application code, DB constraint relaxed). Common: heading, body_text, kpi_grid, pull_quote, chart, photo, cover, footer, divider.", examples: ["heading", "body_text", "kpi_grid", "pull_quote", "chart", "photo", "cover", "footer", "divider"] },
         variant_name: { type: "string", description: "Named variant of this component_type (e.g. 'Bold', 'Minimal', 'Editorial'). Defaults to 'Default'. Two components with the same (component_type, variant_name) for the same brand are NOT allowed — use component_id to update existing." },
         label: { type: "string", description: "Human-readable name, e.g. 'KPI-grupp med accent-border'" },
         html_template: { type: "string", description: "HTML with {{PLACEHOLDER}} tokens. Use component-name-prefixed CSS classes (e.g. '.fs-blocks .val', '.heading-split __word') — NOT inline styles. One stylesheet per document at render time, so classes must not collide with other components." },
         css_template: { type: "string", description: "The CSS rules for the classes used in html_template. Scoped naturally by class prefix (e.g. '.fs-blocks .val { ... }'). Included in the document-level stylesheet at compose time so editor + PDF render identically." },
         splittable: { type: "boolean", description: "Can this variant be split across a page boundary? body_text / list DEFAULT true, other types DEFAULT false. Set true for plain lists / body text without per-item decoration. Set false for decorated variants (per-item backgrounds, gradients, borders) that look broken when split. Null/omitted = use the type default." },
-        placeholder_schema: { type: "array", items: { type: "object" }, description: "Array of {name, required?, type?} describing placeholders" },
+        placeholder_schema: {
+          type: "array",
+          description: "Array describing each {{PLACEHOLDER}} token in html_template.",
+          items: {
+            type: "object",
+            required: ["name"],
+            properties: {
+              name: { type: "string", description: "Placeholder token name without braces, e.g. 'TITLE'." },
+              required: { type: "boolean", description: "Whether the editor must supply a value." },
+              type: { type: "string", description: "Value type hint.", examples: ["text", "number", "url", "image"] },
+            },
+          },
+          examples: [[{ name: "TITLE", required: true, type: "text" }, { name: "VALUE", type: "number" }]],
+        },
         design_notes: { type: "string", description: "Art director notes explaining the design choices" },
-        source: { type: "string", enum: ["extraction", "report", "manual"] },
+        source: { type: "string", enum: ["extraction", "report", "manual"], description: "Provenance of this component. Defaults to 'manual'.", examples: ["extraction", "report", "manual"] },
+        status: { type: "string", enum: ["draft", "ready", "deprecated"], description: "Lifecycle status. Defaults to 'ready'. Use 'deprecated' to soft-delete (hidden from pickers but kept for history). Any other value falls back to 'ready'.", examples: ["ready", "draft", "deprecated"] },
+        page_format: { type: "string", description: "Page format this variant is designed for, e.g. a4_portrait. Defaults to 'universal' (format-agnostic). list_components(page_format=…) returns matching-format AND universal variants.", examples: ["universal", "a4_portrait", "a4_landscape", "presentation"] },
         is_default: { type: "boolean", description: "Set as default variant for this component_type+brand. Clears default flag on other variants of the same type." },
         extraction_id: { type: "string", description: "Optional design_extractions row this component was derived from" },
         is_public: { type: "boolean", description: "If true, any brand may fork this component into their own library" },
@@ -882,8 +935,18 @@ const TOOLS = [
         harmony: { type: "array", items: { type: "string" }, description: "Optional palette-harmony tags (e.g. ['cool','monochrome']). Used by theme-reconcile to score variant picks against brand palette." },
         intensity: { type: "string", enum: ["quiet","medium","loud"], description: "Visual intensity of this variant. 'loud' = big display type, strong accent; 'quiet' = minimal, monochromatic." },
         accent_usage: { type: "string", enum: ["none","tint","strong"], description: "How prominently this variant uses the brand accent color. Variant-picker penalises 'strong' when brand accent is already loud." },
-        content_tolerance: { type: "object", description: "Per-placeholder content tolerances, e.g. { TITLE: { ideal_chars: [8,24], max_chars: 40 } }. Variant-picker scores content fit against these." },
-        chart_schema: { type: "object", description: "For chart variants only. Describes editable fields for the editor UI: { chart_type: ['bar','line'], labels: 'text[]', values: 'number[]', caption: 'text' }." },
+        content_tolerance: {
+          type: "object",
+          additionalProperties: { type: "object", properties: { ideal_chars: { type: "array", items: { type: "number" }, description: "[min, max] ideal character count." }, max_chars: { type: "number", description: "Hard upper bound." } } },
+          description: "Per-placeholder content tolerances keyed by placeholder name. Variant-picker scores content fit against these.",
+          examples: [{ TITLE: { ideal_chars: [8, 24], max_chars: 40 } }],
+        },
+        chart_schema: {
+          type: "object",
+          additionalProperties: true,
+          description: "For chart variants only. Describes editable fields for the editor UI.",
+          examples: [{ chart_type: ["bar", "line"], labels: "text[]", values: "number[]", caption: "text" }],
+        },
         chart_color_mode: { type: "string", enum: ["brand","custom","brand-locked"], description: "For chart variants only. 'brand' = theme-reconcile computes palette from tokens (default). 'custom' = respect data-chart-colors attr. 'brand-locked' = ignore attr, force brand." },
         style_family: { type: "string", description: "Visual style family (Editorial, Creative, Minimal) used by the library picker to keep variants coherent across a single report. Picker prefers variants that share a family with the cover." },
         report_id: { type: "string", description: "If set, scopes this variant to a single report (brand_components.report_id). The variant becomes available ONLY when list_components is called with that report_id. Use for redesign-for-this-report flows to avoid polluting the permanent brand library." },
@@ -898,10 +961,13 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string" },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
         component_type: { type: "string", description: "Filter by type (optional)", examples: ["heading", "body_text", "kpi_grid", "pull_quote", "chart", "photo", "cover"] },
         variant_name: { type: "string", description: "Filter to one specific variant (optional)" },
         include_public: { type: "boolean", description: "Also include is_public=true components from other brands" },
+        include_drafts: { type: "boolean", description: "When true, include draft + deprecated components (default false = only 'ready'). Ignored if status is set." },
+        status: { type: "string", enum: ["draft", "ready", "deprecated", "all"], description: "Filter by lifecycle status. Default returns only 'ready'. Pass 'all' to skip the status filter entirely.", examples: ["ready", "all", "draft"] },
+        page_format: { type: "string", description: "Filter to variants tagged with this page format OR 'universal' (format-agnostic). Pass 'all' to skip the filter. Omit to include all formats.", examples: ["a4_portrait", "presentation", "all"] },
         extraction_id: { type: "string", description: "Filter to one specific extraction session" },
         report_id: { type: "string", description: "If set, results include brand-level variants (report_id IS NULL) AND variants scoped to this report_id. Report-scoped variants appear AFTER brand-level so downstream 'last wins by (type+variant)' logic prefers them." },
       },
@@ -943,7 +1009,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string" },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
         include_drafts: { type: "boolean", description: "Include draft/deprecated components (default false, ready only)" },
       },
       required: ["brand_id"],
@@ -956,11 +1022,11 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        html_fragment: { type: "string" },
-        page_width_mm: { type: "number" },
-        brand_tokens: { type: "object" },
-        brand_fonts: { type: "array" },
-        document_css: { type: "string" },
+        html_fragment: { type: "string", description: "The HTML fragment to measure (a single module/section, not a full page)." },
+        page_width_mm: { type: "number", description: "Page content width in mm. Default 170 (A4 portrait minus margins).", examples: [170, 257] },
+        brand_tokens: { type: "object", additionalProperties: true, description: "Optional brand design tokens to apply during measurement (same shape as brands.tokens)." },
+        brand_fonts: { type: "array", items: { type: "object" }, description: "Optional brand font face declarations for accurate metrics." },
+        document_css: { type: "string", description: "Optional document-level CSS injected before measuring." },
       },
       required: ["html_fragment"],
     },
@@ -972,7 +1038,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        report_id: { type: "string" },
+        report_id: { type: "string", description: "Report UUID from report2__list_reports." },
         verbose: { type: "boolean", description: "Include per-module HTML dumps (large output; default false)" },
       },
       required: ["report_id"],
@@ -985,8 +1051,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        report_id: { type: "string" },
-        document_css: { type: "string" },
+        report_id: { type: "string", description: "Report UUID from report2__list_reports." },
+        document_css: { type: "string", description: "The full assembled document-level stylesheet to persist on v2_reports.document_css." },
       },
       required: ["report_id", "document_css"],
     },
@@ -1024,8 +1090,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        source_component_id: { type: "string" },
-        target_brand_id: { type: "string" },
+        source_component_id: { type: "string", description: "Component UUID to copy. From report2__list_components (must be is_public=true if from a different brand)." },
+        target_brand_id: { type: "string", description: "Brand UUID to copy the component into. From report2__list_brands." },
         label: { type: "string", description: "Optional new label for the forked copy" },
         is_default: { type: "boolean", description: "Mark as default for this type in the target brand" },
       },
@@ -1039,12 +1105,21 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string", description: "Brand that will own the extracted components" },
+        brand_id: { type: "string", description: "Brand UUID that will own the extracted components. From report2__list_brands." },
         label: { type: "string", description: "Human-readable label, e.g. 'McKinsey Global AI Report 2025'" },
         source_description: { type: "string", description: "Where the reference came from (URL, filename)" },
-        suggested_tokens: { type: "object", description: "Initial token overlay (colors, fonts). Same shape as brands.tokens." },
-        inventory: { type: "array", items: { type: "object" }, description: "Initial component inventory (optional — can be filled in later via update_design_extraction)" },
-        reference_pages: { type: "array", items: { type: "object" }, description: "Rasterized page refs [{page, url, key}]" },
+        suggested_tokens: { type: "object", additionalProperties: true, description: "Initial token overlay (colors, fonts). Same shape as brands.tokens.", examples: [{ color: { primary: "#1A1A1A", accent: "#E4002B" } }] },
+        inventory: {
+          type: "array",
+          description: "Initial component inventory (optional — can be filled in later via update_design_extraction).",
+          items: { type: "object", additionalProperties: true, description: "One inventoried component, e.g. { component_type, label, notes }." },
+        },
+        reference_pages: {
+          type: "array",
+          description: "Rasterized page refs.",
+          items: { type: "object", required: ["page"], properties: { page: { type: "number", description: "1-indexed page number." }, url: { type: "string", description: "Cached PNG URL." }, key: { type: "string", description: "Blob store key." } } },
+          examples: [[{ page: 1, url: "https://…/p1.png", key: "ext/abc/p1" }]],
+        },
       },
       required: ["brand_id", "label"],
     },
@@ -1056,13 +1131,13 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        extraction_id: { type: "string" },
-        label: { type: "string" },
-        source_description: { type: "string" },
-        suggested_tokens: { type: "object" },
-        inventory: { type: "array", items: { type: "object" } },
-        reference_pages: { type: "array", items: { type: "object" } },
-        status: { type: "string", enum: ["draft", "ready", "applied", "archived"] },
+        extraction_id: { type: "string", description: "design_extractions UUID from report2__list_design_extractions or create_design_extraction." },
+        label: { type: "string", description: "New human-readable label (optional)." },
+        source_description: { type: "string", description: "New source description (optional)." },
+        suggested_tokens: { type: "object", additionalProperties: true, description: "Token overlay (colors, fonts). MERGED onto existing suggested_tokens (overlay, not full replace). Same shape as brands.tokens." },
+        inventory: { type: "array", items: { type: "object", additionalProperties: true }, description: "Replacement component inventory (fully replaces the existing array when provided)." },
+        reference_pages: { type: "array", items: { type: "object", additionalProperties: true }, description: "Replacement rasterized page refs [{page, url, key}]." },
+        status: { type: "string", enum: ["draft", "ready", "applied", "archived"], description: "New lifecycle status.", examples: ["draft", "ready", "applied"] },
       },
       required: ["extraction_id"],
     },
@@ -1073,7 +1148,7 @@ const TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
-      properties: { extraction_id: { type: "string" } },
+      properties: { extraction_id: { type: "string", description: "design_extractions UUID from report2__list_design_extractions." } },
       required: ["extraction_id"],
     },
   },
@@ -1084,8 +1159,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        brand_id: { type: "string" },
-        status: { type: "string", enum: ["draft", "ready", "applied", "archived"] },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
+        status: { type: "string", enum: ["draft", "ready", "applied", "archived"], description: "Filter by lifecycle status (optional).", examples: ["ready", "applied"] },
       },
       required: ["brand_id"],
     },
@@ -1097,8 +1172,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        extraction_id: { type: "string" },
-        token_keys: { type: "array", items: { type: "string" }, description: "Optional — only apply these keys (default: all keys in suggested_tokens)" },
+        extraction_id: { type: "string", description: "design_extractions UUID from report2__list_design_extractions." },
+        token_keys: { type: "array", items: { type: "string" }, description: "Optional — only apply these keys (default: all keys in suggested_tokens)", examples: [["color.primary", "color.accent"]] },
       },
       required: ["extraction_id"],
     },
@@ -1110,7 +1185,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        component_id: { type: "string" },
+        component_id: { type: "string", description: "Component UUID from report2__list_components." },
       },
       required: ["component_id"],
     },
@@ -1122,10 +1197,10 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        component_id: { type: "string", description: "Existing component ID (fetches template from DB)" },
-        html_template: { type: "string", description: "Or provide HTML directly (for preview before saving)" },
-        brand_id: { type: "string", description: "Required when using html_template directly" },
-        placeholder_values: { type: "object", description: "Key-value map to fill {{PLACEHOLDER}} tokens" },
+        component_id: { type: "string", description: "Existing component ID (fetches template from DB). From report2__list_components. Provide this OR (html_template + brand_id)." },
+        html_template: { type: "string", description: "Or provide HTML directly (for preview before saving). Requires brand_id." },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands. Required when using html_template directly." },
+        placeholder_values: { type: "object", additionalProperties: { type: "string" }, description: "Key-value map filling {{PLACEHOLDER}} tokens (keys without braces). Omit to use lorem-ipsum defaults.", examples: [{ TITLE: "Q3 Results", VALUE: "+12%" }] },
       },
     },
   },
@@ -1138,8 +1213,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        report_id: { type: "string" },
-        pages: { type: "array", items: { type: "integer" }, description: "Page numbers to rasterize (omit for all)" },
+        report_id: { type: "string", description: "Report UUID from report2__list_reports. Must have a rendered PDF." },
+        pages: { type: "array", items: { type: "integer" }, description: "Page numbers to rasterize (omit for all)", examples: [[1, 2, 3]] },
       },
       required: ["report_id"],
     },
@@ -1230,7 +1305,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        module_id: { type: "string" },
+        module_id: { type: "string", description: "Module UUID to debug. From report2__get_structure." },
         issue: { type: "string", description: "Optional description of the problem" },
       },
       required: ["module_id"],
@@ -1243,9 +1318,9 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        category: { type: "string", enum: ["text", "data", "media"] },
+        category: { type: "string", enum: ["text", "data", "media"], description: "Slot category the new variant belongs to.", examples: ["text", "data", "media"] },
         description: { type: "string", description: "What the new variant should do" },
-        example_content: { type: "object", description: "Example content payload for the new variant" },
+        example_content: { type: "object", additionalProperties: true, description: "Example content payload for the new variant (shape depends on category)." },
       },
       required: ["category", "description"],
     },
@@ -1286,7 +1361,7 @@ async function handleCreate(userId, args, _event, hubTenantId) {
     VALUES (${tenant_id}, ${brand_id}, ${template_id || null}, ${title}, ${document_type}, 'draft', ${pageFormatValue}, ${userId || null})
     RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, created_by, created_at
   `;
-  return textResult({ report_id: rows[0].id, ...rows[0], next_step: "Add modules with report2__add_module." });
+  return textResult({ report_id: rows[0].id, ...rows[0], next_step: "Compose pages, then persist them with report2__persist_freeform_pages. Most callers should use smyra_report_create instead of driving this primitive directly." });
 }
 
 
@@ -1301,7 +1376,7 @@ async function handleGetStructure(userId, args) {
     SELECT id, tenant_id, brand_id, template_id, title, document_type, status, created_at, updated_at
     FROM v2_reports WHERE id = ${report_id} LIMIT 1
   `;
-  if (!reports.length) return errorResult(`Report ${report_id} not found.`);
+  if (!reports.length) return errorResult(`Report ${report_id} not found.`, "Call report2__list_reports to find a valid report_id, or report2__create to make a new report.");
   const report = reports[0];
 
   const pages = await sql`
@@ -1349,7 +1424,7 @@ async function handleBuildPages(userId, args) {
   const reports = await sql`
     SELECT id, template_id, page_format FROM v2_reports WHERE id = ${report_id} LIMIT 1
   `;
-  if (!reports.length) return errorResult(`Report ${report_id} not found.`);
+  if (!reports.length) return errorResult(`Report ${report_id} not found.`, "Call report2__list_reports to find a valid report_id.");
 
   // Height budget resolution priority:
   //   1. Template schema (if an explicit content_height_mm is set there)
@@ -1371,7 +1446,7 @@ async function handleBuildPages(userId, args) {
     ORDER BY order_index
   `;
 
-  if (!modules.length) return errorResult("Report has no modules. Add modules first.");
+  if (!modules.length) return errorResult("Report has no modules. Add modules first.", "Add modules via report2__add_module or persist pages via report2__persist_freeform_pages, then re-run build_pages.");
 
   // Clear existing pages
   await sql`DELETE FROM v2_report_pages WHERE report_id = ${report_id}`;
@@ -1441,7 +1516,7 @@ async function handleBuildPages(userId, args) {
 async function handleRenderPdf(userId, args, event) {
   const sql = getSql();
   const { report_id, mode } = args;
-  if (!report_id || !mode) return errorResult("report_id and mode are required.");
+  if (!report_id || !mode) return errorResult("report_id and mode are required.", "mode must be 'draft' or 'final'. Get report_id from report2__list_reports.");
 
   // Fetch report + brand context
   // IMPORTANT: SELECT document_css + style_overrides + page_format — the
@@ -1457,7 +1532,7 @@ async function handleRenderPdf(userId, args, event) {
            r.page_format, r.document_css, r.style_overrides
     FROM v2_reports r WHERE r.id = ${report_id} LIMIT 1
   `;
-  if (!reports.length) return errorResult(`Report ${report_id} not found.`);
+  if (!reports.length) return errorResult(`Report ${report_id} not found.`, "Call report2__list_reports to find a valid report_id.");
   const report = reports[0];
 
   // Fetch pages and modules
@@ -1615,7 +1690,7 @@ function planModuleToRenderable(m) {
 async function handlePreviewPlan(userId, args, event) {
   const sql = getSql();
   const { brand_id, tenant_id, plan, template_id } = args;
-  if (!brand_id) return errorResult("brand_id is required.");
+  if (!brand_id) return errorResult("brand_id is required.", "Call report2__list_brands with the tenant_id to find a valid brand_id.");
   if (!Array.isArray(plan) || plan.length === 0) return errorResult("plan must be a non-empty array.");
 
   const tenantId = tenant_id || (await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`)[0]?.tenant_id;
@@ -1700,7 +1775,7 @@ async function handleGetEditorUrl(userId, args) {
   if (!report_id) return errorResult("report_id is required.");
 
   const reports = await sql`SELECT id FROM v2_reports WHERE id = ${report_id} LIMIT 1`;
-  if (!reports.length) return errorResult(`Report ${report_id} not found.`);
+  if (!reports.length) return errorResult(`Report ${report_id} not found.`, "Call report2__list_reports to find a valid report_id.");
 
   const token = createEditorToken(userId, report_id);
   const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
@@ -1762,7 +1837,7 @@ async function handleSaveBrandTokens(userId, args, _event, hubTenantId) {
     `,
   ]);
   const rows = txResults[1];
-  if (!rows.length) return errorResult(`Brand ${brand_id} not found.`);
+  if (!rows.length) return errorResult(`Brand ${brand_id} not found.`, "Call report2__list_brands with the tenant_id to find a valid brand_id.");
 
   // Best-effort audit row. The parent write already succeeded — never
   // surface audit failures to the caller.
@@ -1849,10 +1924,10 @@ async function handleSaveBrandTokens(userId, args, _event, hubTenantId) {
 async function handleGetBrandTokens(userId, args) {
   const sql = getSql();
   const { brand_id } = args;
-  if (!brand_id) return errorResult("brand_id is required.");
+  if (!brand_id) return errorResult("brand_id is required.", "Call report2__list_brands with the tenant_id to find a valid brand_id.");
 
   const rows = await sql`SELECT id, tenant_id, name, tokens FROM brands WHERE id = ${brand_id} LIMIT 1`;
-  if (!rows.length) return errorResult(`Brand ${brand_id} not found.`);
+  if (!rows.length) return errorResult(`Brand ${brand_id} not found.`, "Call report2__list_brands with the tenant_id to find a valid brand_id.");
 
   return textResult(rows[0]);
 }
@@ -2767,7 +2842,7 @@ async function handlePreviewBlueprint(userId, args) {
            pages_estimate, page_format, created_at, updated_at
     FROM report_blueprints WHERE id = ${blueprint_id} LIMIT 1
   `;
-  if (!rows.length) return errorResult(`Blueprint ${blueprint_id} not found.`);
+  if (!rows.length) return errorResult(`Blueprint ${blueprint_id} not found.`, "Call report2__list_blueprints to find a valid blueprint_id.");
   const r = rows[0];
 
   const slots = typeof r.slots === "string" ? JSON.parse(r.slots) : r.slots;
@@ -2797,7 +2872,7 @@ async function handleCreateFromBlueprint(userId, args, _event, hubTenantId) {
     SELECT id, brand_id, owner_tenant_id, visibility, design_system_css, page_format
     FROM report_blueprints WHERE id = ${blueprint_id} LIMIT 1
   `;
-  if (!blueprints.length) return errorResult(`Blueprint ${blueprint_id} not found.`);
+  if (!blueprints.length) return errorResult(`Blueprint ${blueprint_id} not found.`, "Call report2__list_blueprints to find a valid blueprint_id.");
   const bp = blueprints[0];
 
   // Alpha-v3 only — legacy blueprints (no design_system_css) must be recreated.
@@ -2941,7 +3016,7 @@ async function handleSaveComponent(userId, args, _event, hubTenantId) {
       WHERE id = ${component_id} AND brand_id = ${brand_id}
       RETURNING id
     `;
-    if (!rows.length) return errorResult(`Component ${component_id} not found for brand ${brand_id}.`);
+    if (!rows.length) return errorResult(`Component ${component_id} not found for brand ${brand_id}.`, "Call report2__list_components with this brand_id to find a valid component_id, or omit component_id to create a new component.");
     return textResult({ component_id: rows[0].id, component_type, variant_name: variantLabel, label, status: statusValue, updated: true });
   }
 
@@ -3036,7 +3111,7 @@ async function handleSaveComponent(userId, args, _event, hubTenantId) {
 async function handleListComponents(userId, args) {
   const sql = getSql();
   const { brand_id, component_type, variant_name, include_public, extraction_id, include_drafts, status, page_format, report_id } = args;
-  if (!brand_id) return errorResult("brand_id is required.");
+  if (!brand_id) return errorResult("brand_id is required.", "Call report2__list_brands with the tenant_id to find a valid brand_id.");
 
   const typeFilter = component_type || null;
   const variantFilter = variant_name || null;
@@ -3097,10 +3172,10 @@ async function handleListComponents(userId, args) {
 async function handleRenderBrandComponents(userId, args) {
   const sql = getSql();
   const { brand_id, include_drafts } = args || {};
-  if (!brand_id) return errorResult("brand_id is required.");
+  if (!brand_id) return errorResult("brand_id is required.", "Call report2__list_brands with the tenant_id to find a valid brand_id.");
 
   const brands = await sql`SELECT id, tokens, tenant_id, name FROM brands WHERE id = ${brand_id} LIMIT 1`;
-  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
+  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`, "Call report2__list_brands with the tenant_id to find a valid brand_id.");
   const brand = brands[0];
 
   const components = include_drafts
@@ -3108,7 +3183,7 @@ async function handleRenderBrandComponents(userId, args) {
     : await sql`SELECT * FROM brand_components WHERE brand_id = ${brand_id} AND status = 'ready' ORDER BY component_type, is_default DESC, variant_name`;
 
   if (!components.length) {
-    return errorResult(`No components found for brand ${brand_id}.`);
+    return errorResult(`No components found for brand ${brand_id}.`, "Save components first with report2__save_component, or check brand_id with report2__list_brands.");
   }
 
   // Build a single freeform HTML page listing every component with a preview.
@@ -3306,7 +3381,7 @@ function fillTestTemplate(template, values) {
 async function handleTestRunReport(userId, args) {
   const sql = getSql();
   const { brand_id, title: titleIn, verbose } = args || {};
-  if (!brand_id) return errorResult("brand_id is required.");
+  if (!brand_id) return errorResult("brand_id is required.", "Call report2__list_brands with the tenant_id to find a valid brand_id.");
 
   const title = titleIn || `Test run ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
   const warnings = [];
@@ -3315,7 +3390,7 @@ async function handleTestRunReport(userId, args) {
 
   // ── 1. Brand + tokens + fonts
   const brands = await sql`SELECT id, tokens, tenant_id, name FROM brands WHERE id = ${brand_id} LIMIT 1`;
-  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
+  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`, "Call report2__list_brands with the tenant_id to find a valid brand_id.");
   const brand = brands[0];
   const tokens = brand.tokens || {};
 
@@ -3590,7 +3665,7 @@ async function handleDeleteComponent(userId, args, _event, hubTenantId) {
     RETURNING id, component_type, variant_name, label
   `;
   if (!rows.length) {
-    return errorResult(`Component ${component_id} not found for brand ${brand_id}.`);
+    return errorResult(`Component ${component_id} not found for brand ${brand_id}.`, "Call report2__list_components with this brand_id to confirm the component_id and that it belongs to this brand.");
   }
   return textResult({ deleted: true, component_id: rows[0].id, component_type: rows[0].component_type, variant_name: rows[0].variant_name, label: rows[0].label });
 }
@@ -3618,7 +3693,7 @@ async function handleForkComponent(userId, args, _event, hubTenantId) {
     WHERE id = ${source_component_id}
     LIMIT 1
   `;
-  if (!srcRows.length) return errorResult(`Source component ${source_component_id} not found.`);
+  if (!srcRows.length) return errorResult(`Source component ${source_component_id} not found.`, "Call report2__list_components (with include_public=true to see other brands' shared components) to find a valid source_component_id.");
   const src = srcRows[0];
 
   // Access control: must be same brand OR public.
@@ -3782,7 +3857,7 @@ async function handleGetDesignExtraction(userId, args) {
 async function handleListDesignExtractions(userId, args) {
   const sql = getSql();
   const { brand_id, status } = args;
-  if (!brand_id) return errorResult("brand_id is required.");
+  if (!brand_id) return errorResult("brand_id is required.", "Call report2__list_brands with the tenant_id to find a valid brand_id.");
 
   const statusFilter = status || null;
   const rows = await sql`
@@ -3843,7 +3918,7 @@ async function handleApplyDesignExtraction(userId, args, _event, hubTenantId) {
 
   // Merge into brand.tokens (do not blow away unrelated keys).
   const brandRows = await sql`SELECT tokens FROM brands WHERE id = ${brand_id} LIMIT 1`;
-  if (!brandRows.length) return errorResult(`Brand ${brand_id} not found.`);
+  if (!brandRows.length) return errorResult(`Brand ${brand_id} not found.`, "Call report2__list_brands to find a valid brand_id.");
   const current = brandRows[0].tokens || {};
   const merged = { ...current, ...overlay };
 
@@ -3883,7 +3958,7 @@ async function handleGetComponent(userId, args) {
            created_at, updated_at
     FROM brand_components WHERE id = ${component_id} LIMIT 1
   `;
-  if (!rows.length) return errorResult(`Component ${component_id} not found.`);
+  if (!rows.length) return errorResult(`Component ${component_id} not found.`, "Call report2__list_components with the brand_id to find a valid component_id.");
 
   return textResult(rows[0]);
 }
@@ -3900,7 +3975,7 @@ async function handleRenderComponentPreview(userId, args, event) {
     const rows = await sql`
       SELECT html_template, css_template, brand_id FROM brand_components WHERE id = ${component_id} LIMIT 1
     `;
-    if (!rows.length) return errorResult(`Component ${component_id} not found.`);
+    if (!rows.length) return errorResult(`Component ${component_id} not found.`, "Call report2__list_components with the brand_id to find a valid component_id, or pass html_template + brand_id directly.");
     htmlTemplate = rows[0].html_template;
     cssTemplate = rows[0].css_template;
     brandId = rows[0].brand_id;
@@ -4380,7 +4455,7 @@ async function handleExtractDesignFromPdf(userId, args, event) {
 
   // Look up tenant from brand so smyra-render JWT carries a tenant_id claim.
   const brands = await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`;
-  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`);
+  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`, "Call report2__list_brands to find a valid brand_id.");
   const tenantId = brands[0].tenant_id;
 
   // Build analyze payload — resolve upload_token to actual PDF data
@@ -5017,7 +5092,7 @@ async function handlePersistFreeformPages(userId, args, _event, hubTenantId) {
   const { report_id, pages, design_system_css, augmented_design_css_additions, units } = args || {};
 
   if (!report_id || !/^[0-9a-f-]{36}$/i.test(report_id)) {
-    return errorResult("report_id is required (UUID).");
+    return errorResult("report_id is required (UUID).", "Get report_id from report2__create or report2__list_reports.");
   }
 
   // Corruption defense: verify the report belongs to the caller's tenant
@@ -5030,10 +5105,10 @@ async function handlePersistFreeformPages(userId, args, _event, hubTenantId) {
     return errorResult(`Cannot persist pages: ${e.message}`);
   }
   if (!Array.isArray(pages) || pages.length === 0) {
-    return errorResult("pages[] required and non-empty.");
+    return errorResult("pages[] required and non-empty.", "Each page is { page_num, html }; page_num is 1-indexed.");
   }
   if (typeof design_system_css !== "string" || !design_system_css.trim()) {
-    return errorResult("design_system_css is required.");
+    return errorResult("design_system_css is required.", "Pass the report's full design_system_css (:root tokens + class rules).");
   }
 
   // Validate report exists (prevents orphan writes against a stale UUID).
@@ -5531,10 +5606,13 @@ async function handleRenderFreeformPptx(userId, args, event) {
 
   // ── 1. Validate input ──────────────────────────────────────────────────────
   if (!payload || !report_id) {
-    return errorResult("payload and report_id are required.");
+    return errorResult(
+      "payload and report_id are required.",
+      "payload must carry { pages, design_system_css, brand_id } — same shape as report2__render_freeform_pdf.",
+    );
   }
   if (!Array.isArray(payload.pages) || payload.pages.length === 0) {
-    return errorResult("payload.pages must be a non-empty array.");
+    return errorResult("payload.pages must be a non-empty array.", "Each page is { page_num, html }.");
   }
   for (const p of payload.pages) {
     if (typeof p.page_num !== "number") {
@@ -5548,7 +5626,7 @@ async function handleRenderFreeformPptx(userId, args, event) {
     return errorResult("payload.design_system_css must be a non-empty string.");
   }
   if (typeof payload.brand_id !== "string" || !/^[0-9a-f-]{36}$/i.test(payload.brand_id)) {
-    return errorResult("payload.brand_id must be a UUID string.");
+    return errorResult("payload.brand_id must be a UUID string.", "Get brand_id from report2__list_brands.");
   }
 
   const sql = getSql();
