@@ -24,6 +24,8 @@ import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
 __mark('smyra-render-jwt');
 import { createEditorToken } from "./editor-token.js";
 __mark('editor-token');
+import { toolError, isToolErrorResult } from "./_lib/mcp-contract.js";
+__mark('mcp-contract');
 // validateUnitsOnly pulls in node-html-parser → he + css-select + dom-serializer
 // + entities + nth-check + domhandler (~250 KB transitive). Only called inside
 // persist_freeform_pages-style handlers, not on tools/list or initialize. Lazy-
@@ -110,11 +112,90 @@ function textResult(data) {
   return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] };
 }
 
-function errorResult(msg, next_step) {
-  // next_step (optional): actionable hint for Claude on how to recover.
-  // Appended as a second line so plain-text clients still see the error first.
-  const text = next_step ? `${msg}\nNext step: ${next_step}` : msg;
-  return { content: [{ type: "text", text }], isError: true };
+// ─── Response-minimization helpers (token-economy, additive only) ────────────
+//
+// Context-flood reduction (github-mcp-server pattern). These NEVER change a
+// default response shape — they're opt-in via a `minimal_output` param or
+// only strip null/undefined keys (never empty strings / empty arrays, which
+// some consumers rely on as presence signals).
+
+/**
+ * Shallow-copy `obj` dropping keys whose value is null or undefined.
+ * Keeps empty strings ("") and empty arrays ([]) — those are meaningful to
+ * some consumers (e.g. tokens:{} , thumbnails:[]). Non-mutating.
+ */
+function omitNullish(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return obj;
+  const out = {};
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v !== null && v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Pick a minimal projection of a row — only the listed keys that are present
+ * (null/undefined dropped). Used when `minimal_output` is true on LIST/GET
+ * tools to return just {id, name, url, key status fields}.
+ */
+function pickMinimal(row, keys) {
+  if (!row || typeof row !== "object") return row;
+  const out = {};
+  for (const k of keys) {
+    if (row[k] !== null && row[k] !== undefined) out[k] = row[k];
+  }
+  return out;
+}
+
+/** True when the caller explicitly opted into the lean projection. */
+function wantsMinimal(args) {
+  return args && args.minimal_output === true;
+}
+
+function errorResult(msg, next_step, opts = {}) {
+  // Emits the canonical MCP tool-error contract (see _lib/mcp-contract.js).
+  // Back-compat: `errorResult(msg)` and `errorResult(msg, next_step)` keep
+  // working — ~170 existing call-sites inherit the new structuredContent
+  // shape automatically. `opts` lets a call-site override the inferred
+  // defaults:
+  //   opts.code      — one of the canonical codes (default 'VALIDATION',
+  //                    since the overwhelming majority of bare call-sites
+  //                    are missing/invalid-param errors).
+  //   opts.retryable — overrides the per-code default.
+  //   opts.context   — structured extra context (ids, valid lists…).
+  // next_step → next_action (human text appends "▶ Nästa steg: …").
+  return toolError({
+    code: opts.code ?? "VALIDATION",
+    message: typeof msg === "string" ? msg : String(msg ?? ""),
+    retryable: opts.retryable,
+    next_action: next_step ?? null,
+    context: opts.context ?? {},
+  });
+}
+
+// Map a caught exception to a canonical tool-error WITHOUT burying the
+// cause. Known guard codes (BRAND_GUARD_*, REPORT_GUARD_*) get a precise
+// code + actionable next_step; everything else falls back to INTERNAL with
+// the real e.message preserved in the human text. `prefix` keeps the legacy
+// "Cannot X: …" wording at call-sites that want it.
+const GUARD_CODE_MAP = {
+  BRAND_GUARD_NO_ID:           { code: "BRAND_ID_REQUIRED", next: "Provide a valid brand_id (or a unique brand/brand_name to resolve)." },
+  BRAND_GUARD_NOT_FOUND:       { code: "NOT_FOUND",         next: "Call report2__list_brands to find a valid brand_id for this tenant." },
+  BRAND_GUARD_TENANT_MISMATCH: { code: "AUTH",              next: "This brand belongs to another tenant. Use one of your own brands (report2__list_brands)." },
+  REPORT_GUARD_NO_ID:          { code: "VALIDATION",        next: "Provide a valid report_id." },
+  REPORT_GUARD_NOT_FOUND:      { code: "NOT_FOUND",         next: "Call report2__list_reports to find a valid report_id for this tenant." },
+  REPORT_GUARD_TENANT_MISMATCH:{ code: "AUTH",              next: "This report belongs to another tenant. Use one of your own reports (report2__list_reports)." },
+};
+
+function errorFromException(e, prefix, opts = {}) {
+  const cause = (typeof e?.message === "string" && e.message.trim()) ? e.message : "Internal error";
+  const mapped = e?.code ? GUARD_CODE_MAP[e.code] : null;
+  const code = opts.code ?? mapped?.code ?? "INTERNAL";
+  const next_step = opts.next_step ?? mapped?.next ?? null;
+  const message = prefix ? `${prefix}: ${cause}` : cause;
+  const context = { ...(e?.code ? { cause_code: e.code } : {}), ...(opts.context ?? {}) };
+  return errorResult(message, next_step, { code, retryable: opts.retryable, context });
 }
 
 // ─── Render service helper ──────────────────────────────────────────────────
@@ -685,6 +766,7 @@ const TOOLS = [
       type: "object",
       properties: {
         tenant_id: { type: "string", description: "Tenant UUID to filter by" },
+        minimal_output: { type: "boolean", description: "If true, omit each brand's design tokens JSON and return only {id, tenant_id, name, created_at}. Use when you only need to resolve a brand_id. Default false (full rows incl. tokens)." },
       },
       required: ["tenant_id"],
     },
@@ -828,6 +910,7 @@ const TOOLS = [
       required: ["blueprint_id"],
       properties: {
         blueprint_id: { type: "string", description: "UUID of the blueprint to fetch." },
+        minimal_output: { type: "boolean", description: "If true, omit the heavy design_system_css / sample_pages_html / design_rules blobs and return only metadata + sample_page_count + has_design_system_css. Use to inspect a blueprint without loading its full design payload. Default false (full payload)." },
       },
     },
     outputSchema: {
@@ -970,6 +1053,7 @@ const TOOLS = [
         page_format: { type: "string", description: "Filter to variants tagged with this page format OR 'universal' (format-agnostic). Pass 'all' to skip the filter. Omit to include all formats.", examples: ["a4_portrait", "presentation", "all"] },
         extraction_id: { type: "string", description: "Filter to one specific extraction session" },
         report_id: { type: "string", description: "If set, results include brand-level variants (report_id IS NULL) AND variants scoped to this report_id. Report-scoped variants appear AFTER brand-level so downstream 'last wins by (type+variant)' logic prefers them." },
+        minimal_output: { type: "boolean", description: "If true, omit the heavy html_template / css_template / placeholder_schema / chart_schema / design_notes blobs and return only {id, component_type, variant_name, label, is_default, status, page_format, thumbnail_url, version, updated_at}. Use to browse/pick a component_id, then get_component for the full body. Default false (full rows)." },
       },
       required: ["brand_id"],
     },
@@ -1325,7 +1409,298 @@ const TOOLS = [
       required: ["category", "description"],
     },
   },
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Fas 4 — CONSOLIDATED FACADE TOOLS
+  //
+  // github-mcp-server-style method-param tools that shrink the advertised tool
+  // surface. Each dispatches on `method` to the EXISTING granular handler
+  // (no logic duplication). The granular tools stay fully routable; the hub
+  // hides them from tools/list using DEPRECATED_TOOL_ALIASES (defined below).
+  // ───────────────────────────────────────────────────────────────────────────
+  {
+    name: "components",
+    description: "Manage a brand's reusable HTML component library (komponentbibliotek). Dispatch via `method`: get (one component's full body — needs component_id) | list (variants for a brand — needs brand_id, optional component_type/variant_name/status/page_format/report_id/include_public/minimal_output) | save (create or update — needs brand_id, component_type, label, html_template; pass component_id to update) | delete (hard-remove — needs component_id + brand_id) | fork (copy a public component into another brand — needs source_component_id + target_brand_id). Mixed read/write, so not readOnly.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: {
+      type: "object",
+      required: ["method"],
+      properties: {
+        method: { type: "string", enum: ["get", "list", "save", "delete", "fork"], description: "Operation to perform. Determines which other params are required." },
+        // get / delete
+        component_id: { type: "string", description: "[get, delete, save] Component UUID. Required for get/delete; on save it switches to update-mode." },
+        // list / save / delete
+        brand_id: { type: "string", description: "[list, save, delete] Brand UUID from report2__list_brands." },
+        // list filters
+        component_type: { type: "string", description: "[list, save] Canonical component type id. On list it filters; on save it is required.", examples: ["heading", "body_text", "kpi_grid", "pull_quote", "chart", "photo", "cover"] },
+        variant_name: { type: "string", description: "[list, save] Named variant (e.g. 'Bold', 'Minimal'). On list it filters; on save it defaults to 'Default'." },
+        include_public: { type: "boolean", description: "[list] Also include is_public=true components from other brands." },
+        include_drafts: { type: "boolean", description: "[list] Include draft + deprecated components (default false). Ignored if status is set." },
+        status: { type: "string", enum: ["draft", "ready", "deprecated", "all"], description: "[list, save] On list: filter by status (default 'ready', 'all' skips). On save: lifecycle status (default 'ready')." },
+        page_format: { type: "string", description: "[list, save] On list: filter to this format OR 'universal' ('all' skips). On save: format this variant targets (default 'universal').", examples: ["a4_portrait", "presentation", "all"] },
+        extraction_id: { type: "string", description: "[list, save] design_extractions row this component derives from / filters to." },
+        report_id: { type: "string", description: "[list, save] Scope variant to a single report." },
+        minimal_output: { type: "boolean", description: "[list] Omit heavy template blobs, return lean rows for picking. Default false." },
+        // save body
+        label: { type: "string", description: "[save, fork] Human-readable name, e.g. 'KPI-grupp med accent-border'." },
+        html_template: { type: "string", description: "[save] HTML with {{PLACEHOLDER}} tokens. Use component-name-prefixed CSS classes, not inline styles." },
+        css_template: { type: "string", description: "[save] CSS rules for the classes used in html_template." },
+        splittable: { type: "boolean", description: "[save] Can this variant split across a page boundary? Null/omitted = type default." },
+        placeholder_schema: {
+          type: "array",
+          description: "[save] Array describing each {{PLACEHOLDER}} token in html_template.",
+          items: { type: "object", required: ["name"], properties: { name: { type: "string" }, required: { type: "boolean" }, type: { type: "string" } } },
+        },
+        design_notes: { type: "string", description: "[save] Art director notes explaining the design choices." },
+        source: { type: "string", enum: ["extraction", "report", "manual"], description: "[save] Provenance. Defaults to 'manual'." },
+        is_default: { type: "boolean", description: "[save, fork] Set as default variant for this component_type+brand." },
+        is_public: { type: "boolean", description: "[save] If true, any brand may fork this component." },
+        unsplash_query: { type: "string", description: "[save] Semantic hint for image placeholders." },
+        reference_page_numbers: { type: "array", items: { type: "integer" }, description: "[save] Page numbers in the source PDF where this component appears." },
+        harmony: { type: "array", items: { type: "string" }, description: "[save] Palette-harmony tags used by theme-reconcile." },
+        intensity: { type: "string", enum: ["quiet", "medium", "loud"], description: "[save] Visual intensity of this variant." },
+        accent_usage: { type: "string", enum: ["none", "tint", "strong"], description: "[save] How prominently this variant uses the brand accent." },
+        content_tolerance: { type: "object", additionalProperties: true, description: "[save] Per-placeholder content tolerances keyed by placeholder name." },
+        chart_schema: { type: "object", additionalProperties: true, description: "[save] For chart variants only — editable fields for the editor UI." },
+        chart_color_mode: { type: "string", enum: ["brand", "custom", "brand-locked"], description: "[save] For chart variants only — palette mode." },
+        style_family: { type: "string", description: "[save] Visual style family (Editorial, Creative, Minimal) for picker coherence." },
+        // fork
+        source_component_id: { type: "string", description: "[fork] Component UUID to copy (must be is_public=true if from a different brand)." },
+        target_brand_id: { type: "string", description: "[fork] Brand UUID to copy the component into." },
+      },
+    },
+  },
+  {
+    name: "blueprints",
+    description: "Manage alpha-v3 design-language blueprints (mallar/blueprints). Dispatch via `method`: get (full payload: design_system_css + sample_pages_html + design_rules — needs blueprint_id, optional minimal_output) | list (blueprints visible to the caller — optional brand_id/document_type/style) | save (store a blueprint — needs name + design_system_css + sample_pages_html + design_rules; visibility brand/tenant/smyra) | preview (detailed single-blueprint view with thumbnail + chat_summary — needs blueprint_id) | list_smyra (curated platform-level visibility='smyra' templates — optional document_type/style) | create_from (create a new report from a blueprint — needs blueprint_id + title + document_type, optional brand_id). Mixed read/write, so not readOnly.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: {
+      type: "object",
+      required: ["method"],
+      properties: {
+        method: { type: "string", enum: ["get", "list", "save", "preview", "list_smyra", "create_from"], description: "Operation to perform. Determines which other params are required." },
+        blueprint_id: { type: "string", description: "[get, preview, create_from] Blueprint UUID from list." },
+        minimal_output: { type: "boolean", description: "[get] Omit heavy design blobs, return metadata only. Default false." },
+        brand_id: { type: "string", description: "[list, save, create_from] Brand UUID. On list: include this brand's blueprints. On save: required when visibility='brand'. On create_from: required for Smyra-visibility blueprints." },
+        tenant_id: { type: "string", description: "[save] Required when visibility='tenant' (stored as owner_tenant_id)." },
+        document_type: { type: "string", description: "[list, list_smyra, save, create_from] Document type. On list/list_smyra it filters; on save it is the doctype_hint; on create_from it is the new report's doctype.", examples: ["quarterly", "annual", "whitepaper", "case_study", "pitch", "newsletter"] },
+        style: { type: "string", description: "[list, list_smyra] Filter by style_direction.", examples: ["Editorial", "Minimal", "Dense", "Corporate"] },
+        // save body
+        name: { type: "string", description: "[save] Human-readable blueprint name." },
+        visibility: { type: "string", enum: ["smyra", "tenant", "brand"], description: "[save] Access scope. Default 'brand'. 'smyra' requires ALLOW_SMYRA_WRITE=true on server." },
+        style_direction: { type: "string", description: "[save] e.g. 'Editorial', 'Minimal', 'Dense', 'Corporate'." },
+        design_system_css: { type: "string", description: "[save] Full CSS design system — custom properties, base resets, component classes." },
+        sample_pages_html: { type: "array", items: {}, description: "[save] Array of sample pages — plain HTML strings or {html, block_type} objects." },
+        design_rules: { type: "string", description: "[save] Plain-text art-direction rules for when/how to use this design system." },
+        reference_source: { type: "string", enum: ["extracted_from_pdf", "user_created", "starter_pack"], description: "[save] How the blueprint was produced." },
+        module_count: { type: "number", description: "[save] Approximate number of report modules this blueprint targets." },
+        source_report_id: { type: "string", description: "[save] Audit trail: report_id this blueprint was extracted from." },
+        // create_from
+        title: { type: "string", description: "[create_from] Title for the new report." },
+      },
+    },
+  },
+  {
+    name: "design_extractions",
+    description: "Manage design_extractions — reference-PDF design analyses (extraherade designtokens). Dispatch via `method`: get (one row incl. suggested_tokens/inventory/reference_pages — needs extraction_id) | list (rows for a brand — needs brand_id, optional status) | create (new extraction row — needs brand_id + label) | update (modify tokens/inventory/status — needs extraction_id) | apply (EXPLICIT user action — promote suggested_tokens onto the real brand.tokens — needs extraction_id). Note: apply is the ONLY path that mutates brand colors/fonts from reference data. Mixed read/write, so not readOnly.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: {
+      type: "object",
+      required: ["method"],
+      properties: {
+        method: { type: "string", enum: ["get", "list", "create", "update", "apply"], description: "Operation to perform. Determines which other params are required." },
+        extraction_id: { type: "string", description: "[get, update, apply] design_extractions UUID." },
+        brand_id: { type: "string", description: "[list, create] Brand UUID from report2__list_brands." },
+        status: { type: "string", enum: ["draft", "ready", "applied", "archived"], description: "[list, update] On list: filter by status. On update: set new lifecycle status." },
+        label: { type: "string", description: "[create, update] Human-readable label, e.g. 'McKinsey Global AI Report 2025'." },
+        source_description: { type: "string", description: "[create, update] Where the reference came from (URL, filename)." },
+        suggested_tokens: { type: "object", additionalProperties: true, description: "[create, update] Token overlay (colors, fonts). On update it MERGES onto existing. Same shape as brands.tokens." },
+        inventory: { type: "array", items: { type: "object", additionalProperties: true }, description: "[create, update] Component inventory. On update it fully replaces the existing array." },
+        reference_pages: { type: "array", items: { type: "object", additionalProperties: true }, description: "[create, update] Rasterized page refs [{page, url, key}]." },
+        token_keys: { type: "array", items: { type: "string" }, description: "[apply] Only apply these token keys (default: all keys in suggested_tokens).", examples: [["color.primary", "color.accent"]] },
+      },
+    },
+  },
+  {
+    name: "assets",
+    description: "Upload brand/tenant assets and list the tenant asset library (ladda upp och lista assets). Dispatch via `method`: upload (add a file — set `type` to asset|font|logo) | list (browse the tenant's image asset library — needs tenant_id, optional asset_class). For upload type='asset': needs tenant_id, filename, mime_type, data_base64. For type='font': needs brand_id, family, weight, style, format, data_base64. For type='logo': needs brand_id, variant, format, data_base64. Mixed read/write, so not readOnly.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: {
+      type: "object",
+      required: ["method"],
+      properties: {
+        method: { type: "string", enum: ["upload", "list"], description: "Operation to perform." },
+        type: { type: "string", enum: ["asset", "font", "logo"], description: "[upload] What kind of file to upload. Determines which other params are required. Required when method='upload'." },
+        // list + asset upload
+        tenant_id: { type: "string", description: "[upload type=asset, list] Tenant UUID that owns the asset library." },
+        asset_class: { type: "string", description: "[list] Filter by class. Omit for all.", examples: ["photo", "icon", "svg"] },
+        filename: { type: "string", description: "[upload type=asset] Original filename, e.g. 'hero.png'." },
+        mime_type: { type: "string", description: "[upload type=asset] MIME type of the bytes.", examples: ["image/png", "image/jpeg", "image/svg+xml"] },
+        // brand-scoped uploads
+        brand_id: { type: "string", description: "[upload type=font|logo] Brand UUID from report2__list_brands." },
+        // font upload
+        family: { type: "string", description: "[upload type=font] Font-family name as referenced in CSS, e.g. 'Inter'." },
+        weight: { type: "integer", description: "[upload type=font] Numeric font weight, e.g. 400 (regular), 700 (bold).", examples: [400, 500, 700] },
+        style: { type: "string", enum: ["normal", "italic"], description: "[upload type=font] Font style." },
+        // logo upload
+        variant: { type: "string", description: "[upload type=logo] Logo variant key.", examples: ["primary", "monochrome", "icon"] },
+        // shared font/logo
+        format: { type: "string", description: "[upload type=font|logo] File format. font: woff2|woff|ttf|otf. logo: svg|png|jpg.", examples: ["woff2", "ttf", "svg", "png"] },
+        data_base64: { type: "string", description: "[upload] The file bytes, base64-encoded (no data: URI prefix)." },
+      },
+    },
+  },
+  {
+    name: "brand_tokens",
+    description: "Read or write a brand's design tokens — colors, typography, spacing (varumärkets designtokens). Dispatch via `method`: get (fetch the brand's full tokens JSON plus id/tenant_id/name — needs brand_id) | save (create or merge tokens onto the brand — needs brand_id + tokens). save MERGES onto existing tokens, it does not full-replace. Use get before save to inspect current styling. Mixed read/write, so not readOnly.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: {
+      type: "object",
+      required: ["method", "brand_id"],
+      properties: {
+        method: { type: "string", enum: ["get", "save"], description: "Operation to perform. 'save' additionally requires tokens." },
+        brand_id: { type: "string", description: "Brand UUID from report2__list_brands." },
+        tokens: {
+          type: "object",
+          description: "[save] Brand design tokens (JSONB). Merged onto existing tokens.",
+          additionalProperties: true,
+          properties: {
+            color: { type: "object", additionalProperties: true, description: "Color tokens, e.g. { primary, accent, background, foreground } (hex strings)." },
+            font: { type: "object", additionalProperties: true, description: "Font tokens, e.g. { heading, body } (font-family names)." },
+            spacing: { type: "object", additionalProperties: true, description: "Spacing scale tokens." },
+          },
+          examples: [{ color: { primary: "#0A2540", accent: "#00D4FF" }, font: { heading: "Inter", body: "Inter" } }],
+        },
+      },
+    },
+  },
 ];
+
+// ───────────────────────────────────────────────────────────────────────────
+// Fas 4 — DEPRECATED_TOOL_ALIASES
+//
+// Maps each granular tool name → its consolidated replacement {tool, method}.
+// The granular handlers stay in TOOLS + HANDLERS and remain fully routable
+// (cached Claude.ai sessions still call them by name). The hub uses this map
+// to HIDE the granular tools from the advertised tools/list while keeping the
+// consolidated method-param tools visible. Names are the BARE handler names
+// (no report2__ prefix); the hub adds the prefix it advertises.
+// ───────────────────────────────────────────────────────────────────────────
+const DEPRECATED_TOOL_ALIASES = {
+  // components(method)
+  get_component:            { tool: "components",          method: "get" },
+  list_components:          { tool: "components",          method: "list" },
+  save_component:           { tool: "components",          method: "save" },
+  delete_component:         { tool: "components",          method: "delete" },
+  fork_component:           { tool: "components",          method: "fork" },
+  // blueprints(method)
+  get_blueprint:            { tool: "blueprints",          method: "get" },
+  list_blueprints:          { tool: "blueprints",          method: "list" },
+  save_blueprint:           { tool: "blueprints",          method: "save" },
+  preview_blueprint:        { tool: "blueprints",          method: "preview" },
+  list_smyra_templates:     { tool: "blueprints",          method: "list_smyra" },
+  create_from_blueprint:    { tool: "blueprints",          method: "create_from" },
+  // design_extractions(method)
+  get_design_extraction:    { tool: "design_extractions",  method: "get" },
+  list_design_extractions:  { tool: "design_extractions",  method: "list" },
+  create_design_extraction: { tool: "design_extractions",  method: "create" },
+  update_design_extraction: { tool: "design_extractions",  method: "update" },
+  apply_design_extraction:  { tool: "design_extractions",  method: "apply" },
+  // assets(method, type)
+  upload_asset:             { tool: "assets",              method: "upload", type: "asset" },
+  upload_font:              { tool: "assets",              method: "upload", type: "font" },
+  upload_logo:              { tool: "assets",              method: "upload", type: "logo" },
+  list_assets:              { tool: "assets",              method: "list" },
+  // brand_tokens(method)
+  get_brand_tokens:         { tool: "brand_tokens",        method: "get" },
+  save_brand_tokens:        { tool: "brand_tokens",        method: "save" },
+};
+
+export { DEPRECATED_TOOL_ALIASES };
+
+// ───────────────────────────────────────────────────────────────────────────
+// Fas 4 — consolidated method-dispatch handlers
+//
+// Each validates `args.method` against the group's valid set and dispatches to
+// the EXISTING granular handler with the SAME (userId, args, event, hubTenantId)
+// signature. No logic is duplicated. An unknown/missing method returns the
+// canonical tool-error contract (code 'VALIDATION', next_action lists methods).
+// ───────────────────────────────────────────────────────────────────────────
+
+function unknownMethodError(toolName, method, validMethods) {
+  const got = (typeof method === "string" && method.trim()) ? `"${method}"` : "(missing)";
+  return errorResult(
+    `Unknown method ${got} for report2__${toolName}.`,
+    `Set method to one of: ${validMethods.join(", ")}.`,
+    { code: "VALIDATION", context: { tool: toolName, method: method ?? null, valid: validMethods } },
+  );
+}
+
+async function handleComponents(userId, args, event, hubTenantId) {
+  const method = args?.method;
+  switch (method) {
+    case "get":    return handleGetComponent(userId, args, event, hubTenantId);
+    case "list":   return handleListComponents(userId, args, event, hubTenantId);
+    case "save":   return handleSaveComponent(userId, args, event, hubTenantId);
+    case "delete": return handleDeleteComponent(userId, args, event, hubTenantId);
+    case "fork":   return handleForkComponent(userId, args, event, hubTenantId);
+    default:       return unknownMethodError("components", method, ["get", "list", "save", "delete", "fork"]);
+  }
+}
+
+async function handleBlueprints(userId, args, event, hubTenantId) {
+  const method = args?.method;
+  switch (method) {
+    case "get":         return handleGetBlueprint(userId, args, event, hubTenantId);
+    case "list":        return handleListBlueprints(userId, args, event, hubTenantId);
+    case "save":        return handleSaveBlueprint(userId, args, event, hubTenantId);
+    case "preview":     return handlePreviewBlueprint(userId, args, event, hubTenantId);
+    case "list_smyra":  return handleListSmyraTemplates(userId, args, event, hubTenantId);
+    case "create_from": return handleCreateFromBlueprint(userId, args, event, hubTenantId);
+    default:            return unknownMethodError("blueprints", method, ["get", "list", "save", "preview", "list_smyra", "create_from"]);
+  }
+}
+
+async function handleDesignExtractions(userId, args, event, hubTenantId) {
+  const method = args?.method;
+  switch (method) {
+    case "get":    return handleGetDesignExtraction(userId, args, event, hubTenantId);
+    case "list":   return handleListDesignExtractions(userId, args, event, hubTenantId);
+    case "create": return handleCreateDesignExtraction(userId, args, event, hubTenantId);
+    case "update": return handleUpdateDesignExtraction(userId, args, event, hubTenantId);
+    case "apply":  return handleApplyDesignExtraction(userId, args, event, hubTenantId);
+    default:       return unknownMethodError("design_extractions", method, ["get", "list", "create", "update", "apply"]);
+  }
+}
+
+async function handleAssets(userId, args, event, hubTenantId) {
+  const method = args?.method;
+  if (method === "list") return handleListAssets(userId, args, event, hubTenantId);
+  if (method === "upload") {
+    const type = args?.type;
+    switch (type) {
+      case "asset": return handleUploadAsset(userId, args, event, hubTenantId);
+      case "font":  return handleUploadFont(userId, args, event, hubTenantId);
+      case "logo":  return handleUploadLogo(userId, args, event, hubTenantId);
+      default:
+        return errorResult(
+          `Unknown type ${(typeof type === "string" && type.trim()) ? `"${type}"` : "(missing)"} for report2__assets method='upload'.`,
+          "Set type to one of: asset, font, logo.",
+          { code: "VALIDATION", context: { tool: "assets", method: "upload", type: type ?? null, valid: ["asset", "font", "logo"] } },
+        );
+    }
+  }
+  return unknownMethodError("assets", method, ["upload", "list"]);
+}
+
+async function handleBrandTokens(userId, args, event, hubTenantId) {
+  const method = args?.method;
+  switch (method) {
+    case "get":  return handleGetBrandTokens(userId, args, event, hubTenantId);
+    case "save": return handleSaveBrandTokens(userId, args, event, hubTenantId);
+    default:     return unknownMethodError("brand_tokens", method, ["get", "save"]);
+  }
+}
 
 // ─── Handler: create ────────────────────────────────────────────────────────
 
@@ -1799,7 +2174,7 @@ async function handleSaveBrandTokens(userId, args, _event, hubTenantId) {
   try {
     await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot save tokens: ${e.message}`);
+    return errorFromException(e, "Cannot save tokens");
   }
   // Capture token state BEFORE the merge so we can write before/after to
   // the audit log. assertBrandOwnership doesn't SELECT tokens, so do a
@@ -1948,7 +2323,7 @@ async function handleUploadFont(userId, args, _event, hubTenantId) {
   try {
     brandRow = await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot upload font: ${e.message}`);
+    return errorFromException(e, "Cannot upload font");
   }
 
   const rows = await sql`
@@ -1984,7 +2359,7 @@ async function handleUploadLogo(userId, args, _event, hubTenantId) {
   try {
     brandRow = await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot upload logo: ${e.message}`);
+    return errorFromException(e, "Cannot upload logo");
   }
 
   const rows = await sql`
@@ -2156,7 +2531,14 @@ async function handleListBrands(userId, args) {
     LIMIT 51
   `;
   const has_more = rows.length > 50;
-  const brands = has_more ? rows.slice(0, 50) : rows;
+  const rawBrands = has_more ? rows.slice(0, 50) : rows;
+  // minimal_output (opt-in): drop the per-brand `tokens` JSON blob (colors,
+  // fonts, spacing) when the caller only needs to resolve a brand_id.
+  // Default (false) returns full rows UNCHANGED — the workflow runner reads
+  // tokens here, so we must never strip them by default.
+  const brands = wantsMinimal(args)
+    ? rawBrands.map((b) => pickMinimal(b, ["id", "tenant_id", "name", "created_at"]))
+    : rawBrands;
   console.log(`[handleListBrands] tenant=${tenant_id} returned ${brands.length} brands (has_more=${has_more})`);
   return textResult({ brands, count: brands.length, has_more });
 }
@@ -2374,7 +2756,7 @@ async function handleSaveBlueprint(userId, args, _event, hubTenantId) {
     try {
       await assertBrandOwnership(sql, brand_id, hubTenantId);
     } catch (e) {
-      return errorResult(`Cannot save blueprint: ${e.message}`);
+      return errorFromException(e, "Cannot save blueprint");
     }
   } else if (visibility === "tenant") {
     if (hubTenantId && tenant_id !== hubTenantId) {
@@ -2825,7 +3207,31 @@ async function handleGetBlueprint(userId, args) {
   }
   // 'brand' and 'smyra' are accessible to any authenticated hub caller.
 
-  return textResult(shapeBlueprintFullRow(r));
+  const full = shapeBlueprintFullRow(r);
+  // minimal_output (opt-in): drop the heavy design_system_css +
+  // sample_pages_html (array of full-page HTML) + design_rules blobs, which
+  // routinely run to tens of KB and flood model context when the caller only
+  // needs the blueprint's metadata. Default (false) returns the full payload
+  // UNCHANGED — the workflow's design_language step consumes these fields.
+  if (wantsMinimal(args)) {
+    const samples = Array.isArray(full.sample_pages_html) ? full.sample_pages_html : [];
+    return textResult(omitNullish({
+      id: full.id,
+      name: full.name,
+      visibility: full.visibility,
+      style_direction: full.style_direction,
+      doctype_hint: full.doctype_hint,
+      reference_source: full.reference_source,
+      module_count: full.module_count,
+      page_format: full.page_format,
+      cover_thumbnail_url: full.cover_thumbnail_url,
+      gallery_url: full.gallery_url,
+      sample_page_count: samples.length,
+      has_design_system_css: !!full.design_system_css,
+      minimal: true,
+    }));
+  }
+  return textResult(full);
 }
 
 // ─── Handler: preview_blueprint ─────────────────────────────────────────────
@@ -2899,7 +3305,7 @@ async function handleCreateFromBlueprint(userId, args, _event, hubTenantId) {
   try {
     await assertBrandOwnership(sql, brandId, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot create from blueprint: ${e.message}`);
+    return errorFromException(e, "Cannot create from blueprint");
   }
 
   // Create report linked to the blueprint. No modules are seeded — the hub
@@ -2962,10 +3368,9 @@ async function handleSaveComponent(userId, args, _event, hubTenantId) {
   try {
     await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(
-      `Cannot save component: ${e.message}`,
-      "Call report2__list_brands to see brands your tenant owns, then pass that brand_id. Cross-tenant writes are blocked.",
-    );
+    return errorFromException(e, "Cannot save component", {
+      next_step: "Call report2__list_brands to see brands your tenant owns, then pass that brand_id. Cross-tenant writes are blocked.",
+    });
   }
 
   const variantLabel = (variant_name && String(variant_name).trim()) || 'Default';
@@ -3161,7 +3566,17 @@ async function handleListComponents(userId, args) {
   `;
 
   const has_more = rows.length > 50;
-  const components = has_more ? rows.slice(0, 50) : rows;
+  const rawComponents = has_more ? rows.slice(0, 50) : rows;
+  // minimal_output (opt-in): drop the heavy html_template / css_template /
+  // placeholder_schema / chart_schema / design_notes blobs that flood model
+  // context when the caller only needs to pick a component_id. Default
+  // (false) returns the full rows UNCHANGED — existing consumers untouched.
+  const components = wantsMinimal(args)
+    ? rawComponents.map((c) => pickMinimal(c, [
+        "id", "component_type", "variant_name", "label", "is_default",
+        "status", "page_format", "thumbnail_url", "version", "updated_at",
+      ]))
+    : rawComponents;
   return textResult({ components, count: components.length, has_more });
 }
 
@@ -3597,7 +4012,7 @@ async function handleSaveDocumentCss(userId, args, _event, hubTenantId) {
   try {
     await assertReportOwnership(sql, report_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot save document_css: ${e.message}`);
+    return errorFromException(e, "Cannot save document_css");
   }
 
   const rows = await sql`
@@ -3657,7 +4072,7 @@ async function handleDeleteComponent(userId, args, _event, hubTenantId) {
   try {
     await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot delete component: ${e.message}`);
+    return errorFromException(e, "Cannot delete component");
   }
   const rows = await sql`
     DELETE FROM brand_components
@@ -3682,7 +4097,7 @@ async function handleForkComponent(userId, args, _event, hubTenantId) {
   try {
     await assertBrandOwnership(sql, target_brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot fork component: ${e.message}`);
+    return errorFromException(e, "Cannot fork component");
   }
 
   const srcRows = await sql`
@@ -3749,7 +4164,7 @@ async function handleCreateDesignExtraction(userId, args, _event, hubTenantId) {
   try {
     brandRow = await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot create design extraction: ${e.message}`);
+    return errorFromException(e, "Cannot create design extraction");
   }
   const tenantId = brandRow.tenant_id || null;
 
@@ -3792,7 +4207,7 @@ async function handleUpdateDesignExtraction(userId, args, _event, hubTenantId) {
     try {
       await assertBrandOwnership(sql, cur.brand_id, hubTenantId);
     } catch (e) {
-      return errorResult(`Cannot update design extraction: ${e.message}`);
+      return errorFromException(e, "Cannot update design extraction");
     }
   }
 
@@ -3897,7 +4312,7 @@ async function handleApplyDesignExtraction(userId, args, _event, hubTenantId) {
   try {
     await assertBrandOwnership(sql, brand_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot apply design extraction: ${e.message}`);
+    return errorFromException(e, "Cannot apply design extraction");
   }
   const suggestion = suggested_tokens || {};
 
@@ -5102,7 +5517,7 @@ async function handlePersistFreeformPages(userId, args, _event, hubTenantId) {
   try {
     await assertReportOwnership(sql, report_id, hubTenantId);
   } catch (e) {
-    return errorResult(`Cannot persist pages: ${e.message}`);
+    return errorFromException(e, "Cannot persist pages");
   }
   if (!Array.isArray(pages) || pages.length === 0) {
     return errorResult("pages[] required and non-empty.", "Each page is { page_num, html }; page_num is 1-indexed.");
@@ -5756,7 +6171,131 @@ const HANDLERS = {
   generate_template:       handleGenerateTemplate,
   debug_rendering:         handleDebugRendering,
   create_slot_variant:     handleCreateSlotVariant,
+  // Fas 4 — consolidated facade tools (dispatch on args.method to granular fns)
+  components:              handleComponents,
+  blueprints:              handleBlueprints,
+  design_extractions:      handleDesignExtractions,
+  assets:                  handleAssets,
+  brand_tokens:            handleBrandTokens,
 };
+
+// ─── Input normalizer ────────────────────────────────────────────────────────
+//
+// Runs at the tools/call chokepoint, before the handler is invoked. Goals:
+//   1. Brand identity resolution — if a brand-scoped tool is missing brand_id
+//      but provides `brand`/`brand_name`, resolve it by (case-insensitive)
+//      name within the caller's tenant. Unique → fill in brand_id; none →
+//      NOT_FOUND; many → BRAND_ID_REQUIRED listing candidates in context.
+//   2. Parse stringified JSON for params the schema declares object/array
+//      (Claude occasionally sends `"{...}"` instead of `{...}`).
+//
+// It returns either { args } (possibly mutated) or { error } (a canonical
+// tool-error result to short-circuit with). Tenant scoping is NEVER weakened:
+// the name→id resolver is filtered by tenant_id, and brand ownership is still
+// re-verified downstream via assertBrandOwnership.
+
+// Derived once from TOOLS so it stays in lockstep with the schema: tool →
+// Set of param names declared as object/array. Used for JSON-string parsing.
+const JSON_PARAM_NAMES_BY_TOOL = (() => {
+  const map = {};
+  for (const t of TOOLS) {
+    const props = t.inputSchema?.properties || {};
+    const names = new Set();
+    for (const [k, v] of Object.entries(props)) {
+      if (v && (v.type === "object" || v.type === "array")) names.add(k);
+    }
+    if (names.size) map[t.name] = names;
+  }
+  return map;
+})();
+
+// Brand-scoped tools (declare a brand_id property) → eligible for name→id
+// resolution. Derived from TOOLS so new brand tools are covered automatically.
+const BRAND_SCOPED_TOOLS = (() => {
+  const s = new Set();
+  for (const t of TOOLS) {
+    if (t.inputSchema?.properties && "brand_id" in t.inputSchema.properties) {
+      s.add(t.name); // t.name is the bare name (no report2__ prefix)
+    }
+  }
+  return s;
+})();
+
+async function normalizeArgs(toolName, rawArgs, { sql, tenant_id }) {
+  const args = { ...(rawArgs && typeof rawArgs === "object" ? rawArgs : {}) };
+
+  // (2) Parse stringified JSON for declared object/array params. Defensive:
+  // only attempt when the value is a string that looks like JSON; leave
+  // malformed strings untouched so the handler's own validation reports them.
+  const jsonNames = JSON_PARAM_NAMES_BY_TOOL[toolName];
+  if (jsonNames) {
+    for (const name of jsonNames) {
+      const v = args[name];
+      if (typeof v === "string") {
+        const trimmed = v.trim();
+        if (trimmed && (trimmed[0] === "{" || trimmed[0] === "[")) {
+          try { args[name] = JSON.parse(trimmed); } catch { /* leave as-is */ }
+        }
+      }
+    }
+  }
+
+  // (1) Brand identity resolution. Only for brand-scoped tools, only when
+  // brand_id is absent/blank but a brand name was supplied.
+  if (BRAND_SCOPED_TOOLS.has(toolName)) {
+    const hasBrandId = typeof args.brand_id === "string" && args.brand_id.trim();
+    if (hasBrandId) {
+      args.brand_id = args.brand_id.trim(); // tidy obvious whitespace
+    } else {
+      const nameRaw = args.brand ?? args.brand_name;
+      const brandName = typeof nameRaw === "string" ? nameRaw.trim() : "";
+      if (brandName) {
+        // Tenant-scoped lookup. When the JWT carries no tenant_id (legacy
+        // callers) we cannot safely disambiguate by name across all tenants,
+        // so we require an explicit brand_id rather than guess.
+        if (!tenant_id) {
+          return {
+            error: errorResult(
+              `Cannot resolve brand by name "${brandName}" without a tenant context.`,
+              "Pass an explicit brand_id (see report2__list_brands).",
+              { code: "BRAND_ID_REQUIRED", context: { brand_name: brandName } },
+            ),
+          };
+        }
+        let rows;
+        try {
+          rows = await sql`
+            SELECT id, name FROM brands
+            WHERE lower(name) = lower(${brandName}) AND tenant_id = ${tenant_id}
+          `;
+        } catch (e) {
+          return { error: errorFromException(e, `Cannot resolve brand "${brandName}"`) };
+        }
+        if (rows.length === 0) {
+          return {
+            error: errorResult(
+              `No brand named "${brandName}" found for this tenant.`,
+              "Call report2__list_brands to see available brands, or create one first.",
+              { code: "NOT_FOUND", context: { brand_name: brandName } },
+            ),
+          };
+        }
+        if (rows.length > 1) {
+          return {
+            error: errorResult(
+              `Multiple brands named "${brandName}" exist — specify brand_id.`,
+              "Re-call with one of the brand_id values listed in context.valid.",
+              { code: "BRAND_ID_REQUIRED", context: { brand_name: brandName, valid: rows.map((r) => ({ id: r.id, name: r.name })) } },
+            ),
+          };
+        }
+        args.brand_id = rows[0].id;
+      }
+    }
+  }
+
+  return { args };
+}
 
 // ─── Main handler ───────────────────────────────────────────────────────────
 
@@ -5804,10 +6343,24 @@ export const handler = async (event) => {
 
   if (method === "tools/call") {
     const name = params?.name ?? "";
-    const args = params?.arguments ?? {};
+    const rawArgs = params?.arguments ?? {};
     const toolName = name.startsWith("report2__") ? name.slice(9) : name;
     const fn = HANDLERS[toolName];
     if (!fn) return rpcError(id, -32601, `Unknown tool: ${name}`);
+
+    // Input normalization (brand name→id resolution, stringified-JSON
+    // params). Tenant-scoped; never weakens ownership checks downstream.
+    // A normalization failure short-circuits with a canonical tool-error.
+    let args = rawArgs;
+    try {
+      const normalized = await normalizeArgs(toolName, rawArgs, { sql: getSql(), tenant_id: hubTenantId });
+      if (normalized.error) return rpcResult(id, normalized.error);
+      args = normalized.args;
+    } catch (e) {
+      console.error(`[mcp-v2] normalizeArgs(${toolName}) failed:`, e);
+      // Don't fail the whole call on a normalizer bug — fall back to raw args.
+      args = rawArgs;
+    }
 
     try {
       // 4th arg = hubTenantId from JWT (corruption-defense source of truth).
