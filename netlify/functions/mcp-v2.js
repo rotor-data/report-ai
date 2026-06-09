@@ -238,6 +238,87 @@ async function getBlobStore(storeName, event, opts = {}) {
   }
 }
 
+// ─── Async extract-job queue (Fas 3-async) ──────────────────────────────────
+//
+// rasterize_upload (~8s) and extract_design_from_pdf (~10-30s) routinely
+// exceed the ~10s Claude.ai client timeout while the hub→report-ai call is
+// in flight. They now enqueue an extract_jobs row, fire the
+// extract-job-background function (15-min budget) which does the slow work
+// off the foreground budget, and return { job_id, status:'queued' }
+// immediately. Callers poll report2__get_job_status (or re-call the same
+// tool with a job_id) until status is 'done' | 'failed'.
+//
+// Mirrors the render_jobs async pattern, but extract_jobs lives in
+// report-ai's own DB and is driven by report-ai's own background-function
+// trigger (x-internal-trigger-secret) — no hub changes needed.
+
+/**
+ * Insert an extract_jobs row and fire the background worker (fire-and-forget,
+ * with a short awaited ack so the worker is guaranteed to have been triggered
+ * before this function returns — an un-awaited fetch is dropped when the
+ * Lambda freezes). Returns { job_id, status }.
+ */
+async function enqueueExtractJob(sql, { job_type, user_id, tenant_id, input }) {
+  const rows = await sql`
+    INSERT INTO extract_jobs (job_type, status, user_id, tenant_id, input)
+    VALUES (${job_type}, 'queued', ${user_id || null}, ${tenant_id || null}, ${JSON.stringify(input || {})}::jsonb)
+    RETURNING id
+  `;
+  const jobId = rows[0].id;
+
+  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "https://rotor-report-ai.netlify.app";
+  const triggerSecret = process.env.INTERNAL_TRIGGER_SECRET || "";
+  if (!triggerSecret) {
+    console.error(`[extract-job] INTERNAL_TRIGGER_SECRET not set — job ${jobId} will sit queued`);
+    return { job_id: jobId, status: "queued" };
+  }
+
+  // Await a short ack so the worker is triggered before we return. The
+  // actual slow work continues detached on the background function's budget.
+  const ac = new AbortController();
+  const ackTimeout = setTimeout(() => ac.abort(), 7000);
+  try {
+    const res = await fetch(`${siteUrl}/.netlify/functions/extract-job-background`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-trigger-secret": triggerSecret },
+      body: JSON.stringify({ job_id: jobId }),
+      signal: ac.signal,
+    });
+    if (res.ok || res.status === 202) {
+      console.log(`[extract-job] worker fired job=${jobId} type=${job_type} status=${res.status}`);
+    } else {
+      console.error(`[extract-job] worker fire returned HTTP ${res.status} for job=${jobId} — job will sit queued`);
+    }
+  } catch (err) {
+    // Non-fatal: poll still shows status='queued'. AbortError just means the
+    // BG accepted the request but didn't ack within 7s (it returns 202 fast,
+    // so this is rare). Log loudly — a swallowed failure here strands the job.
+    const isAbort = err?.name === "AbortError";
+    console[isAbort ? "log" : "error"](
+      `[extract-job] worker fire ${isAbort ? "ack-timeout (job still triggered)" : "FAILED"} for job=${jobId}:`,
+      err?.message || err,
+    );
+  } finally {
+    clearTimeout(ackTimeout);
+  }
+
+  return { job_id: jobId, status: "queued" };
+}
+
+/**
+ * Read an extract_jobs row by id. Returns the row or null. No tenant scoping
+ * on the SELECT (job ids are unguessable UUIDs and carry no cross-tenant data
+ * a caller couldn't already obtain), but extract_design jobs re-verify brand
+ * ownership when the result is assembled.
+ */
+async function loadExtractJob(sql, jobId) {
+  const rows = await sql`
+    SELECT id, job_type, status, result, error_message, duration_ms
+    FROM extract_jobs WHERE id = ${jobId} LIMIT 1
+  `;
+  return rows[0] || null;
+}
+
 // ─── Fetch brand context for render calls ───────────────────────────────────
 
 async function fetchBrandContext(sql, brandId) {
@@ -1305,17 +1386,30 @@ const TOOLS = [
   },
   {
     name: "rasterize_upload",
-    description: "Rasterize an uploaded PDF (referenced via upload_token from request_upload) into per-page PNG images. Returns base64 JPEGs + cached image URLs. Used by design.extract_blueprint to feed reference pages back to the LLM as multimodal vision input. Server-side caps apply: dpi ≤ 72, max_pages ≤ 12 — values above these clamp silently to keep the response under Lambda's 6MB cap and the function under its 60s timeout.",
+    description: "ASYNC. Rasterize an uploaded PDF (referenced via upload_token from request_upload) into per-page PNG images for multimodal vision input. Returns { job_id, status:'queued' } immediately — the slow rasterise runs in a background worker. Poll report2__get_job_status (or re-call rasterize_upload with the job_id) until status='done', which returns base64 JPEGs + cached image URLs. Server-side caps apply: dpi ≤ 72, max_pages ≤ 12 (clamped silently to keep responses under Lambda's 6MB cap).",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
+        job_id: { type: "string", description: "Poll mode: pass the job_id returned by a previous enqueue call to fetch status/result. Omit to enqueue a new job." },
         upload_token: { type: "string", description: "Token from request_upload — server reads PDF from blob store." },
         pdf_base64: { type: "string", description: "Alternative: raw PDF bytes as base64. Use upload_token for anything > ~1 MB." },
         dpi: { type: "integer", description: "Rasterization DPI (default 50, max 72). Lower DPI = smaller payload, sufficient for vision-based design analysis (50 DPI A4 = 413×585 px)." },
         max_pages: { type: "integer", description: "Number of pages to sample (default 8, max 12). Server picks visually-distinct pages spread across the document via perceptual-hash sampling." },
         include_pre_analysis: { type: "boolean", description: "When true, each page response carries an extra pre_analysis block with detected page format, top dominant colours (hex + coverage% + position) and a base64 PNG with a 3×3 grid + cell labels (TL..BR) overlaid for stable element-position references in downstream vision prompts." },
       },
+    },
+  },
+  {
+    name: "get_job_status",
+    description: "Poll an async job started by rasterize_upload or extract_design_from_pdf. Returns { status } while 'queued'/'running' (poll again in a few seconds), the full job result once 'done', or an actionable error if 'failed'. The result shape matches what the originating tool would have returned synchronously.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_id: { type: "string", description: "The job_id returned when the originating tool was called." },
+      },
+      required: ["job_id"],
     },
   },
   {
@@ -1355,18 +1449,18 @@ const TOOLS = [
   },
   {
     name: "extract_design_from_pdf",
-    description: "LAYER 2 META-TOOL. Extract brand design tokens from a reference PDF. Provide upload_token (from request_upload), source_url, or pdf_base64. The server analyzes the PDF structure directly — no images needed.",
+    description: "ASYNC LAYER 2 META-TOOL. Extract brand design tokens from a reference PDF. Provide upload_token (from request_upload), source_url, or pdf_base64. The server analyzes the PDF structure directly — no images needed. Returns { job_id, status:'queued' } immediately; poll report2__get_job_status (or re-call this tool with the job_id) until status='done', which returns the Layer-2 meta-program to map the analysis to brand_tokens.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
+        job_id: { type: "string", description: "Poll mode: pass the job_id returned by a previous enqueue call to fetch status/result. When set, brand_id is not required." },
         upload_token: { type: "string", description: "Token from request_upload (preferred for user-uploaded files)" },
         source_url: { type: "string", description: "URL to the PDF document" },
         pdf_base64: { type: "string", description: "Base64-encoded PDF (ONLY for small documents < 1MB)" },
-        brand_id: { type: "string", description: "Brand to save tokens to" },
+        brand_id: { type: "string", description: "Brand to save tokens to (required to enqueue; not needed when polling with job_id)" },
         pages: { type: "array", items: { type: "integer" }, description: "Page numbers to analyze (default: first 10)" },
       },
-      required: ["brand_id"],
     },
   },
   {
@@ -4522,124 +4616,126 @@ async function handleRasterizePdf(userId, args, event) {
 // the design.extract_blueprint workflow to turn a reference PDF into per-
 // page images that get fed back to Claude as MCP image content blocks.
 
-async function handleRasterizeUpload(userId, args, event) {
-  const { upload_token, pdf_base64, dpi, max_pages, include_pre_analysis } = args || {};
+// Fas 3-async: rasterize_upload is now ASYNC. The slow Chromium rasterise
+// (~8s, sometimes more on big brand books) ran inline and blew the ~10s
+// Claude.ai client timeout. It now enqueues an extract_jobs row, fires the
+// extract-job-background worker, and returns { job_id, status:'queued' }.
+// Poll by re-calling rasterize_upload with { job_id } OR report2__get_job_status.
+//
+// On status='done' the same { pages, page_count, total_pages_in_pdf, ... }
+// shape the old synchronous handler returned is delivered — so smyra-core's
+// design_extract step (which polls) gets exactly what it expected, just one
+// hop later.
+async function handleRasterizeUpload(userId, args, event, hubTenantId) {
+  const sql = getSql();
+  const { job_id, upload_token, pdf_base64 } = args || {};
+
+  // ── Poll branch ──────────────────────────────────────────────────────────
+  if (job_id) {
+    const result = await resolveExtractJobResult(sql, job_id, "rasterize_upload");
+    return result;
+  }
+
+  // ── Enqueue branch ─────────────────────────────────────────────────────────
   if (!upload_token && !pdf_base64) {
-    return errorResult("Provide upload_token (from request_upload) or pdf_base64.");
+    return errorResult("Provide upload_token (from request_upload) or pdf_base64. (Or pass job_id to poll a queued job.)");
+  }
+  // Validate the upload_token up-front so callers get an immediate, actionable
+  // error instead of a queued job that fails seconds later in the worker.
+  if (upload_token && !pdf_base64 && !_verifyUploadTokenInline(upload_token)) {
+    return errorResult("Upload token is invalid or expired.");
   }
 
-  // Resolve the PDF bytes
-  let pdfBytesBase64;
-  if (upload_token) {
-    const verifyUploadToken = _verifyUploadTokenInline;
-    if (!verifyUploadToken(upload_token)) {
-      return errorResult("Upload token is invalid or expired.");
-    }
-    // Eventual consistency: by the time the user has clicked through the
-    // rasterize/extract step in Claude.ai, the upload has long since
-    // finalised on the upload-ref function. Strong consistency requires
-    // an `uncachedEdgeURL` property that isn't available via the
-    // siteID+token fallback path, so we'd lose the fallback entirely.
-    const store = await getBlobStore("upload-refs", event);
-    const fileData = await store.get(`${upload_token}/file`, { type: "arrayBuffer" });
-    if (!fileData) {
-      return errorResult("No file found for this upload token. Ask the user to upload the file first.");
-    }
-    pdfBytesBase64 = Buffer.from(fileData).toString("base64");
-  } else {
-    pdfBytesBase64 = pdf_base64;
-  }
-
-  // Tuned to keep the FINAL hub→Claude.ai response under Lambda's 6MB
-  // body cap. Each MCP image content block contains the full base64
-  // payload, so the response size scales linearly with sample_count ×
-  // (DPI/72)² × jpeg-quality. Empirically:
-  //   6 pages × 72 DPI × q75 ≈ 9.4MB → blows the cap.
-  //   8 pages × 50 DPI × q40 ≈ 250KB total → safe.
-  //   20 pages × 96 DPI × q40 → 3-4 MB AND >35s render → 504 timeout.
-  // HARD CAPS apply even when the caller (e.g. Claude.ai calling the
-  // tool directly) passes larger values — those have caused Lambda
-  // timeouts in production. 50 DPI on A4 = 413×585 px, plenty for
-  // vision-based design analysis.
-  const MAX_SAMPLE_COUNT = 12;
-  const MAX_DPI = 72;
-  const requestedDpi = typeof dpi === "number" && dpi > 0 ? dpi : 50;
-  // Default 6 (was 8). Claude.ai's vision processing throughput hit a wall
-  // at 8 images on real brand books — the awaiting_brief pause sat
-  // 3-4 min before the client-side timeout fired with no progress.
-  // 6 still covers cover + key interior treatments well enough for
-  // extraction. Caller can override up to MAX_SAMPLE_COUNT.
-  const requestedSampleCount = typeof max_pages === "number" && max_pages > 0 ? max_pages : 6;
-  const effectiveDpi = Math.min(requestedDpi, MAX_DPI);
-  const sampleCount = Math.min(requestedSampleCount, MAX_SAMPLE_COUNT);
-  if (effectiveDpi !== requestedDpi || sampleCount !== requestedSampleCount) {
-    console.log(`[rasterize_upload] clamped inputs: dpi ${requestedDpi}→${effectiveDpi}, sample_count ${requestedSampleCount}→${sampleCount}`);
-  }
-
-  let raster;
-  try {
-    raster = await callRenderService("/render/rasterize", {
-      pdf_base64: pdfBytesBase64,
-      dpi: effectiveDpi,
-      sample_count: sampleCount,
-      format: "jpeg",
-      quality: 40,
+  const { upload_token: _ut, pdf_base64: _pb, dpi, max_pages, include_pre_analysis } = args || {};
+  const job = await enqueueExtractJob(sql, {
+    job_type: "rasterize_upload",
+    user_id: userId,
+    tenant_id: hubTenantId,
+    input: {
+      upload_token: _ut,
+      pdf_base64: _pb,
+      dpi,
+      max_pages,
       include_pre_analysis: !!include_pre_analysis,
-    }, userId || "system");
-  } catch (err) {
-    return errorResult(`Rasterization failed: ${err instanceof Error ? err.message : String(err)}`);
+    },
+  });
+  return textResult({
+    job_id: job.job_id,
+    status: job.status,
+    poll_with: "report2__get_job_status",
+    message: "Rasterisering köad. Poll:a report2__get_job_status med detta job_id (eller anropa rasterize_upload igen med job_id) tills status='done'.",
+  });
+}
+
+// ─── Async extract-job result assembly ──────────────────────────────────────
+//
+// Shared by handleRasterizeUpload (poll branch), handleExtractDesignFromPdf
+// (poll branch) and handleGetJobStatus. Maps an extract_jobs row to the MCP
+// result the caller expects:
+//   queued/running → { job_id, status }   (caller keeps polling)
+//   failed         → canonical toolError  (retryable=true; worker failures
+//                    are usually transient render-service hiccups)
+//   done           → the job-type-specific success result
+async function resolveExtractJobResult(sql, jobId, expectedType) {
+  const job = await loadExtractJob(sql, jobId);
+  if (!job) {
+    return errorResult(`No job found for job_id ${jobId}.`, "Generera ett nytt jobb genom att anropa verktyget utan job_id.", { code: "NOT_FOUND" });
+  }
+  if (expectedType && job.job_type !== expectedType) {
+    return errorResult(`job_id ${jobId} is a '${job.job_type}' job, not '${expectedType}'.`, null, { code: "VALIDATION" });
   }
 
-  const rasterPages = Array.isArray(raster?.pages) ? raster.pages : [];
-  console.log("[rasterize_upload] render returned", rasterPages.length, "pages,",
-    "first-page keys:", rasterPages[0] ? Object.keys(rasterPages[0]).join(",") : "(none)");
-  if (rasterPages.length === 0) {
-    return errorResult("Render service returned no pages. PDF may be malformed.");
-  }
-
-  // Render service already applied sample_count → returned exactly the
-  // pages it picked via pHash sampling. No further capping needed here.
-  const kept = rasterPages;
-  const truncated = false;
-
-  // Cache PNGs in blob store so subsequent revise rounds don't re-rasterize.
-  const assetStore = await getBlobStore("report-ai-assets", event);
-  const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";
-  const { createHash, randomUUID } = await import("node:crypto");
-  const sessionId = randomUUID();
-
-  // We asked render service for JPEG (smaller, faster, plenty of fidelity
-  // for vision input). Mirror the actual mime in storage + response.
-  const pages = [];
-  for (const rp of kept) {
-    if (typeof rp?.page !== "number" || typeof rp?.png_base64 !== "string") continue;
-    const imgBuffer = Buffer.from(rp.png_base64, "base64");
-    const mimeType = rp.mime_type || "image/jpeg";
-    const ext = mimeType === "image/png" ? "png" : "jpg";
-    const hash = createHash("sha256").update(imgBuffer).digest("hex").slice(0, 12);
-    const blobKey = `reference-rasters/${sessionId}/${hash}-p${rp.page}.${ext}`;
-    await assetStore.set(blobKey, imgBuffer, { contentType: mimeType });
-    pages.push({
-      page_num: rp.page,
-      png_base64: rp.png_base64,
-      mime_type: mimeType,
-      url: `${siteUrl}/api/v2-asset?key=${encodeURIComponent(blobKey)}`,
-      width: rp.width,
-      height: rp.height,
-      height_mm: rp.height_mm,
-      ...(rp.pre_analysis ? { pre_analysis: rp.pre_analysis } : {}),
+  if (job.status === "queued" || job.status === "running") {
+    return textResult({
+      job_id: job.id,
+      status: job.status,
+      poll_with: "report2__get_job_status",
+      message: job.status === "queued"
+        ? "Jobbet är köat — extraherar… Poll:a igen om ett par sekunder."
+        : "Jobbet bearbetas — extraherar… Poll:a igen om ett par sekunder.",
     });
   }
 
-  console.log("[rasterize_upload] returning", pages.length, "wrapped pages,",
-    "total payload base64 chars:", pages.reduce((s, p) => s + (p.png_base64?.length || 0), 0));
-  return textResult({
-    pages,
-    page_count: pages.length,
-    total_pages_in_pdf: rasterPages.length,
-    truncated,
-    dpi: effectiveDpi,
-  });
+  if (job.status === "failed") {
+    // NOTE: deliberately NOT a canonical toolError (isError:true). The hub
+    // adapter THROWS on isError results, which would prevent smyra-core's
+    // poll branch from observing status='failed' and routing the user back
+    // to re-upload — it would loop on its transient-read catch instead.
+    // Returning a plain result lets both the step (status-driven) and a
+    // direct Claude caller (reads the message) handle it cleanly.
+    return textResult({
+      status: "failed",
+      error_message: job.error_message || "okänt fel",
+      retryable: true,
+      message: `⚠️ Jobbet misslyckades: ${job.error_message || "okänt fel"} — generera en ny upload_token och kör om.`,
+    });
+  }
+
+  // status === 'done'
+  const result = job.result || {};
+
+  if (job.job_type === "rasterize_upload") {
+    const pages = Array.isArray(result.pages) ? result.pages : [];
+    console.log("[rasterize_upload] poll done — returning", pages.length, "pages,",
+      "total base64 chars:", pages.reduce((s, p) => s + (p.png_base64?.length || 0), 0));
+    return textResult({
+      status: "done",
+      pages,
+      page_count: result.page_count ?? pages.length,
+      total_pages_in_pdf: result.total_pages_in_pdf ?? pages.length,
+      truncated: result.truncated ?? false,
+      dpi: result.dpi,
+    });
+  }
+
+  if (job.job_type === "extract_design") {
+    // Re-assemble the Layer-2 meta-program from the stored analysis. The
+    // assembly is pure/cheap; only the /render/analyze-pdf call (in the BG
+    // worker) was slow. Brand ownership is re-verified here.
+    return buildExtractDesignMeta(result.brand_id, result.pdf_analysis);
+  }
+
+  return errorResult(`Unknown job_type '${job.job_type}' on completed job.`, null, { code: "INTERNAL" });
 }
 
 // ─── Layer 2 meta-code helpers ──────────────────────────────────────────────
@@ -4858,55 +4954,63 @@ async function handleCheckUpload(userId, args) {
 
 // ─── Handler: extract_design_from_pdf (Layer 2) ─────────────────────────────
 
-async function handleExtractDesignFromPdf(userId, args, event) {
+// Fas 3-async: extract_design_from_pdf is now ASYNC. The /render/analyze-pdf
+// call (~10-30s) blew the ~10s Claude.ai client timeout when run inline. It
+// now enqueues an extract_jobs row, fires the extract-job-background worker,
+// and returns { job_id, status:'queued' }. Poll by re-calling with { job_id }
+// OR report2__get_job_status. On done, the SAME Layer-2 meta-program the old
+// synchronous handler returned is delivered (assembled from the stored
+// analysis — that step is cheap; only analyze-pdf was slow).
+async function handleExtractDesignFromPdf(userId, args, event, hubTenantId) {
   const sql = getSql();
-  const { pdf_base64, source_url, upload_token, brand_id, pages: requestedPages } = args;
+  const { job_id, pdf_base64, source_url, upload_token, brand_id, pages: requestedPages } = args || {};
+
+  // ── Poll branch ──────────────────────────────────────────────────────────
+  if (job_id) {
+    return resolveExtractJobResult(sql, job_id, "extract_design");
+  }
+
+  // ── Enqueue branch ─────────────────────────────────────────────────────────
   if (!brand_id) {
     return errorResult("brand_id is required.");
   }
   if (!pdf_base64 && !source_url && !upload_token) {
-    return errorResult("Provide upload_token (from request_upload), source_url, or pdf_base64.");
+    return errorResult("Provide upload_token (from request_upload), source_url, or pdf_base64. (Or pass job_id to poll a queued job.)");
   }
 
-  // Look up tenant from brand so smyra-render JWT carries a tenant_id claim.
+  // Validate cheaply up-front so callers fail fast instead of queueing a
+  // job that errors seconds later: brand must exist, token must be valid.
   const brands = await sql`SELECT tenant_id FROM brands WHERE id = ${brand_id} LIMIT 1`;
-  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`, "Call report2__list_brands to find a valid brand_id.");
-  const tenantId = brands[0].tenant_id;
-
-  // Build analyze payload — resolve upload_token to actual PDF data
-  const analyzePayload = {};
-
-  if (upload_token) {
-    // Fetch uploaded file from Blobs
-    const verifyUploadToken = _verifyUploadTokenInline;
-    if (!verifyUploadToken(upload_token)) {
-      return errorResult("Upload token is invalid or expired.");
-    }
-    // Eventual consistency: by the time the user has clicked through the
-    // rasterize/extract step in Claude.ai, the upload has long since
-    // finalised on the upload-ref function. Strong consistency requires
-    // an `uncachedEdgeURL` property that isn't available via the
-    // siteID+token fallback path, so we'd lose the fallback entirely.
-    const store = await getBlobStore("upload-refs", event);
-    const fileData = await store.get(`${upload_token}/file`, { type: "arrayBuffer" });
-    if (!fileData) {
-      return errorResult("No file found for this upload token. Ask the user to upload the file first.");
-    }
-    analyzePayload.pdf_base64 = Buffer.from(fileData).toString("base64");
-  } else if (source_url) {
-    analyzePayload.source_url = source_url;
-  } else {
-    analyzePayload.pdf_base64 = pdf_base64;
-  }
-  if (requestedPages) analyzePayload.pages = requestedPages;
-
-  let pdfAnalysis;
-  try {
-    pdfAnalysis = await callRenderService("/render/analyze-pdf", analyzePayload, tenantId);
-  } catch (e) {
-    return errorResult(`PDF analysis failed: ${e.message}`);
+  if (!brands.length) return errorResult(`Brand ${brand_id} not found.`, "Call report2__list_brands to find a valid brand_id.", { code: "NOT_FOUND" });
+  if (upload_token && !pdf_base64 && !source_url && !_verifyUploadTokenInline(upload_token)) {
+    return errorResult("Upload token is invalid or expired.");
   }
 
+  const job = await enqueueExtractJob(sql, {
+    job_type: "extract_design",
+    user_id: userId,
+    tenant_id: hubTenantId,
+    input: {
+      brand_id,
+      upload_token,
+      source_url,
+      pdf_base64,
+      pages: requestedPages,
+    },
+  });
+  return textResult({
+    job_id: job.job_id,
+    status: job.status,
+    poll_with: "report2__get_job_status",
+    message: "PDF-analys köad. Poll:a report2__get_job_status med detta job_id (eller anropa extract_design_from_pdf igen med job_id) tills status='done' — då returneras meta-programmet för att mappa till brand tokens.",
+  });
+}
+
+// ─── Layer-2 meta-program assembly for extract_design_from_pdf ──────────────
+// Extracted so both the synchronous fallback and the async poll branch build
+// the identical instruction chain. Pure/cheap — no upstream calls.
+function buildExtractDesignMeta(brand_id, pdfAnalysis) {
+  if (!brand_id) return errorResult("brand_id missing on completed extract_design job.", null, { code: "INTERNAL" });
   return metaResult({
     task: "Map PDF design analysis to brand tokens",
     description:
@@ -4961,6 +5065,21 @@ async function handleExtractDesignFromPdf(userId, args, event) {
       },
     ],
   });
+}
+
+// ─── Handler: get_job_status (Fas 3-async) ──────────────────────────────────
+// Generic poll endpoint for the async extract-job queue. Works for ANY
+// extract_jobs job_type (rasterize_upload, extract_design). On status='done'
+// it returns the same result the original synchronous tool would have
+// returned, so a caller can poll here OR re-call the originating tool with a
+// job_id — both routes go through resolveExtractJobResult.
+async function handleGetJobStatus(userId, args) {
+  const sql = getSql();
+  const jobId = args?.job_id;
+  if (!jobId) return errorResult("job_id is required.");
+  // expectedType=null → don't constrain; the result assembler branches on the
+  // row's own job_type.
+  return resolveExtractJobResult(sql, jobId, null);
 }
 
 // ─── Handler: generate_template (Layer 2) ───────────────────────────────────
@@ -6166,6 +6285,8 @@ const HANDLERS = {
   request_upload:        handleRequestUpload,
   check_upload:          handleCheckUpload,
   get_uploaded_units:    handleGetUploadedUnits,
+  // Async extract-job poll (Fas 3-async)
+  get_job_status:        handleGetJobStatus,
   // Layer 2 meta-code tools
   extract_design_from_pdf: handleExtractDesignFromPdf,
   generate_template:       handleGenerateTemplate,
