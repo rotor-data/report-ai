@@ -8,15 +8,39 @@
  *   ?manifest_id=<manifest_id>&page=<page_number>&key=<preview_key>
  *   ?manifest_id=<manifest_id>&key=<preview_key> (all generated pages)
  */
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { getSql } from "./db.js";
 
-function previewKey(subject) {
-  const secret = process.env.PREVIEW_SECRET || process.env.HUB_JWT_PUBLIC_KEY_PEM || "report-ai-preview";
-  return createHmac("sha256", secret).update(String(subject)).digest("hex").slice(0, 16);
+function previewSecret() {
+  // SECURITY (P0.4): fail CLOSED — no constant `"report-ai-preview"` fallback.
+  // (report-ai prod has HUB_JWT_PUBLIC_KEY_PEM set, so this path stays working.)
+  const secret = process.env.PREVIEW_SECRET || process.env.HUB_JWT_PUBLIC_KEY_PEM;
+  if (!secret) {
+    throw new Error(
+      "Preview key secret unavailable: set PREVIEW_SECRET or HUB_JWT_PUBLIC_KEY_PEM.",
+    );
+  }
+  return secret;
 }
 
-export { previewKey };
+// SECURITY: full hex digest (was truncated to 16 hex / 64 bits). This format
+// change invalidates preview links minted under the old scheme — acceptable
+// given preview links are short-lived/regenerated. Mint (previewKey) and verify
+// (verifyPreviewKey) must use the same full-length scheme; change both together.
+function previewKey(subject) {
+  return createHmac("sha256", previewSecret()).update(String(subject)).digest("hex");
+}
+
+/** Constant-time check of a supplied preview key against the expected one. */
+function verifyPreviewKey(subject, key) {
+  if (typeof key !== "string") return false;
+  const expected = previewKey(subject);
+  const keyBuf = Buffer.from(key, "utf8");
+  const expBuf = Buffer.from(expected, "utf8");
+  return keyBuf.length === expBuf.length && timingSafeEqual(keyBuf, expBuf);
+}
+
+export { previewKey, verifyPreviewKey };
 
 function getPreviewSubject(params = {}) {
   if (params.id) return String(params.id);
@@ -138,7 +162,7 @@ export const handler = async (event) => {
     };
   }
 
-  if (key !== previewKey(subject)) {
+  if (!verifyPreviewKey(subject, key)) {
     return {
       statusCode: 403,
       headers: { "Content-Type": "text/html" },

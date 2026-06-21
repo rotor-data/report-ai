@@ -1,5 +1,5 @@
 import { getStore, connectLambda } from "@netlify/blobs";
-import { randomBytes, createHmac } from "node:crypto";
+import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 
 /**
  * Temporary reference file upload.
@@ -209,25 +209,46 @@ export default async (req) => {
   return new Response("Method not allowed", { status: 405, headers: CORS });
 };
 
+// SECURITY (P0.4 / P1): fail CLOSED — no constant `"dev"` secret fallback.
+// Signature is the FULL hex digest (was truncated to 16 hex / 64 bits) and is
+// verified with crypto.timingSafeEqual. This token format change invalidates
+// upload tokens minted under the old scheme — acceptable given the 30-min TTL.
+// Mint (createUploadToken) + verify (verifyUploadToken) must use the same
+// full-length scheme; this exact scheme is mirrored byte-for-byte in
+// mcp-v2.js (_create/_verifyUploadTokenInline) and extract-job-background.js —
+// change all of them together.
+function uploadTokenSecret() {
+  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET;
+  if (!secret) {
+    throw new Error(
+      "Upload token secret unavailable: set SESSION_SECRET or HMAC_SECRET.",
+    );
+  }
+  return secret;
+}
+
 /** Generate a signed upload token */
 export function createUploadToken() {
   const id = randomBytes(16).toString("hex");
   const expires = Date.now() + 30 * 60 * 1000; // 30 min
-  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const sig = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
+  const sig = createHmac("sha256", uploadTokenSecret()).update(`${id}:${expires}`).digest("hex");
   return { token: `${id}_${expires}_${sig}`, id, expires };
 }
 
 /** Verify token hasn't expired or been tampered with */
 export function verifyUploadToken(token) {
+  if (typeof token !== "string") return false;
   const parts = token.split("_");
   if (parts.length !== 3) return false;
   const [id, expiresStr, sig] = parts;
   const expires = parseInt(expiresStr);
   if (isNaN(expires) || Date.now() > expires) return false;
-  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const expected = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
-  return sig === expected;
+  const expected = createHmac("sha256", uploadTokenSecret()).update(`${id}:${expires}`).digest("hex");
+  // Constant-time compare (length-guard first; timingSafeEqual throws on
+  // mismatched lengths).
+  const sigBuf = Buffer.from(sig, "utf8");
+  const expBuf = Buffer.from(expected, "utf8");
+  return sigBuf.length === expBuf.length && timingSafeEqual(sigBuf, expBuf);
 }
 
 function uploadPageHtml(token, siteUrl, mode = "rasterize") {

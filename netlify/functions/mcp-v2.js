@@ -14,7 +14,7 @@
 const __coldStart = Date.now();
 const __coldMarks = [['module-start', 0]];
 function __mark(label) { __coldMarks.push([label, Date.now() - __coldStart]); }
-import { randomUUID, randomBytes, createHmac, createHash } from "node:crypto";
+import { randomUUID, randomBytes, createHmac, createHash, timingSafeEqual } from "node:crypto";
 __mark('node:crypto');
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 __mark('verify-hub-jwt');
@@ -4772,11 +4772,26 @@ function metaResult(meta) {
 // import would silently fail in the deployed lambda. Inlining keeps it
 // in a single, self-contained module).
 
+// SECURITY (P0.4 / P1): fail-closed secret (no `"dev"` fallback), FULL hex
+// digest (was truncated to 16 hex / 64 bits), constant-time verify. Token format
+// change invalidates old upload tokens — acceptable given the 30-min TTL. This
+// scheme is mirrored byte-for-byte in upload-ref.js + extract-job-background.js;
+// mint (_createUploadTokenInline) + verify (_verifyUploadTokenInline) stay in
+// sync — change all copies together.
+function _uploadTokenSecretInline() {
+  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET;
+  if (!secret) {
+    throw new Error(
+      "Upload token secret unavailable: set SESSION_SECRET or HMAC_SECRET.",
+    );
+  }
+  return secret;
+}
+
 function _createUploadTokenInline() {
   const id = randomBytes(16).toString("hex");
   const expires = Date.now() + 30 * 60 * 1000; // 30 min
-  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const sig = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
+  const sig = createHmac("sha256", _uploadTokenSecretInline()).update(`${id}:${expires}`).digest("hex");
   return { token: `${id}_${expires}_${sig}`, id, expires };
 }
 
@@ -4787,9 +4802,10 @@ function _verifyUploadTokenInline(token) {
   const [id, expiresStr, sig] = parts;
   const expires = parseInt(expiresStr);
   if (isNaN(expires) || Date.now() > expires) return false;
-  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const expected = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
-  return sig === expected;
+  const expected = createHmac("sha256", _uploadTokenSecretInline()).update(`${id}:${expires}`).digest("hex");
+  const sigBuf = Buffer.from(sig, "utf8");
+  const expBuf = Buffer.from(expected, "utf8");
+  return sigBuf.length === expBuf.length && timingSafeEqual(sigBuf, expBuf);
 }
 
 async function handleRequestUpload(userId, args) {

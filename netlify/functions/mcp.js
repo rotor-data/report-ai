@@ -9,7 +9,7 @@
  *   assemble_document → server builds full HTML from fragments + design CSS
  *   export_pdf        → renders assembled HTML to PDF via local headless Chrome
  */
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
 import { readBearerToken, verifyHubJwt } from "./verify-hub-jwt.js";
 import { getSql } from "./db.js";
 import { getTemplate, mergeMissingStubs, getDefaultStubPlan } from "./document-type-templates.js";
@@ -28,13 +28,26 @@ import { createPagePlan, generatePage, generateAllPages, assembleFullDocument } 
 // ─── Editor token (HMAC-based, 24h expiry) ─────────────────────────────────
 
 function editorSecret() {
-  return process.env.PREVIEW_SECRET || process.env.HUB_JWT_PUBLIC_KEY_PEM || "report-ai-editor";
+  // SECURITY (P0.4): fail CLOSED — no constant `"report-ai-editor"` fallback.
+  // The literal default would let anyone forge an editor capability token.
+  // (report-ai prod has HUB_JWT_PUBLIC_KEY_PEM set, so this path stays working.)
+  const secret = process.env.PREVIEW_SECRET || process.env.HUB_JWT_PUBLIC_KEY_PEM;
+  if (!secret) {
+    throw new Error(
+      "Editor token secret unavailable: set PREVIEW_SECRET or HUB_JWT_PUBLIC_KEY_PEM.",
+    );
+  }
+  return secret;
 }
 
+// SECURITY: signature is the FULL hex digest (was truncated to 16 hex / 64 bits)
+// and is verified with crypto.timingSafeEqual. This format change invalidates
+// editor tokens minted under the old truncated scheme — acceptable given the
+// short TTL. Mint + verify must stay in the same full-length scheme.
 function createEditorToken(hubUserId, documentId) {
   const expires = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
   const payload = `${hubUserId}:${documentId}:${expires}`;
-  const sig = createHmac("sha256", editorSecret()).update(payload).digest("hex").slice(0, 16);
+  const sig = createHmac("sha256", editorSecret()).update(payload).digest("hex");
   // Base64-encode for URL safety
   return Buffer.from(`${payload}:${sig}`).toString("base64url");
 }
@@ -49,8 +62,12 @@ function verifyEditorToken(token) {
     const documentId = parts.pop();
     const hubUserId = parts.join(":"); // user ID may contain colons
     if (Date.now() > expires) return null;
-    const expected = createHmac("sha256", editorSecret()).update(`${hubUserId}:${documentId}:${expires}`).digest("hex").slice(0, 16);
-    if (sig !== expected) return null;
+    const expected = createHmac("sha256", editorSecret()).update(`${hubUserId}:${documentId}:${expires}`).digest("hex");
+    // Constant-time compare (length-guard first; timingSafeEqual throws on
+    // mismatched lengths).
+    const sigBuf = Buffer.from(String(sig), "utf8");
+    const expBuf = Buffer.from(expected, "utf8");
+    if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
     return { hubUserId, documentId };
   } catch { return null; }
 }

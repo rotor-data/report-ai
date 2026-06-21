@@ -29,7 +29,7 @@
  * the foreground tools use (stored shape is just {message}; the poll handler
  * re-wraps via toolError).
  */
-import { randomUUID, createHash, createHmac } from "node:crypto";
+import { randomUUID, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { getSql } from "./db.js";
 import { mintSmyraRenderToken } from "./smyra-render-jwt.js";
 
@@ -71,6 +71,10 @@ async function getBlobStore(storeName) {
 }
 
 // Mirror of mcp-v2.js _verifyUploadTokenInline — keep byte-identical.
+// SECURITY (P0.4 / P1): fail-closed secret (no `"dev"` fallback), full hex
+// digest (was truncated to 64 bits), constant-time compare. Token format change
+// invalidates old tokens (acceptable, 30-min TTL). Mint side lives in
+// upload-ref.js / mcp-v2.js — kept in sync with this verify.
 function verifyUploadToken(token) {
   if (typeof token !== "string") return false;
   const parts = token.split("_");
@@ -78,9 +82,16 @@ function verifyUploadToken(token) {
   const [id, expiresStr, sig] = parts;
   const expires = parseInt(expiresStr);
   if (isNaN(expires) || Date.now() > expires) return false;
-  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET || "dev";
-  const expected = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex").slice(0, 16);
-  return sig === expected;
+  const secret = process.env.SESSION_SECRET || process.env.HMAC_SECRET;
+  if (!secret) {
+    throw new Error(
+      "Upload token secret unavailable: set SESSION_SECRET or HMAC_SECRET.",
+    );
+  }
+  const expected = createHmac("sha256", secret).update(`${id}:${expires}`).digest("hex");
+  const sigBuf = Buffer.from(sig, "utf8");
+  const expBuf = Buffer.from(expected, "utf8");
+  return sigBuf.length === expBuf.length && timingSafeEqual(sigBuf, expBuf);
 }
 
 async function resolvePdfBase64(input, event) {
