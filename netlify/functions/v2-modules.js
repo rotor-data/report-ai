@@ -340,6 +340,12 @@ export const handler = async (event) => {
               updated_at = NOW()
           WHERE id = ${moduleId}
         `;
+        // Background is a visual editor edit → mark editor_updated_at (guarded, see migration 041).
+        try {
+          await sql`UPDATE v2_report_modules SET editor_updated_at = NOW() WHERE id = ${moduleId}`;
+        } catch (e) {
+          console.warn(`[v2-modules] editor_updated_at not set (column missing? run migration 041): ${e?.message || e}`);
+        }
         const rows = await sql`
           SELECT id, report_id, page_id, module_type, order_index, content, style, html_cache, height_mm, background, created_at, updated_at
           FROM v2_report_modules WHERE id = ${moduleId}
@@ -411,6 +417,14 @@ export const handler = async (event) => {
             updated_at = NOW()
         WHERE id = ${moduleId}
       `;
+      // Authoritative editor edit → mark editor_updated_at so a later Claude re-compose
+      // (persist_freeform_pages) PRESERVES this page's html_cache instead of clobbering it.
+      // Guarded: tolerate the column not existing yet (migration 041) without breaking the save.
+      try {
+        await sql`UPDATE v2_report_modules SET editor_updated_at = NOW() WHERE id = ${moduleId}`;
+      } catch (e) {
+        console.warn(`[v2-modules] editor_updated_at not set (column missing? run migration 041): ${e?.message || e}`);
+      }
 
       let renderOk = false;
       let renderError = null;
