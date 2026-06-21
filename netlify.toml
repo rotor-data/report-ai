@@ -10,6 +10,23 @@
   # Bundle the static assets folder so functions can read design-system.css etc.
   included_files = ["netlify/functions/assets/**"]
 
+# Site-wide security headers. Conservative on purpose so the Vite React SPA
+# (inline styles, data/blob images, fonts as data URIs, fetch to /api + the
+# render service) keeps working. The high-value protections here are
+# frame-ancestors 'self' (clickjacking / iframe embedding), HSTS, nosniff and a
+# referrer/permissions baseline. SVG assets additionally get a stricter
+# per-response CSP in v2-asset.js (default-src 'none' + Content-Disposition:
+# attachment).
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+
 [dev]
   command = "npm run dev"
   port = 8888

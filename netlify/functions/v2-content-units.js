@@ -81,6 +81,15 @@ export const handler = async (event) => {
   const auth = requireHubOrEditorAuth(event);
   if (!auth.ok) return json(event, auth.status, { error: auth.error });
 
+  // Hub-JWT path: JWT org is the only trusted tenant; a Hub JWT with no
+  // tenant_id fails closed. Editor tokens are report-scoped (checked below).
+  const hubTenantId = auth.editorScope
+    ? null
+    : (auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id ?? null);
+  if (!auth.editorScope && !hubTenantId) {
+    return json(event, 403, { error: "Token carries no tenant — access denied" });
+  }
+
   const unitId = getIdFromPath(event.path);
   if (!unitId) return json(event, 400, { error: "Missing unit id" });
 
@@ -121,6 +130,17 @@ export const handler = async (event) => {
 
     if (editorScopeMismatch(auth, existing.report_id)) {
       return json(event, 403, { error: "Editor token does not match report" });
+    }
+
+    // Hub-JWT path: confirm the unit's owning report belongs to the caller's
+    // tenant. Without this any Hub user could edit any org's content units.
+    if (hubTenantId) {
+      const owner = await sql`
+        SELECT tenant_id FROM v2_reports WHERE id = ${existing.report_id} LIMIT 1
+      `;
+      if (!owner.length || owner[0].tenant_id !== hubTenantId) {
+        return json(event, 403, { error: "Unit not accessible in this tenant" });
+      }
     }
 
     // COALESCE-style update: only fields present in the body are written.

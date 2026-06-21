@@ -49,14 +49,28 @@ export const handler = async (event) => {
     const ext = (key.split(".").pop() || "").toLowerCase();
     const contentType = MIME_BY_EXT[ext] || "application/octet-stream";
 
+    const headers = {
+      "Content-Type": contentType,
+      "Content-Length": String(bytes.length),
+      "Cache-Control": "private, max-age=300",
+      "Access-Control-Allow-Origin": "*",
+      // nosniff on every asset so a mistyped content-type can't be sniffed
+      // into an active type by the browser.
+      "X-Content-Type-Options": "nosniff",
+    };
+
+    // SVG is an active document format. Even though we sanitize on ingest,
+    // serve it defensively: a locked-down CSP that allows nothing to execute,
+    // and force a download rather than a top-level render so any residual
+    // script can never run in the report-ai origin.
+    if (contentType === "image/svg+xml") {
+      headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'";
+      headers["Content-Disposition"] = "attachment";
+    }
+
     return {
       statusCode: 200,
-      headers: {
-        "Content-Type": contentType,
-        "Content-Length": String(bytes.length),
-        "Cache-Control": "private, max-age=300",
-        "Access-Control-Allow-Origin": "*",
-      },
+      headers,
       body: bytes.toString("base64"),
       isBase64Encoded: true,
     };

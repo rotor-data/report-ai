@@ -75,25 +75,40 @@ export const handler = async (event) => {
     }
   }
 
+  // Hub-JWT path: bind every query to the caller's tenant. The JWT org is the
+  // ONLY trusted tenant source — never the query param / body. A Hub JWT with
+  // no tenant_id has no org context, so it FAILS CLOSED (403) rather than
+  // running an unscoped query that would read/write across tenants.
+  const hubTenantId = auth.editorScope
+    ? null
+    : (auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id ?? null);
+  if (!auth.editorScope && !hubTenantId) {
+    return json(event, 403, { error: "Token carries no tenant — access denied" });
+  }
+
   try {
     if (event.httpMethod === "GET" && !reportId) {
-      const { tenant_id } = getQuery(event);
-      if (!tenant_id) return json(event, 400, { error: "tenant_id query param required" });
-
+      // Force the list filter to the JWT tenant — IGNORE any tenant_id query
+      // param so a Hub user can never enumerate another org's reports.
       const rows = await sql`
         SELECT id, tenant_id, brand_id, template_id, title, document_type, status, created_at, updated_at
         FROM v2_reports
-        WHERE tenant_id = ${tenant_id}
+        WHERE tenant_id = ${hubTenantId}
         ORDER BY updated_at DESC
       `;
       return json(event, 200, { items: rows });
     }
 
     if (event.httpMethod === "GET" && reportId) {
-      const reports = await sql`
-        SELECT id, tenant_id, brand_id, template_id, title, document_type, status, page_format, style_overrides, created_at, updated_at
-        FROM v2_reports WHERE id = ${reportId} LIMIT 1
-      `;
+      const reports = hubTenantId
+        ? await sql`
+            SELECT id, tenant_id, brand_id, template_id, title, document_type, status, page_format, style_overrides, created_at, updated_at
+            FROM v2_reports WHERE id = ${reportId} AND tenant_id = ${hubTenantId} LIMIT 1
+          `
+        : await sql`
+            SELECT id, tenant_id, brand_id, template_id, title, document_type, status, page_format, style_overrides, created_at, updated_at
+            FROM v2_reports WHERE id = ${reportId} LIMIT 1
+          `;
       if (!reports[0]) return json(event, 404, { error: "Report not found" });
 
       // Reflow plan 2026-05-08, Job 4: also surface block_type / block_index /
@@ -123,12 +138,18 @@ export const handler = async (event) => {
       const parsed = createSchema.safeParse(body);
       if (!parsed.success) return json(event, 400, { error: "Invalid payload", issues: parsed.error.issues });
 
+      // Never trust the body tenant_id — bind the new report to the JWT tenant
+      // (editor tokens can't reach POST: they're rejected above with no reportId).
+      if (parsed.data.tenant_id !== hubTenantId) {
+        return json(event, 403, { error: "tenant_id does not match caller's tenant" });
+      }
+
       const id = randomUUID();
       const rows = await sql`
         INSERT INTO v2_reports (id, tenant_id, brand_id, template_id, title, document_type, status)
         VALUES (
           ${id},
-          ${parsed.data.tenant_id},
+          ${hubTenantId},
           ${parsed.data.brand_id},
           ${parsed.data.template_id || null},
           ${parsed.data.title},
@@ -155,22 +176,41 @@ export const handler = async (event) => {
         parsed.data.style_overrides !== undefined
           ? JSON.stringify(parsed.data.style_overrides)
           : null;
-      const rows = await sql`
-        UPDATE v2_reports
-        SET
-          title = COALESCE(${parsed.data.title ?? null}, title),
-          status = COALESCE(${parsed.data.status ?? null}, status),
-          page_format = COALESCE(${parsed.data.page_format ?? null}, page_format),
-          style_overrides = COALESCE(${styleJson}::jsonb, style_overrides),
-          updated_at = NOW()
-        WHERE id = ${reportId}
-        RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, style_overrides, created_at, updated_at
-      `;
+      const rows = hubTenantId
+        ? await sql`
+            UPDATE v2_reports
+            SET
+              title = COALESCE(${parsed.data.title ?? null}, title),
+              status = COALESCE(${parsed.data.status ?? null}, status),
+              page_format = COALESCE(${parsed.data.page_format ?? null}, page_format),
+              style_overrides = COALESCE(${styleJson}::jsonb, style_overrides),
+              updated_at = NOW()
+            WHERE id = ${reportId} AND tenant_id = ${hubTenantId}
+            RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, style_overrides, created_at, updated_at
+          `
+        : await sql`
+            UPDATE v2_reports
+            SET
+              title = COALESCE(${parsed.data.title ?? null}, title),
+              status = COALESCE(${parsed.data.status ?? null}, status),
+              page_format = COALESCE(${parsed.data.page_format ?? null}, page_format),
+              style_overrides = COALESCE(${styleJson}::jsonb, style_overrides),
+              updated_at = NOW()
+            WHERE id = ${reportId}
+            RETURNING id, tenant_id, brand_id, template_id, title, document_type, status, page_format, style_overrides, created_at, updated_at
+          `;
       if (!rows[0]) return json(event, 404, { error: "Report not found" });
       return json(event, 200, { item: rows[0], page_format_changed: !!parsed.data.page_format });
     }
 
     if (event.httpMethod === "DELETE" && reportId) {
+      // Tenant-scope the delete: confirm the report belongs to the caller's
+      // tenant BEFORE cascading the child deletes, so a Hub user can't wipe
+      // another org's report by id.
+      const owned = await sql`
+        SELECT id FROM v2_reports WHERE id = ${reportId} AND tenant_id = ${hubTenantId} LIMIT 1
+      `;
+      if (!owned[0]) return json(event, 404, { error: "Report not found" });
       await sql`DELETE FROM v2_report_modules WHERE report_id = ${reportId}`;
       await sql`DELETE FROM v2_report_pages WHERE report_id = ${reportId}`;
       const rows = await sql`DELETE FROM v2_reports WHERE id = ${reportId} RETURNING id`;

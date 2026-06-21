@@ -123,13 +123,45 @@ export const handler = async (event) => {
   const moduleId = getIdFromPath(event.path);
   const action = getActionFromPath(event.path);
 
-  // Helper: verify editor token scope matches the report that owns a module/payload
-  async function assertEditorScopeForReport(reportId) {
-    if (!auth.editorScope) return null;
-    if (editorScopeMismatch(auth, reportId)) {
-      return json(event, 403, { error: "Editor token does not match report" });
+  // Hub-JWT path: the JWT org is the only trusted tenant. A Hub JWT with no
+  // tenant_id has no org context → FAIL CLOSED (403). Editor tokens are
+  // report-scoped and verified separately (assertEditorScopeForReport).
+  const hubTenantId = auth.editorScope
+    ? null
+    : (auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id ?? null);
+  if (!auth.editorScope && !hubTenantId) {
+    return json(event, 403, { error: "Token carries no tenant — access denied" });
+  }
+
+  // Helper: verify auth is allowed to operate on the report that owns a
+  // module/payload. Editor tokens are matched against their scoped reportId;
+  // Hub JWTs are matched against the report's tenant_id (resolved from the DB).
+  // Pass the report's tenant_id when it's already loaded to avoid a re-query.
+  async function assertReportAccess(reportId, knownTenantId) {
+    if (auth.editorScope) {
+      if (editorScopeMismatch(auth, reportId)) {
+        return json(event, 403, { error: "Editor token does not match report" });
+      }
+      return null;
+    }
+    // Hub JWT — require the report's tenant to equal the caller's tenant.
+    let tenantId = knownTenantId;
+    if (tenantId === undefined) {
+      const rows = await sql`SELECT tenant_id FROM v2_reports WHERE id = ${reportId} LIMIT 1`;
+      if (!rows.length) return json(event, 404, { error: "Report not found" });
+      tenantId = rows[0].tenant_id;
+    }
+    if (tenantId !== hubTenantId) {
+      return json(event, 403, { error: "Report not accessible in this tenant" });
     }
     return null;
+  }
+
+  // Back-compat alias — the old name only checked editor scope. Now it also
+  // enforces the Hub-JWT tenant. Callers that already hold the report's
+  // tenant_id should call assertReportAccess directly to skip the re-query.
+  async function assertEditorScopeForReport(reportId) {
+    return assertReportAccess(reportId);
   }
 
   try {
@@ -142,9 +174,6 @@ export const handler = async (event) => {
 
       const { report_id, module_type, content, style, after_module_id, html_content } = parsed.data;
 
-      const scopeErr = await assertEditorScopeForReport(report_id);
-      if (scopeErr) return scopeErr;
-
       if (module_type === "layout" && !html_content) {
         const err = validateLayoutContent(content);
         if (err) return json(event, 400, { error: err });
@@ -154,6 +183,11 @@ export const handler = async (event) => {
       if (!reports.length) return json(event, 404, { error: "Report not found" });
       const brandId = reports[0].brand_id;
       const tenantId = reports[0].tenant_id;
+
+      // Tenant/scope check AFTER loading the report so we can match the Hub-JWT
+      // tenant against the report's actual tenant_id (no second query).
+      const scopeErr = await assertReportAccess(report_id, tenantId);
+      if (scopeErr) return scopeErr;
 
       let orderIndex;
       if (after_module_id) {
@@ -320,7 +354,7 @@ export const handler = async (event) => {
       if (!mods.length) return json(event, 404, { error: "Module not found" });
       const mod = mods[0];
 
-      const scopeErr = await assertEditorScopeForReport(mod.report_id);
+      const scopeErr = await assertReportAccess(mod.report_id, mod.tenant_id);
       if (scopeErr) return scopeErr;
 
       // Background-only request — update the JSONB column without

@@ -63,16 +63,32 @@ export const handler = async (event) => {
     return rows[0]?.tenant_id ?? null;
   }
 
+  // Hub-JWT path: the JWT org is the only trusted tenant. A Hub JWT with no
+  // tenant_id has no org context → FAIL CLOSED (403) rather than trust the
+  // tenant_id from query/body and read/write across tenants.
+  const hubTenantId = auth.editorScope
+    ? null
+    : (auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id ?? null);
+  if (!auth.editorScope && !hubTenantId) {
+    return json(event, 403, { error: "Token carries no tenant — access denied" });
+  }
+
   try {
     if (event.httpMethod === "GET") {
-      const tenantId = event.queryStringParameters?.tenant_id;
-      if (!tenantId) return json(event, 400, { error: "tenant_id query param required" });
+      const requestedTenantId = event.queryStringParameters?.tenant_id;
+      if (!requestedTenantId) return json(event, 400, { error: "tenant_id query param required" });
+
+      // Bind to the trusted tenant. Editor tokens resolve via their scoped
+      // report; Hub JWTs use the JWT org (never the query param).
+      const tenantId = auth.editorScope ? requestedTenantId : hubTenantId;
 
       if (auth.editorScope) {
         const allowed = await editorAllowedTenantId();
-        if (allowed !== tenantId) {
+        if (allowed !== requestedTenantId) {
           return json(event, 403, { error: "Editor token does not match tenant" });
         }
+      } else if (requestedTenantId !== hubTenantId) {
+        return json(event, 403, { error: "tenant_id does not match caller's tenant" });
       }
 
       const rows = await sql`
@@ -99,20 +115,43 @@ export const handler = async (event) => {
       const parsed = uploadSchema.safeParse(body);
       if (!parsed.success) return json(event, 400, { error: "Invalid payload", issues: parsed.error.issues });
 
-      const { tenant_id, filename, mime_type, data_base64 } = parsed.data;
+      const { tenant_id: requestedTenantId, filename, mime_type, data_base64 } = parsed.data;
 
       if (auth.editorScope) {
         const allowed = await editorAllowedTenantId();
-        if (allowed !== tenant_id) {
+        if (allowed !== requestedTenantId) {
           return json(event, 403, { error: "Editor token does not match tenant" });
         }
+      } else if (requestedTenantId !== hubTenantId) {
+        return json(event, 403, { error: "tenant_id does not match caller's tenant" });
       }
+
+      // Bind the stored asset to the trusted tenant (JWT org on the Hub path).
+      const tenant_id = auth.editorScope ? requestedTenantId : hubTenantId;
 
       const assetId = randomUUID();
       const ext = (filename.split(".").pop() || "bin").toLowerCase();
       const blobKey = `tenants/${tenant_id}/assets/${assetId}.${ext}`;
       const store = await getBlobStore("report-ai-assets", event);
-      const buffer = Buffer.from(data_base64, "base64");
+      let buffer = Buffer.from(data_base64, "base64");
+
+      // SVG is an active document — sanitize BEFORE storing so a tenant can't
+      // persist stored-XSS (script / foreignObject / on*-handlers / external
+      // refs). The served asset (v2-asset.js) also carries restrictive headers,
+      // but we strip at ingest so the bytes at rest are already safe.
+      if (mime_type === "image/svg+xml") {
+        try {
+          const { sanitizeSvg } = await import("./svg-sanitize.js");
+          const { svg, removed } = sanitizeSvg(buffer.toString("utf8"));
+          if (removed.length) {
+            console.warn(`[v2-assets] SVG sanitize stripped: ${removed.join(", ")}`);
+          }
+          buffer = Buffer.from(svg, "utf8");
+        } catch (e) {
+          return json(event, 400, { error: `Invalid or unsafe SVG: ${e.message}` });
+        }
+      }
+
       await store.set(blobKey, buffer, { contentType: mime_type });
 
       const siteUrl = process.env.URL || process.env.DEPLOY_PRIME_URL || "";

@@ -209,6 +209,14 @@ export const handler = async (event) => {
     return json(event, 403, { error: "Editor token does not match report" });
   }
 
+  // Hub-JWT path: JWT org is the only trusted tenant; fail closed if absent.
+  const hubTenantId = auth.editorScope
+    ? null
+    : (auth.payload?.tenant_id ?? auth.payload?.claims?.tenant_id ?? null);
+  if (!auth.editorScope && !hubTenantId) {
+    return json(event, 403, { error: "Token carries no tenant — access denied" });
+  }
+
   const sql = getSql();
 
   try {
@@ -217,6 +225,12 @@ export const handler = async (event) => {
       FROM v2_reports WHERE id = ${reportId} LIMIT 1
     `;
     if (!report) return json(event, 404, { error: "Report not found" });
+
+    // Hub-JWT path: the report (and its bundled brand CSS / logos / assets)
+    // must belong to the caller's tenant.
+    if (hubTenantId && report.tenant_id !== hubTenantId) {
+      return json(event, 403, { error: "Report not accessible in this tenant" });
+    }
 
     // Brand tokens + fonts + logos
     let tokens = {};
